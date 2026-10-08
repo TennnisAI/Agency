@@ -785,13 +785,14 @@ export default function MergeModal({
                 either mid-deletion drops the result, refusal and all. */}
             <div className="git-actions">
               {losers.length > 0 ? (
-                <button disabled={busy || gitBusy} onClick={() => archiveWorkspace(true)}>
+                <button className="btn-primary" disabled={busy || gitBusy} onClick={() => archiveWorkspace(true)}>
                   {archiving
                     ? "Cleaning up…"
                     : `Archive + delete ${losers.length} losing attempt${losers.length === 1 ? "" : "s"}`}
                 </button>
               ) : (
                 <button
+                  className="btn-primary"
                   disabled={busy || gitBusy}
                   title="Stop the agent, remove its worktree, and keep a record of what it did."
                   onClick={() => archiveWorkspace(false)}

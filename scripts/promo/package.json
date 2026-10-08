@@ -1,0 +1,10 @@
+{
+  "name": "agency-promo",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "description": "Records the site's screenshots and videos from the real UI against a mock backend. Not shipped.",
+  "devDependencies": {
+    "playwright-core": "1.56.1"
+  }
+}

@@ -39,7 +39,7 @@ export default function GhSetupHint({
         <p className="merge-note">
           This uses the GitHub CLI (<code>gh</code>), which isn't installed.
         </p>
-        <button onClick={() => setupInTerminal("gh", "brew install gh")}>Install with Homebrew…</button>
+        <button className="btn-primary" onClick={() => setupInTerminal("gh", "brew install gh")}>Install with Homebrew…</button>
         <button className="ghost" onClick={() => openUrl("https://cli.github.com").catch(() => {})}>
           No Homebrew? Download from cli.github.com ↗
         </button>
@@ -52,7 +52,7 @@ export default function GhSetupHint({
         <p className="merge-note">
           The GitHub CLI isn't signed in yet. <code>gh auth login</code> walks you through it.
         </p>
-        <button onClick={() => setupInTerminal("gh auth", "gh auth login")}>Sign in to GitHub…</button>
+        <button className="btn-primary" onClick={() => setupInTerminal("gh auth", "gh auth login")}>Sign in to GitHub…</button>
       </div>
     );
   }

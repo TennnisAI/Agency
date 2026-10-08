@@ -234,7 +234,7 @@ export default function RaceDialog({ onClose, issue, issueLabel }: {
           </div>
         )}
         <div className="git-actions">
-          <button disabled={!canStart} onClick={start}>
+          <button className="btn-primary" disabled={!canStart} onClick={start}>
             {busy ? "Starting…" : `Start race (${attempts.length} attempt${attempts.length === 1 ? "" : "s"})`}
           </button>
           <button className="ghost" onClick={onClose}>Cancel</button>

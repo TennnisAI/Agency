@@ -1,0 +1,75 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+@font-face{font-family:G;src:url(../../../site/assets/fonts/geist-latin-wght-normal.woff2) format('woff2-variations');font-weight:100 900}
+@font-face{font-family:M;src:url(../../../site/assets/fonts/jetbrains-mono-latin-wght-normal.woff2) format('woff2-variations');font-weight:100 800}
+:root{--ground:#11111b;--base:#1e1e2e;--text:#cdd6f4;--sub0:#a6adc8;--sub1:#bac2de;--o0:#6c7086;--o1:#7f849c;--blue:#89b4fa;--mauve:#cba6f7;--green:#a6e3a1;--peach:#fab387;--teal:#94e2d5;--yellow:#f9e2af}
+html,body{margin:0;width:2560px;height:1440px;overflow:hidden;background:var(--ground);font-family:G;color:var(--text);-webkit-font-smoothing:antialiased}
+.layer{position:absolute;inset:0;display:none}
+.glow{position:absolute;filter:blur(120px);opacity:.2;background:radial-gradient(40% 60% at 25% 40%,var(--blue),transparent 70%),radial-gradient(40% 60% at 75% 45%,var(--mauve),transparent 70%),radial-gradient(35% 50% at 50% 90%,var(--teal),transparent 70%)}
+svg path{fill:none;stroke-width:5;stroke-linecap:round}
+.l1{stroke:var(--blue)}.l2{stroke:var(--mauve)}.l3{stroke:var(--green)}.l4{stroke:var(--peach)}.l5{stroke:var(--teal)}.l6{stroke:var(--yellow)}.tr{stroke:var(--o0)}
+h1{font-weight:640;letter-spacing:-.045em;line-height:.98;margin:0}
+/* scene */
+#scene .win{position:absolute;left:320px;top:184px;width:1920px;height:1200px;border-radius:22px;background:#000;box-shadow:0 0 0 2px rgba(0,0,0,.4),0 60px 140px -40px rgba(0,0,0,.85),0 30px 60px -30px rgba(0,0,0,.8)}
+#scene .cap{position:absolute;left:320px;top:62px;display:flex;align-items:center;gap:30px}
+.node{width:40px;height:40px;border-radius:50%;border:4px solid var(--c);box-sizing:border-box;display:grid;place-items:center;box-shadow:0 0 40px -4px var(--c)}
+.node::after{content:"";width:14px;height:14px;border-radius:50%;background:var(--c)}
+.cap .lab{font:500 32px M;color:var(--c);margin-bottom:6px}
+.cap .t{font-weight:600;font-size:56px;letter-spacing:-.03em;line-height:1.05}
+#border .win{position:absolute;left:320px;top:184px;width:1920px;height:1200px;border-radius:22px;box-shadow:inset 0 0 0 2px rgba(205,214,244,.13)}
+#mask{background:#000}#mask .win{position:absolute;left:320px;top:184px;width:1920px;height:1200px;border-radius:22px;background:#fff}
+</style></head><body>
+<div class="layer" id="intro">
+  <div class="glow" style="inset:500px 300px 0"></div>
+  <svg width="2560" height="1440" style="position:absolute;inset:0">
+    <path class="tr" id="itr" pathLength="1" d="M400 190 V340"/>
+    <g id="ilanes"></g>
+  </svg>
+  <div id="inode" style="position:absolute;left:383px;top:168px;width:34px;height:34px;border-radius:50%;border:5px solid var(--o0);background:var(--ground);box-sizing:border-box"></div>
+  <h1 style="position:absolute;left:400px;top:760px;font-size:176px" id="ih"><span>Many agents.</span><br><span>Many branches.</span><br><span>One window.</span></h1>
+</div>
+<div class="layer" id="end">
+  <div class="glow" style="inset:200px 500px 400px"></div>
+  <svg width="2560" height="1440" style="position:absolute;inset:0"><g id="elanes"></g></svg>
+  <div id="enode" style="position:absolute;left:1262px;top:542px;width:36px;height:36px;border-radius:50%;border:5px solid var(--green);background:var(--ground);box-sizing:border-box;box-shadow:0 0 60px 6px rgba(166,227,161,.45)"></div>
+  <div id="etext" style="position:absolute;left:0;right:0;top:660px;text-align:center">
+    <div style="display:inline-flex;align-items:center;gap:30px;font-weight:640;font-size:150px;letter-spacing:-.045em">
+      <svg viewBox="14 8 72 82" width="130" height="148" fill="none"><path d="M22 84 L50 24 L78 84" stroke="#89b4fa" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" style="fill:none"/><rect x="36" y="55" width="20" height="7.5" rx="3.75" fill="#89b4fa" fill-opacity="0.55"/><rect x="44" y="67" width="20" height="7.5" rx="3.75" fill="#89b4fa"/><circle cx="50" cy="22" r="7.5" fill="#11111b" stroke="#89b4fa" stroke-width="3.4"/></svg>Agency</div>
+    <div id="esub" style="font-size:52px;color:var(--sub1);margin-top:36px;letter-spacing:-.01em">Free and open source, for macOS and Linux.</div>
+    <div id="eurl" style="font:500 46px M;color:var(--blue);margin-top:40px">getagency.dev</div>
+  </div>
+</div>
+<div class="layer" id="scene">
+  <div class="glow" style="inset:400px 360px 0"></div>
+  <div class="cap"><div class="node"></div><div><div class="lab"></div><div class="t"></div></div></div>
+  <div class="win"></div>
+</div>
+<div class="layer" id="border"><div class="win"></div></div>
+<div class="layer" id="mask"><div class="win"></div></div>
+<script>
+const C=['l1','l2','l3','l4','l5','l6'];
+const ease=t=>t<0?0:t>1?1:1-Math.pow(1-t,3);
+const clamp=t=>Math.max(0,Math.min(1,t));
+// intro: lanes fork from a trunk at x=400 and land on six nodes above the headline
+const XS=[620,980,1340,1700,2060,2420];
+document.getElementById('ilanes').innerHTML=XS.map((x,i)=>`<path class="${C[i]}" pathLength="1" d="M400 340 C400 520 ${x} 400 ${x} 610"/><circle class="tip" cx="${x}" cy="618" r="9" style="fill:var(--ground);stroke-width:5;stroke:var(--${['blue','mauve','green','peach','teal','yellow'][i]})"/>`).join('');
+// end: six lanes come down from the top and merge into the node at (1280,560)
+const EX=[260,660,1060,1500,1900,2300];
+document.getElementById('elanes').innerHTML=EX.map((x,i)=>`<path class="${C[i]}" pathLength="1" d="M${x} -20 C${x} 330 1280 300 1280 560"/>`).join('');
+function show(id){document.querySelectorAll('.layer').forEach(l=>l.style.display=l.id===id?'block':'none')}
+function dash(p,v){p.style.strokeDasharray='1 1';p.style.strokeDashoffset=String(1-v)}
+window.intro=function(t){show('intro');
+  dash(document.getElementById('itr'),ease(t/0.35));
+  document.getElementById('inode').style.opacity=clamp(t/0.2);
+  document.querySelectorAll('#ilanes path').forEach((p,i)=>dash(p,ease((t-0.3-i*0.06)/1.0)));
+  document.querySelectorAll('#ilanes .tip').forEach((c,i)=>{c.style.opacity=clamp((t-1.2-i*0.06)/0.2)});
+  document.querySelectorAll('#ih span').forEach((s,i)=>{const v=ease((t-0.7-i*0.35)/0.6);s.style.opacity=v;s.style.display='inline-block';s.style.transform=`translateY(${(1-v)*30}px)`});
+}
+window.end=function(t){show('end');
+  document.querySelectorAll('#elanes path').forEach((p,i)=>dash(p,ease((t-i*0.05)/1.0)));
+  const n=ease((t-0.9)/0.4);document.getElementById('enode').style.opacity=n;document.getElementById('enode').style.transform=`scale(${0.6+0.4*n})`;
+  const a=ease((t-1.1)/0.6);const e=document.getElementById('etext');e.style.opacity=a;e.style.transform=`translateY(${(1-a)*24}px)`;
+  document.getElementById('esub').style.opacity=ease((t-1.5)/0.6);document.getElementById('eurl').style.opacity=ease((t-1.9)/0.6);
+}
+window.scene=function(color,label,title){show('scene');const c=document.querySelector('#scene .cap');c.style.setProperty('--c',`var(--${color})`);c.querySelector('.lab').textContent=label;c.querySelector('.t').textContent=title}
+window.layer=show;
+</script></body></html>

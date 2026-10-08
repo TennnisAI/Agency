@@ -369,14 +369,14 @@ export default function CommandPalette({
   // Provider-specific empty/progress states (rendered in place of rows).
   const empty = (() => {
     if (rows.length > 0) return null;
-    if (projects === null) return "loading…";
+    if (projects === null) return "Loading…";
     switch (mode) {
       case "command":
         return "No matching commands";
       case "issue":
-        return issueData === null ? "loading…" : "No matching issues";
+        return issueData === null ? "Loading…" : "No matching issues";
       case "tag":
-        if (docsState === "loading" || docsState === "idle") return "loading…";
+        if (docsState === "loading" || docsState === "idle") return "Loading…";
         if (docsState === "none") return scope ? "No docs folder here" : "Select a project to browse tags";
         if (docsState === "error") return "Couldn't read docs";
         return term ? "No tagged notes" : "No tags";

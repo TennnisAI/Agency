@@ -365,7 +365,7 @@ export default function DocsView({ project, root, onOpenCheckout, onOpenFile }: 
   };
 
   if (docsDir === undefined) {
-    return <div className="board empty">loading…</div>;
+    return <div className="board empty"><span className="spinner" />Loading…</div>;
   }
 
   if (docsDir === null) {
@@ -458,7 +458,7 @@ export default function DocsView({ project, root, onOpenCheckout, onOpenFile }: 
               </div>
             );
           })}
-          {!tabs.active && <div className="diff-empty">Select or create a note.</div>}
+          {!tabs.active && <div className="board empty">Select or create a note.</div>}
         </div>
         {sideOpen && (selected || sideTab === "agents") && (
           <>

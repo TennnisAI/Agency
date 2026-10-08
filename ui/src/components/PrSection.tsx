@@ -164,7 +164,7 @@ export default function PrSection({
 
       {readiness === "ready" && !pr && canCreate && (
         <div className="pr-setup">
-          <button disabled={busy} onClick={doCreate}>
+          <button className="btn-primary" disabled={busy} onClick={doCreate}>
             {busy ? "Creating PR…" : "Create pull request"}
           </button>
           <p className="merge-note">Pushes the branch and opens a PR with a generated description.</p>
@@ -209,7 +209,7 @@ export default function PrSection({
           )}
           {failing.length > 0 && (
             <div className="git-actions">
-              <button disabled={sent} onClick={doSendFailures}>
+              <button className="btn-primary" disabled={sent} onClick={doSendFailures}>
                 {sent
                   ? queued
                     ? "Queued for the agent"
@@ -223,7 +223,7 @@ export default function PrSection({
               worktree — a run in the checkout has nothing to tear down. */}
           {pr.state === "MERGED" && run?.kind === "agent" && run.worktree && (
             <div className="git-actions">
-              <button onClick={() => setTidying(true)}>Archive agent</button>
+              <button className="btn-primary" onClick={() => setTidying(true)}>Archive agent</button>
               <span className="merge-note">
                 This PR is merged, so the worktree and the local branch have nothing left to hold.
               </span>

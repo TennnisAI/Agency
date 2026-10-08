@@ -596,7 +596,7 @@ export default forwardRef<FileTreeHandle, {
       return rows;
     }
     if (!entries) {
-      rows.push(<div key={`${dir}!load`} className="tree-row" style={{ paddingLeft: 8 + depth * 12 }}>loading…</div>);
+      rows.push(<div key={`${dir}!load`} className="tree-row" style={{ paddingLeft: 8 + depth * 12 }}>Loading…</div>);
       return rows;
     }
     for (const c of entries) {

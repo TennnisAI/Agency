@@ -7,15 +7,12 @@ git worktree.** Watch them live, review what they changed, merge the good ones.
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)%20%7C%20Linux-lightgrey.svg)](#requirements)
 
-<!-- The site's hero capture, reused rather than recaptured. It is from the real
-     working machine: it shows real project names, a home-directory path in
-     agent output, and the machine hostname in a terminal prompt. Blessed
-     deliberately, because the same image already ships on the public site.
-     When a demo-repo capture exists, replace both together. -->
+<!-- A capture of the real UI running against demo data (fictional projects
+     and paths), shared with the site's screenshot set. -->
 
-![The Agency window showing the all-projects overview: 18 projects and 12
-agents, with live terminal output from several Claude Code runs and a Cursor
-agent, each on its own agent branch.](site/assets/img/shot-overview.webp)
+![The Agency window showing the all-projects overview: five projects and eleven
+agents, with live terminal output from Claude Code, Codex, Gemini CLI, OpenCode,
+Cursor, Pi and Copilot CLI runs, each on its own agent branch.](site/assets/img/shot-overview.webp)
 
 Built with [Tauri 2](https://tauri.app): a Rust backend (`crates/`) and a React
 + Vite frontend (`ui/`).

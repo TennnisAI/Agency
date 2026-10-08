@@ -442,7 +442,7 @@ export default forwardRef<DocsEditorHandle, {
           </button>
         )}
       </div>
-      {status === "loading" && <div className="diff-empty">loading…</div>}
+      {status === "loading" && <div className="board empty"><span className="spinner" />Loading…</div>}
       {status === "error" && <div className="git-error">{errorMsg}</div>}
       <div ref={hostRef} className="docs-editor-host md-live" onContextMenu={openMenu}
         style={{ display: status === "ready" ? "block" : "none" }} />

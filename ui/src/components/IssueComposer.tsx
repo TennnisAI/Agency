@@ -15,7 +15,7 @@ import ConfirmDialog from "./ConfirmDialog";
 
 // Same anchoring numbers as the detail pane's property menus.
 const MENU_W = 220;
-const MENU_ROW_H = 33;
+const MENU_ROW_H = 28; // --ctl-md; menu items were 33px before the shared menu row
 const MENU_PAD = 10;
 
 // The new-issue form (AGE-255): title, description and properties together,

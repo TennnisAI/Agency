@@ -259,7 +259,7 @@ export default function LoopDialog({ onClose, issue, issueLabel }: {
           </div>
         )}
         <div className="git-actions">
-          <button disabled={!canStart} onClick={start}>
+          <button className="btn-primary" disabled={!canStart} onClick={start}>
             {busy ? "Starting…" : "Start loop"}
           </button>
           <button className="ghost" onClick={onClose}>Cancel</button>

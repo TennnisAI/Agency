@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- lastmod is the date the page's content last changed, not the deploy date.
+     Update it with the page, or crawlers learn to ignore it. -->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://getagency.dev/</loc><lastmod>2026-10-07</lastmod></url>
+  <url><loc>https://getagency.dev/download</loc><lastmod>2026-10-07</lastmod></url>
+  <url><loc>https://getagency.dev/run-coding-agents-in-parallel</loc><lastmod>2026-10-07</lastmod></url>
+  <url><loc>https://getagency.dev/privacy</loc><lastmod>2026-09-13</lastmod></url>
+</urlset>

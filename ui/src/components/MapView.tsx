@@ -162,7 +162,7 @@ export default function MapView({ project }: { project: Project }) {
   const symbolIndex = useMemo(() => (data ? symbolEdgeIndex(data.symbol_edges) : null), [data]);
   const allSymbols = useMemo(() => (data ? symbolsById(data.root) : null), [data]);
 
-  if (loading) return <div className="board empty">Loading the map…</div>;
+  if (loading) return <div className="board empty"><span className="spinner" />Loading the map…</div>;
 
   if (!data) {
     const state = error

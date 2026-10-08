@@ -60,7 +60,7 @@ export default function QuickOpen({
           onKeyDown={onKey}
         />
         <ul className="palette-list">
-          {files === null && <li className="palette-empty">loading…</li>}
+          {files === null && <li className="palette-empty">Loading…</li>}
           {failed && <li className="palette-empty">Couldn't list files</li>}
           {files !== null && !failed && rows.length === 0 && <li className="palette-empty">No matching files</li>}
           {rows.map((p, i) => {

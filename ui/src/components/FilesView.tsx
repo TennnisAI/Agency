@@ -329,7 +329,7 @@ export default function FilesView({ root, project, agentsOpen, onOpenCheckout }:
               </div>
             );
           })}
-          {!tabs.active && <div className="diff-empty">Select a file to view.</div>}
+          {!tabs.active && <div className="board empty">Select a file to view.</div>}
         </div>
         {agentsOpen && (
           <>

@@ -1,0 +1,36 @@
+<!doctype html>
+<!-- The GitHub org profile's banner: the site's hero fork and headline. A
+     README cannot carry CSS, so the design travels as an image, one per theme;
+     render-banner.mjs sets data-theme and shoots each. -->
+<html><head><meta charset="utf-8"><style>
+@font-face{font-family:G;src:url(../../../site/assets/fonts/geist-latin-wght-normal.woff2) format('woff2-variations');font-weight:100 900}
+@font-face{font-family:M;src:url(../../../site/assets/fonts/jetbrains-mono-latin-wght-normal.woff2) format('woff2-variations');font-weight:100 800}
+:root{--ground:#11111b;--text:#cdd6f4;--sub0:#a6adc8;--o0:#6c7086;--blue:#89b4fa;--mauve:#cba6f7;--green:#a6e3a1;--peach:#fab387;--teal:#94e2d5;--yellow:#f9e2af;--glow:.2}
+:root[data-theme=light]{--ground:#f1f2ee;--text:#2f2420;--sub0:#5c4f45;--o0:#8a8078;--blue:#3f6175;--mauve:#6d5a7a;--green:#4f6a45;--peach:#8a5a2e;--teal:#3f6a63;--yellow:#8a6a1e;--glow:.05}
+html,body{margin:0;width:1280px;height:440px;overflow:hidden;background:var(--ground);color:var(--text);font-family:G;-webkit-font-smoothing:antialiased}
+.glow{position:absolute;inset:120px 160px -80px 400px;filter:blur(70px);opacity:var(--glow);background:radial-gradient(40% 60% at 25% 50%,var(--blue),transparent 70%),radial-gradient(40% 60% at 75% 50%,var(--mauve),transparent 70%)}
+svg{position:absolute;inset:0}
+path{fill:none;stroke-width:2.5;stroke-linecap:round}
+circle{stroke-width:2.5;fill:var(--ground)}
+.lab{position:absolute;top:142px;font:500 13px M;color:var(--sub0);transform:translateX(12px)}
+h1{position:absolute;left:64px;top:206px;margin:0;font-weight:640;font-size:64px;line-height:.98;letter-spacing:-.045em}
+.brand{position:absolute;right:64px;bottom:44px;display:flex;align-items:center;gap:12px;font-weight:620;font-size:24px;letter-spacing:-.02em}
+.brand svg{position:static;width:26px;height:30px}
+</style></head><body>
+<div class="glow"></div>
+<svg width="1280" height="440" viewBox="0 0 1280 440">
+  <path d="M70 30 V70" style="stroke:var(--o0)"/>
+  <circle cx="70" cy="26" r="7" style="stroke:var(--o0)"/>
+  <g id="lanes"></g>
+</svg>
+<div id="labels"></div>
+<h1>Many agents.<br>Many branches.<br>One window.</h1>
+<div class="brand"><svg viewBox="14 8 72 82" fill="none"><path d="M22 84 L50 24 L78 84" style="stroke:var(--blue);stroke-width:8;stroke-linejoin:round"/><rect x="36" y="55" width="20" height="7.5" rx="3.75" style="fill:var(--blue);fill-opacity:.55"/><rect x="44" y="67" width="20" height="7.5" rx="3.75" style="fill:var(--blue)"/><circle cx="50" cy="22" r="7.5" style="fill:var(--ground);stroke:var(--blue);stroke-width:3.4"/></svg>Agency</div>
+<script>
+const C=['blue','mauve','green','peach','teal','yellow'];
+const N=['claude','codex','gemini','opencode','cursor-agent','copilot'];
+const XS=[200,390,580,770,960,1150];
+document.getElementById('lanes').innerHTML=XS.map((x,i)=>`<path d="M70 70 C70 140 ${x} 100 ${x} 160" style="stroke:var(--${C[i]})"/><circle cx="${x}" cy="166" r="5.5" style="stroke:var(--${C[i]})"/>`).join('');
+document.getElementById('labels').innerHTML=XS.map((x,i)=>`<div class="lab" style="left:${x}px">${N[i]}</div>`).join('');
+</script>
+</body></html>

@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How to run coding agents in parallel on Linux · Agency</title>
+<meta name="description" content="Run Claude Code, Codex and other coding agents in parallel on Linux with git worktrees and tmux, or with the Agency desktop app: install commands for Debian, Ubuntu, Fedora and Arch.">
+<link rel="canonical" href="https://getagency.dev/run-coding-agents-in-parallel-on-linux">
+<meta property="og:title" content="How to run coding agents in parallel on Linux · Agency">
+<meta property="og:description" content="Run Claude Code, Codex and other coding agents in parallel on Linux with git worktrees and tmux, or with the Agency desktop app: install commands for Debian, Ubuntu, Fedora and Arch.">
+<meta property="og:url" content="https://getagency.dev/run-coding-agents-in-parallel-on-linux">
+<meta property="og:type" content="article">
+<link rel="icon" href="/assets/img/agency-icon.svg" type="image/svg+xml">
+<link rel="icon" href="/assets/img/agency-icon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/assets/img/agency-icon-180.png">
+<link rel="preload" href="/assets/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/assets/css/site.css">
+<script>
+(function () {
+  try {
+    var t = localStorage.getItem('theme');
+    if (t === 'light' || t === 'dark') {
+      document.documentElement.setAttribute('data-theme', t);
+    }
+  } catch (e) {}
+})();
+</script>
+<script type="application/ld+json">
+{
+ "@context": "https://schema.org",
+ "@type": "Article",
+ "headline": "How to run coding agents in parallel on Linux",
+ "description": "Run Claude Code, Codex and other coding agents in parallel on Linux with git worktrees and tmux, or with the Agency desktop app: install commands for Debian, Ubuntu, Fedora and Arch.",
+ "datePublished": "2026-10-08",
+ "dateModified": "2026-10-08",
+ "url": "https://getagency.dev/run-coding-agents-in-parallel-on-linux",
+ "author": {
+  "@type": "Organization",
+  "name": "Tennnis",
+  "url": "https://tennnis.no"
+ },
+ "publisher": {
+  "@type": "Organization",
+  "name": "Tennnis",
+  "url": "https://tennnis.no"
+ },
+ "about": {
+  "@type": "SoftwareApplication",
+  "name": "Agency",
+  "url": "https://getagency.dev/"
+ }
+}
+</script>
+</head>
+<body>
+
+<header class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="/" aria-label="Agency home">
+      <svg viewBox="14 8 72 82" fill="none" aria-hidden="true">
+        <path d="M22 84 L50 24 L78 84" stroke="var(--blue)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="36" y="55" width="20" height="7.5" rx="3.75" fill="var(--blue)" fill-opacity="0.55"/>
+        <rect x="44" y="67" width="20" height="7.5" rx="3.75" fill="var(--blue)"/>
+        <circle cx="50" cy="22" r="7.5" fill="var(--base)" stroke="var(--blue)" stroke-width="3.4"/>
+      </svg>
+      Agency
+    </a>
+    <nav class="nav-links" aria-label="Site">
+      <a href="/download">Download</a>
+      <a href="/privacy">Privacy</a>
+      <a class="gh-link" href="https://github.com/TennnisAI/Agency"><span class="gh-label">GitHub</span><svg class="gh-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle color theme">&#x25D0;&#xFE0E;</button>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<article class="page guide">
+  <div class="wrap">
+    <p class="meta guide-date">Updated <time datetime="2026-10-08">8 October 2026</time></p>
+    <h1 class="display">How to run coding agents in parallel on Linux</h1>
+    <p class="lead">Give each agent its own git worktree on its own branch and start one agent
+    per worktree in a tmux window. That works on any Linux distribution with git and tmux,
+    and no desktop app is needed. If you want a desktop app that does the bookkeeping,
+    Agency ships as a .deb, an .rpm and an AppImage for x86_64 and arm64.</p>
+    <p>This page gives the by-hand method first, then the install commands for Agency on
+    Debian, Ubuntu, Fedora and Arch, then what is weaker on Linux than on macOS. Disclosure:
+    Agency is ours, and this site is its home. The general method, with the reasoning behind
+    each step, is in <a href="/run-coding-agents-in-parallel">How to run coding agents in
+    parallel</a>.</p>
+
+    <h2>Run agents in parallel on Linux by hand</h2>
+    <p>Install git and tmux from your distribution if you do not have them, then run these
+    from inside your repository (here called <code>myapp</code>, with a <code>main</code>
+    branch). Each worktree is a second checkout in its own folder, so one agent cannot edit
+    another's files.</p>
+    <ol class="steps">
+      <li>
+        <h3>Create a worktree and branch for each task</h3>
+<pre class="dl-cmd"><code>git worktree add -b agent/fix-login ../myapp-fix-login main
+git worktree add -b agent/search ../myapp-search main</code></pre>
+      </li>
+      <li>
+        <h3>Start one agent per worktree in tmux</h3>
+        <p>Any agent CLI works, and they do not have to be the same one.</p>
+<pre class="dl-cmd"><code>tmux new-session -d -s agents -c "$PWD/../myapp-fix-login" claude
+tmux new-window -t agents -c "$PWD/../myapp-search" codex
+tmux attach -t agents</code></pre>
+        <p>Dependencies and untracked files such as <code>.env</code> are not in a fresh
+        worktree, so set each one up before its agent starts.</p>
+      </li>
+      <li>
+        <h3>Review, merge and clean up</h3>
+<pre class="dl-cmd"><code>git diff main...agent/fix-login
+git merge agent/fix-login
+git worktree remove ../myapp-fix-login
+git branch -d agent/fix-login</code></pre>
+      </li>
+    </ol>
+    <p>Nothing in that list is specific to a distribution or a desktop, so it works the same
+    over SSH on a server.</p>
+
+    <h2>Install Agency on Linux</h2>
+    <p>Agency is a free, open-source desktop app that runs the same agent CLIs in real
+    terminals, each run in its own worktree. Every package comes for x86_64 and arm64;
+    <code>uname -m</code> says which you have. As of 8 October 2026 the current release is
+    0.2.3. Install from a terminal, in the folder you downloaded to. The commands use the
+    x86_64 names; on arm64, use the name of the file you downloaded. The files are on the
+    <a href="/download#linux">download page</a>.</p>
+
+    <h3>Debian and Ubuntu</h3>
+<pre class="dl-cmd"><code>sudo apt install ./Agency_0.2.3_amd64.deb</code></pre>
+    <p>Use apt rather than opening the file in Ubuntu's App Center, which can stall at
+    "Installing" on a downloaded package. The arm64 file is
+    <code>Agency_0.2.3_arm64.deb</code>.</p>
+
+    <h3>Fedora</h3>
+<pre class="dl-cmd"><code>sudo dnf install ./Agency-0.2.3-1.x86_64.rpm</code></pre>
+    <p>The arm64 file is <code>Agency-0.2.3-1.aarch64.rpm</code>.</p>
+
+    <h3>Arch, and any other distribution</h3>
+<pre class="dl-cmd"><code>chmod +x Agency_0.2.3_amd64.AppImage
+./Agency_0.2.3_amd64.AppImage</code></pre>
+    <p>The arm64 file is <code>Agency_0.2.3_aarch64.AppImage</code>. The AppImage carries its
+    own libraries and needs only FUSE from the system. If it stops with a
+    <code>libfuse</code> error, install your distribution's FUSE package, or run it with
+    <code>APPIMAGE_EXTRACT_AND_RUN=1</code> set. It does not add itself to your application
+    menu, and there is no AUR package yet.</p>
+
+    <p>apt and dnf fetch WebKitGTK and the other libraries Agency needs. A newer package
+    installs over an older one the same way, and <code>sudo apt remove agency</code> or
+    <code>sudo dnf remove agency</code> takes it out again. The packages are not signed.</p>
+
+    <h2>Which Linux versions does it run on?</h2>
+    <p>Any with glibc 2.34 or later, on x86_64 or arm64: Ubuntu 22.04, Debian 12 and
+    anything newer, and current Fedora and Arch. The floor comes from the build machine.
+    The packages are built on Ubuntu 22.04 (glibc 2.35) and the binary needs only
+    <code>GLIBC_2.34</code>. A build made on a newer image once installed on Debian 12 and
+    refused to start with <code>version `GLIBC_2.39' not found</code>, so the release
+    pipeline pins the older image. The .deb declares <code>libc6 (&gt;= 2.34)</code>, so a
+    system that is too old refuses the package instead of installing it and failing at
+    launch. The .rpm cannot carry that version check. To see your glibc version, run
+    <code>ldd --version</code>.</p>
+    <p>You also need git, and Agency offers to install it through your distribution's
+    package manager if it is missing; the desktop asks for your password. You need at least
+    one agent CLI on your <code>PATH</code>, which Agency can install for you (most install
+    through npm, so those need Node). There is no account to create.</p>
+
+    <h2>What is weaker on Linux than on macOS</h2>
+    <ul class="points">
+      <li>The tray shows how many agents are running in its tooltip, not beside the icon.
+      The Linux tray has no title text to put a count in.</li>
+      <li>Clicking a desktop notification does not open the run it was about. Agency cannot
+      hear the click on Linux.</li>
+      <li>The window has square corners and no compositor shadow, and its menus live in
+      Agency's own title bar instead of the system menu bar.</li>
+      <li>The packages are not signed, and there is no AUR package yet.</li>
+    </ul>
+    <p>None of these stops you working, but you should know them before you choose.</p>
+
+    <h2>Doing the same with Agency</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th scope="col">Step</th><th scope="col">By hand</th><th scope="col">In Agency</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Isolate each task</td><td><code>git worktree add</code> per task</td><td>Every run gets its own worktree and branch</td></tr>
+          <tr><td>Start the agents</td><td>A tmux window per worktree</td><td>Pick the agent per run; each opens in a real terminal you can type into</td></tr>
+          <tr><td>Review</td><td><code>git diff</code> per branch</td><td>A per-run diff, with comments you can send back to the agent</td></tr>
+          <tr><td>Merge and clean up</td><td><code>git merge</code>, <code>worktree remove</code>, <code>branch -d</code></td><td>Merge from the run, with conflict resolution in the app</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><strong>Who should not use it:</strong> anyone on Windows, an Intel Mac or a distribution
+    older than glibc 2.34, and anyone happy in tmux who runs one or two agents at a time.
+    The steps above are all you need there.</p>
+
+    <h2>Questions</h2>
+    <h3>Is there a desktop app for coding agents on Linux?</h3>
+    <p>Yes. Agency runs on Linux as a .deb, an .rpm or an AppImage, for x86_64 and arm64.
+    It is free and open source, and it needs no account.</p>
+    <h3>Can I run Claude Code agents in parallel on Linux without an app?</h3>
+    <p>Yes. Make a git worktree per task and start <code>claude</code> in each one, in tmux
+    windows as shown above. Claude Code also has <code>claude --worktree fix-login</code>,
+    which makes the worktree itself.</p>
+
+    <div class="guide-cta">
+      <a class="btn" href="/download#linux">Download Agency for Linux</a>
+      <a class="btn btn-ghost" href="/run-coding-agents-in-parallel">The general guide</a>
+    </div>
+  </div>
+</article>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <a class="brand" href="/" aria-label="Agency home">
+      <svg viewBox="14 8 72 82" fill="none" aria-hidden="true">
+        <path d="M22 84 L50 24 L78 84" stroke="var(--blue)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="36" y="55" width="20" height="7.5" rx="3.75" fill="var(--blue)" fill-opacity="0.55"/>
+        <rect x="44" y="67" width="20" height="7.5" rx="3.75" fill="var(--blue)"/>
+        <circle cx="50" cy="22" r="7.5" fill="var(--base)" stroke="var(--blue)" stroke-width="3.4"/>
+      </svg>
+      Agency
+    </a>
+    <nav class="footer-links" aria-label="Footer">
+      <a href="/download">Download</a>
+      <a href="/run-coding-agents-in-parallel">Guide</a>
+      <a href="/supported-coding-agent-clis">Agents</a>
+      <a href="/run-coding-agents-in-parallel-on-linux" aria-current="page">Linux</a>
+      <a href="/privacy">Privacy</a>
+      <a class="gh-link" href="https://github.com/TennnisAI/Agency"><span class="gh-label">GitHub</span><svg class="gh-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+    </nav>
+    <p class="footer-fine">Brought to you by <a href="https://tennnis.no">Tennnis&#8202;&#x2197;&#xFE0E;</a></p>
+  </div>
+</footer>
+
+<script src="/assets/js/site.js" defer></script>
+
+</body>
+</html>

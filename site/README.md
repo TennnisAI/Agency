@@ -32,6 +32,13 @@ theme toggle in production.
 | `index.html` | Home: hero with the looping app video, agent strip, the four-step workflow on its spine, local-first block, the six-cell grid, the tour video, the commit-history proof, FAQ, closing CTA |
 | `download.html` | The DMG and the six Linux packages, requirements and install steps |
 | `run-coding-agents-in-parallel.html` | The guide: worktrees and tmux by hand, then what Agency does for each step. Answer-first, dated, with Article JSON-LD |
+| `git-worktrees-for-ai-coding-agents.html` | Explainer: worktrees with an agent, and what bites (dependencies, `.env`, cleanup) |
+| `run-coding-agents-in-parallel-on-linux.html` | How-to: the by-hand method on Linux, the six packages, the glibc floor, what is weaker than on macOS |
+| `race-coding-agents-on-one-prompt.html` | How-to: one prompt to several agents, by hand and with a race |
+| `loop-coding-agent-until-tests-pass.html` | How-to: a capped shell loop, then the loop's caps and stall reasons |
+| `markdown-issue-tracker-for-coding-agents.html` | Explainer: the `.agency/issues` file format and status transitions |
+| `supported-coding-agent-clis.html` | Reference: one section per built-in agent CLI, checked against the catalog |
+| `choosing-a-tool-to-run-coding-agents-in-parallel.html` | Buyer's guide with no products named: the criteria, and Agency's row against each |
 | `privacy.html` | The privacy page, copy verbatim from the deck |
 | `404.html` | The one joke |
 | `assets/css/site.css` | Tokens (Catppuccin Mocha dark, lifted Paperback light) and all components |

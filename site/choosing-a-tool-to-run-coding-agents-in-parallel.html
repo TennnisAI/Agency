@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Choosing a tool to run coding agents in parallel · Agency</title>
+<meta name="description" content="The best tool depends on seven criteria: isolation, licence and source, platforms, account and telemetry, which agents, review and merge, and cost. Each one, and when the answer is not Agency.">
+<link rel="canonical" href="https://getagency.dev/choosing-a-tool-to-run-coding-agents-in-parallel">
+<meta property="og:title" content="Choosing a tool to run coding agents in parallel · Agency">
+<meta property="og:description" content="The best tool depends on seven criteria: isolation, licence and source, platforms, account and telemetry, which agents, review and merge, and cost. Each one, and when the answer is not Agency.">
+<meta property="og:url" content="https://getagency.dev/choosing-a-tool-to-run-coding-agents-in-parallel">
+<meta property="og:type" content="article">
+<link rel="icon" href="/assets/img/agency-icon.svg" type="image/svg+xml">
+<link rel="icon" href="/assets/img/agency-icon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/assets/img/agency-icon-180.png">
+<link rel="preload" href="/assets/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/assets/css/site.css">
+<script>
+(function () {
+  try {
+    var t = localStorage.getItem('theme');
+    if (t === 'light' || t === 'dark') {
+      document.documentElement.setAttribute('data-theme', t);
+    }
+  } catch (e) {}
+})();
+</script>
+<script type="application/ld+json">
+{
+ "@context": "https://schema.org",
+ "@type": "Article",
+ "headline": "Choosing a tool to run coding agents in parallel",
+ "description": "The best tool depends on seven criteria: isolation, licence and source, platforms, account and telemetry, which agents, review and merge, and cost. Each one, and when the answer is not Agency.",
+ "datePublished": "2026-10-08",
+ "dateModified": "2026-10-08",
+ "url": "https://getagency.dev/choosing-a-tool-to-run-coding-agents-in-parallel",
+ "author": {
+  "@type": "Organization",
+  "name": "Tennnis",
+  "url": "https://tennnis.no"
+ },
+ "publisher": {
+  "@type": "Organization",
+  "name": "Tennnis",
+  "url": "https://tennnis.no"
+ },
+ "about": {
+  "@type": "SoftwareApplication",
+  "name": "Agency",
+  "url": "https://getagency.dev/"
+ }
+}
+</script>
+</head>
+<body>
+
+<header class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="/" aria-label="Agency home">
+      <svg viewBox="14 8 72 82" fill="none" aria-hidden="true">
+        <path d="M22 84 L50 24 L78 84" stroke="var(--blue)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="36" y="55" width="20" height="7.5" rx="3.75" fill="var(--blue)" fill-opacity="0.55"/>
+        <rect x="44" y="67" width="20" height="7.5" rx="3.75" fill="var(--blue)"/>
+        <circle cx="50" cy="22" r="7.5" fill="var(--base)" stroke="var(--blue)" stroke-width="3.4"/>
+      </svg>
+      Agency
+    </a>
+    <nav class="nav-links" aria-label="Site">
+      <a href="/download">Download</a>
+      <a href="/privacy">Privacy</a>
+      <a class="gh-link" href="https://github.com/TennnisAI/Agency"><span class="gh-label">GitHub</span><svg class="gh-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle color theme">&#x25D0;&#xFE0E;</button>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<article class="page guide">
+  <div class="wrap">
+    <p class="meta guide-date">Updated <time datetime="2026-10-08">8 October 2026</time></p>
+    <h1 class="display">Choosing a tool to run coding agents in parallel</h1>
+    <p class="lead">The best tool depends on seven things: how it isolates each agent, its
+    licence and source, the platforms it runs on, what it asks of you in accounts and
+    telemetry, which agents it can launch, whether you can review and merge in the same
+    place, and what it costs. Decide which of those you cannot compromise on, and the
+    choice mostly makes itself.</p>
+    <p>This page names no products, so you can apply it to any shortlist. Disclosure:
+    Agency is ours, and this site is its home. Its own row is given against every
+    criterion below, including the ones where it is the wrong pick. If you want the
+    by-hand method first, start with
+    <a href="/run-coding-agents-in-parallel">how to run coding agents in parallel</a>.
+    As of 8 October 2026.</p>
+
+    <h2>Isolation: worktrees or containers</h2>
+    <p>Two agents in one folder overwrite each other, so every tool has to give each agent
+    its own space. There are two ways. A git worktree is a second checkout of the same
+    repository on its own branch: cheap, fast, and the agent runs on your machine with your
+    tools and credentials. A container or virtual machine is a stronger wall: the agent
+    sees only what you mount into it, and a bad command cannot reach the rest of your
+    system.</p>
+    <p><strong>Worktrees favour</strong> speed, low disk use and agents that need your
+    local toolchain. <strong>Containers favour</strong> untrusted tasks, strict control
+    over what an agent can reach, and runs that must be reproducible. Many teams want
+    both.</p>
+    <p><strong>Agency:</strong> worktrees. Every run gets its own worktree and branch, and
+    the agent runs on your machine, in a real terminal. Agency does not put agents in
+    containers. If you need that wall, pick a tool built around containers.</p>
+
+    <h2>Licence and source</h2>
+    <p>Check whether you can read the code, build it yourself and keep using it if the
+    vendor changes course. An open-source licence such as Apache-2.0 or MIT allows all
+    three. A closed-source app gives you a binary and the vendor's promises.
+    <strong>Open source favours</strong> anyone who wants to audit what runs next to
+    their code, or to fork. <strong>Closed source is fine</strong> if you trust the vendor
+    and want support and polish more than inspectability.</p>
+    <p><strong>Agency:</strong> Apache-2.0, with the source on
+    <a href="https://github.com/TennnisAI/Agency">GitHub</a>. The name &ldquo;Agency&rdquo;
+    is not licensed with the code.</p>
+
+    <h2>Platforms</h2>
+    <p>Check the operating system and the chip, not just the logo on the download button.
+    <strong>A desktop app favours</strong> people who work on that desktop and want
+    real terminals and native notifications. <strong>A hosted runner favours</strong>
+    teams on Windows, on machines the app does not support, or who want agents to keep
+    working while every laptop is closed.</p>
+    <p><strong>Agency:</strong> macOS 11 or later on Apple Silicon (no Intel or universal
+    build), and Linux with glibc 2.34 or later on x86_64 or arm64, as a .deb, .rpm,
+    pacman package or AppImage. Windows is planned, with no build and no date. It is a
+    local desktop app, not a hosted service. See <a href="/download">the download page</a>
+    for the exact files.</p>
+
+    <h2>Account and telemetry</h2>
+    <p>Ask three questions: do you need an account to start, does the tool phone home,
+    and where does your code go. Be careful with the third. Every tool that launches a
+    coding agent hands your prompts and code to that agent's provider, however private
+    the tool itself is. <strong>A local tool with no account favours</strong> privacy
+    reviews and quick starts. <strong>A hosted service favours</strong> shared dashboards
+    and central billing, and the price is an account and a vendor that holds your
+    work.</p>
+    <p><strong>Agency:</strong> no first-party data collection: no analytics, no
+    telemetry, no crash reporting, no account and no backend of ours. The agents are third
+    party, so each one talks to its own provider under your credentials, and what you hand
+    an agent goes to that provider. Git talks to your own remotes. The one network request
+    Agency makes itself is an update check against GitHub&rsquo;s public API for the latest
+    release tag, on launch and every six hours; you can turn it off in Settings. Details
+    are on <a href="/privacy">the privacy page</a>.</p>
+
+    <h2>Which agents it can launch</h2>
+    <p>Tools differ in whether they run one vendor&rsquo;s agent, a fixed list, or any
+    command. <strong>A single-vendor tool favours</strong> a team standardised on one
+    agent. <strong>An agent-neutral tool favours</strong> anyone who wants to compare
+    agents on the same task or switch when a better one appears.</p>
+    <p><strong>Agency:</strong> eleven are built in: Claude Code, Codex, Cursor, Copilot
+    CLI, OpenCode, Gemini CLI, Kimi Code, Crush, Hermes, Pi and DeepSeek Harness. Any
+    other agent you can start from a command line runs too.</p>
+
+    <h2>Review and merge</h2>
+    <p>Running agents is the easy half. The slow half is reading what each one changed,
+    deciding, and merging. A tool that stops at launching leaves you with a pile of
+    branches to handle in the terminal. <strong>Review and merge in the tool favours</strong>
+    people running more than two or three agents at a time. <strong>Terminal and
+    pull-request review favour</strong> teams whose review already happens on a git host,
+    with required checks and approvals that a desktop tool cannot replace.</p>
+    <p><strong>Agency:</strong> a per-run diff, comments you can send back to the agent,
+    merge from the run with conflict resolution in the app. A race sends one prompt to several agents so you can keep the branch you
+    like. It is a single-user desktop app, not a team web dashboard, so shared review
+    stays on your git host.</p>
+
+    <h2>Cost</h2>
+    <p>There are two bills. One is the tool. The other is the agents behind it, which cost
+    the same whichever tool launches them, and which grow with every extra agent you run
+    at once. Check that a tool&rsquo;s price does not hide a second charge for the same
+    tokens. <strong>A free tool favours</strong> individuals and small teams.
+    <strong>A paid tool favours</strong> teams that want support, a hosted runner or
+    central administration, if they value those enough.</p>
+    <p><strong>Agency:</strong> free, with no paid tier and no account. You pay only for the
+    agents, through whatever plan or API key each one already uses.</p>
+
+    <h2>Agency&rsquo;s row against each criterion</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th scope="col">Criterion</th><th scope="col">Agency</th><th scope="col">Pick something else if</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Isolation</td><td>Git worktree and branch per run, on your machine</td><td>You need containers or a virtual machine</td></tr>
+          <tr><td>Licence and source</td><td>Apache-2.0, source on GitHub</td><td>You want a vendor-supported closed product</td></tr>
+          <tr><td>Platforms</td><td>macOS (Apple Silicon) and Linux (x86_64, arm64)</td><td>You are on Windows or an Intel Mac, or want a hosted runner</td></tr>
+          <tr><td>Account and telemetry</td><td>No account; no first-party data collection; one GitHub update check, which you can turn off</td><td>You want a shared team dashboard, which needs an account</td></tr>
+          <tr><td>Agents</td><td>Eleven built in, plus any command-line agent</td><td>You are standardised on one vendor&rsquo;s own tool</td></tr>
+          <tr><td>Review and merge</td><td>Diff, comments, merge and conflict resolution in the app</td><td>Review lives on a git host with required approvals</td></tr>
+          <tr><td>Cost</td><td>Free; you pay only for the agents</td><td>You want paid support or hosting</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><strong>Who should not use Agency:</strong> anyone who needs container isolation,
+    Windows, an Intel Mac, a hosted runner or a team web dashboard, and anyone happy in
+    tmux who runs one or two agents at a time.</p>
+
+    <h2>How to compare named products</h2>
+    <p>This page names none, so it cannot rank them for you. Take your shortlist from an
+    independent directory or list that compares tools side by side, then run each
+    candidate through the seven criteria above and keep the one that satisfies your
+    non-negotiables. Try it on a real task before you commit: install it, run two agents on
+    the same small change, and see how long review and merge take.</p>
+
+    <h2>Questions</h2>
+    <h3>What is the best tool to run multiple coding agents in parallel?</h3>
+    <p>The one whose isolation, platform, privacy and agent support match your constraints.
+    For a solo developer on a Mac or Linux machine who wants a free, open-source desktop
+    app with review and merge built in, Agency fits. For containers, Windows or a hosted
+    runner, it does not.</p>
+    <h3>Do I need containers to run agents in parallel?</h3>
+    <p>No. Worktrees are enough to stop agents overwriting each other&rsquo;s files.
+    Containers add a wall against what an agent can do to the rest of your system, which
+    matters most when you do not trust the task or the code.</p>
+    <h3>Does the tool I pick change what my agent sends to its provider?</h3>
+    <p>No. The agent talks to its own provider whichever tool launches it. What the tool
+    changes is whether the tool itself adds an account, a backend or telemetry on top.</p>
+
+    <div class="guide-cta">
+      <a class="btn" href="/download">Download Agency for macOS and Linux</a>
+      <a class="btn btn-ghost" href="/run-coding-agents-in-parallel">How to run agents in parallel</a>
+    </div>
+  </div>
+</article>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <a class="brand" href="/" aria-label="Agency home">
+      <svg viewBox="14 8 72 82" fill="none" aria-hidden="true">
+        <path d="M22 84 L50 24 L78 84" stroke="var(--blue)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="36" y="55" width="20" height="7.5" rx="3.75" fill="var(--blue)" fill-opacity="0.55"/>
+        <rect x="44" y="67" width="20" height="7.5" rx="3.75" fill="var(--blue)"/>
+        <circle cx="50" cy="22" r="7.5" fill="var(--base)" stroke="var(--blue)" stroke-width="3.4"/>
+      </svg>
+      Agency
+    </a>
+    <nav class="footer-links" aria-label="Footer">
+      <a href="/download">Download</a>
+      <a href="/run-coding-agents-in-parallel">Guide</a>
+      <a href="/supported-coding-agent-clis">Agents</a>
+      <a href="/run-coding-agents-in-parallel-on-linux">Linux</a>
+      <a href="/privacy">Privacy</a>
+      <a class="gh-link" href="https://github.com/TennnisAI/Agency"><span class="gh-label">GitHub</span><svg class="gh-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+    </nav>
+    <p class="footer-fine">Brought to you by <a href="https://tennnis.no">Tennnis&#8202;&#x2197;&#xFE0E;</a></p>
+  </div>
+</footer>
+
+<script src="/assets/js/site.js" defer></script>
+
+</body>
+</html>

@@ -25,12 +25,15 @@ node scripts/promo/edit/render-cards.mjs   # title cards and scene frames
 python3 scripts/promo/edit/build.py        # cut tour-master.mp4 and hero-master.mp4
 scripts/promo/edit/publish.sh              # encode into site/assets/video, posters, og.jpg
 python3 scripts/promo/edit/stills.py       # site screenshots from the stills (needs Pillow)
+scripts/promo/edit/profile.sh              # banner and animated hero for the GitHub org profile
 ```
 
 Everything lands in `out/`, which is ignored: `clips/` and `stills/` from the
 recorder, then `tour-master.mp4` (2560x1440, for uploading elsewhere) and
-`hero-master.mp4`. `KEEP_FRAMES=1` keeps each scene's PNG frames. Needs
-`ffmpeg` with libx264 and libvpx, and `cwebp`.
+`hero-master.mp4`, and `profile/` for the org profile repo
+(github.com/TennnisAI/.github), which takes them by hand. `KEEP_FRAMES=1` keeps
+each scene's PNG frames. Needs `ffmpeg` with libx264 and libvpx, and `cwebp`
+and `img2webp` from libwebp.
 
 A scene that throws exits the run non-zero and leaves `out/fail-<scene>.png`.
 It does not encode a clip, so the previous one stays in place.
@@ -49,6 +52,7 @@ It does not encode a clip, so the previous one stays in place.
 | `mock/scripts.js` | What each seeded run's agent has done and goes on to do |
 | `mock/actions.js` | Runs created during a scene: dispatching an issue, a race, a loop |
 | `edit/cards.html` | Title cards and caption frames, in the site's fonts and lane colours |
+| `edit/banner.html` | The org profile's banner, in both themes |
 
 Time in the page moves only when the recorder moves it. Each frame advances
 Playwright's fake clock by 1/30 s, seeks every live CSS animation by the same

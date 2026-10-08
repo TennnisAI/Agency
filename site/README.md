@@ -29,20 +29,39 @@ theme toggle in production.
 
 | Path | What |
 |---|---|
-| `index.html` | Home: hero, agent strip, local-first block, four feature blocks, card grid, dogfooding block, closing CTA |
+| `index.html` | Home: hero with the looping app video, agent strip, the four-step workflow on its spine, local-first block, the six-cell grid, the tour video, the commit-history proof, FAQ, closing CTA |
 | `download.html` | The DMG and the six Linux packages, requirements and install steps |
+| `run-coding-agents-in-parallel.html` | The guide: worktrees and tmux by hand, then what Agency does for each step. Answer-first, dated, with Article JSON-LD |
 | `privacy.html` | The privacy page, copy verbatim from the deck |
 | `404.html` | The one joke |
 | `assets/css/site.css` | Tokens (Catppuccin Mocha dark, lifted Paperback light) and all components |
 | `assets/js/site.js` | Theme toggle and the download page's notice for visitors on neither macOS nor Linux; the only external script |
 | `assets/fonts/` | Geist and JetBrains Mono, variable, latin subsets, self-hosted (69 KB total) |
 | `assets/img/` | Screenshots as trimmed WebP, plus the app icon |
+| `assets/video/` | The hero loop and the one-minute tour, each as WebM and MP4 with a WebP poster. Self-hosted, so `media-src 'self'` covers them |
 | `_headers` | Cloudflare Pages headers, including the CSP that enforces the privacy claims |
+| `robots.txt`, `sitemap.xml` | Allow every crawler; the sitemap's `lastmod` is the date a page's content changed, so update it with the page |
 
 Each page carries one inline script in `<head>`: the pre-paint theme snippet.
 It is byte-identical on every page on purpose, because the CSP in `_headers`
 allows it by hash. Change it on one page and you must change it on all pages
 and recompute the hash (command in `_headers`).
+
+## The design
+
+The page is drawn as a git graph: six agent lanes fork off one trunk and land
+in the hero window, the workflow runs down a spine with a node per step, and
+the lanes merge back above the closing call to action. That is the one loud
+idea; keep everything else quiet. The lane colours are the app's accent tokens,
+one per agent, and the fork drawing in on load is the page's only unprompted
+motion.
+
+The home page and the guide are also written to be quoted by AI search: each
+opens with a plain answer, the FAQ is visible text, and the proof is numbers
+with dates. `docs/ai-search-plan.md` has the reasoning and the queue of pages
+to write next. The commit-history figures in the proof block are dated; refresh
+them with `git rev-list --count origin/main` and a count of merged `agent/`
+branches when you touch the page.
 
 ## Theme
 
@@ -93,49 +112,40 @@ built file rather than the release page, in decimal MB.
    pass, and a final claims check against the shipped app.
 5. Security contact address (open question 9) on the privacy page.
 
-## Screenshot set
+## Screenshots and video
 
-Current images are real captures from `screenshots/` at the repo root, mapped
-against the shot list in `05-assets.md`:
+Since 2026-10-07 every image and both videos come from the real React UI running
+against **demo data**: fictional projects (`orbit-api`, `lumen-web`, `tidepool`,
+`ledger-cli`), `/Users/demo/...` paths and invented people, recorded by the rig
+in `scripts/promo/`. Its README has the commands, from recording a scene to
+writing the files below. Agent output is scripted ANSI, not a recording of a
+real CLI, which would have put an account name and real token spend on screen. The earlier
+set came from the author's working machine, with real project names, home
+paths and a hostname in it, under a deliberate exception to the exclusion list
+in `05-assets.md`. That exception no longer applies to anything on the site.
 
-| Site image | Capture | Shot-list slot |
-|---|---|---|
-| `shot-overview.webp` | all-projects overview, 12 agents | stands in for SHOT-01 (hero) |
-| `shot-focus.webp` | focus view, agent working an issue | SHOT-02 |
-| `shot-issues.webp` | Issues board and detail (1bit-launcher) | SHOT-04/05 |
-| `shot-docs.webp` | a design spec open, with its outline and backlinks panel | SHOT-06 |
-| `shot-merge.webp` | Source Control Changes, side-by-side diff | SHOT-11/12 |
+| Site file | Content |
+|---|---|
+| `img/shot-overview.webp` | All-projects overview, 11 agents (also the repo README's image) |
+| `img/shot-issues.webp` | Issues board with an issue open |
+| `img/shot-docs.webp` | An architecture note with properties, outline and backlinks |
+| `img/shot-grid.webp` | Agents grid, six different agent CLIs on one repo |
+| `img/shot-merge.webp` | Source Control Changes, side-by-side diff |
+| `video/hero.*` | 20-second silent loop for the hero window: overview, grid, a race, a merge |
+| `video/tour.*` | One-minute tour with title cards: overview, dispatch, race, loop, review and merge |
 
-Still worth capturing, in value order: SHOT-01 proper (Agents tab, grid layout,
-6 tiles, mixed agent types; the hero's real job), SHOT-10 (a race in flight),
-SHOT-16 (history graph with a run of `agent/` merges, for the "Agency built
-Agency" block, which is typographic until then).
+Captures are 3200x2000 (1600x1000 at 2x). `scripts/promo/edit/stills.py`
+gives the stills rounded corners in their alpha so the `drop-shadow` filter
+traces the window, downscales them to 2400 wide (2560 for the overview), and
+runs `cwebp -q 82 -alpha_q 100 -m 6`. The `width`/`height` attributes in `index.html`
+reserve layout space, so update them with the image or buy a layout shift on a
+lazy-loaded image.
 
-Regenerate site images from new captures with the same treatment: **crop to
-the window itself, keeping none of the shadow margin macOS bakes into a window
-capture**, then `cwebp -q 82 -alpha_q 100 -m 6`. Downscale to 2560 wide for the
-hero and 2400 for the rest only when the capture is larger than that; the
-current four are cropped at their captured scale rather than resampled, which is
-why the intrinsic widths vary (2346 to 2502) and why `index.html` carries a
-different `width`/`height` pair per image. Those attributes reserve layout
-space, so a stale pair buys a layout shift on a lazy-loaded image.
+The videos are encoded twice: H.264 MP4 with `+faststart`, first in the
+`<source>` list because it came out smaller than VP9 on this mostly static
+footage, and WebM as the fallback for a browser without H.264. Keep the hero loop
+under about 6 MB; it autoplays on every visit.
 
-Cropping to the window is what makes the shadow work, and "trim the transparent
-margin" is what this line used to say. That is not the same instruction: the
-margin is not transparent, it holds the baked shadow at alpha 35 to 146, and
-trimming to its edge leaves it in. The corner notches need clearing too, or a
-dark wedge sits outside the window's rounded corners: the baked shadow is offset
-downward, so the residue is roughly 26 at the sides and 73 at the bottom corners
-and no single alpha cut removes both. Take the cleaned top-left corner's own
-silhouette and mirror it into the other three.
-
-**The exclusion list in `05-assets.md` was reviewed against this set and
-partly overruled, deliberately, on 2026-09-06.** The captures are from the real
-working machine and show real project names, `<home>/...` paths in agent output,
-and the machine hostname in a terminal prompt. Every project shown belongs to
-the author, none is client work, and a populated window is most of what makes
-the shots persuasive, so the list loses to that here. What was not blessed was
-a competitor's product name, legible in the body of the note in the original
-`shot-docs` capture; it was reshot rather than cropped, because using a rival's
-name as the label for your own product category concedes the category in your
-own marketing. Recheck a new capture for that, not for the project names.
+Whatever replaces these, recheck it for a competitor's product name, legible
+anywhere in the frame. Using a rival's name as the label for your own category
+concedes the category in your own marketing.

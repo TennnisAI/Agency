@@ -1,0 +1,6 @@
+# Every crawler is welcome, AI search and answer crawlers included: the site is
+# documentation for a free app, and being quoted accurately is the point.
+User-agent: *
+Allow: /
+
+Sitemap: https://getagency.dev/sitemap.xml

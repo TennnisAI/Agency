@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How to run coding agents in parallel · Agency</title>
+<meta name="description" content="Give each agent its own git worktree and branch, run one agent per worktree, then review and merge each branch. Step-by-step commands with git and tmux, and what an app can do for you.">
+<link rel="canonical" href="https://getagency.dev/run-coding-agents-in-parallel">
+<meta property="og:title" content="How to run coding agents in parallel · Agency">
+<meta property="og:description" content="Give each agent its own git worktree and branch, run one agent per worktree, then review and merge each branch. Step-by-step commands with git and tmux, and what an app can do for you.">
+<meta property="og:url" content="https://getagency.dev/run-coding-agents-in-parallel">
+<meta property="og:type" content="article">
+<link rel="icon" href="/assets/img/agency-icon.svg" type="image/svg+xml">
+<link rel="icon" href="/assets/img/agency-icon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/assets/img/agency-icon-180.png">
+<link rel="preload" href="/assets/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/assets/css/site.css">
+<script>
+(function () {
+  try {
+    var t = localStorage.getItem('theme');
+    if (t === 'light' || t === 'dark') {
+      document.documentElement.setAttribute('data-theme', t);
+    }
+  } catch (e) {}
+})();
+</script>
+<script type="application/ld+json">
+{
+ "@context": "https://schema.org",
+ "@type": "Article",
+ "headline": "How to run coding agents in parallel",
+ "description": "Give each agent its own git worktree and branch, run one agent per worktree, then review and merge each branch. Step-by-step commands with git and tmux, and what an app can do for you.",
+ "datePublished": "2026-10-07",
+ "dateModified": "2026-10-07",
+ "url": "https://getagency.dev/run-coding-agents-in-parallel",
+ "author": {
+  "@type": "Organization",
+  "name": "Tennnis",
+  "url": "https://tennnis.no"
+ },
+ "publisher": {
+  "@type": "Organization",
+  "name": "Tennnis",
+  "url": "https://tennnis.no"
+ },
+ "about": {
+  "@type": "SoftwareApplication",
+  "name": "Agency",
+  "url": "https://getagency.dev/"
+ }
+}
+</script>
+</head>
+<body>
+
+<header class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="/" aria-label="Agency home">
+      <svg viewBox="14 8 72 82" fill="none" aria-hidden="true">
+        <path d="M22 84 L50 24 L78 84" stroke="var(--blue)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="36" y="55" width="20" height="7.5" rx="3.75" fill="var(--blue)" fill-opacity="0.55"/>
+        <rect x="44" y="67" width="20" height="7.5" rx="3.75" fill="var(--blue)"/>
+        <circle cx="50" cy="22" r="7.5" fill="var(--base)" stroke="var(--blue)" stroke-width="3.4"/>
+      </svg>
+      Agency
+    </a>
+    <nav class="nav-links" aria-label="Site">
+      <a href="/download">Download</a>
+      <a href="/privacy">Privacy</a>
+      <a class="gh-link" href="https://github.com/TennnisAI/Agency"><span class="gh-label">GitHub</span><svg class="gh-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle color theme">&#x25D0;&#xFE0E;</button>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<article class="page guide">
+  <div class="wrap">
+    <p class="meta guide-date">Updated <time datetime="2026-10-07">7 October 2026</time></p>
+    <h1 class="display">How to run coding agents in parallel</h1>
+    <p class="lead">Give each agent its own git worktree on its own branch, start one agent
+    per worktree in its own terminal, then review and merge each branch the way you would
+    a pull request. The worktrees stop agents overwriting each other's files, and the
+    branches keep their work apart until you decide what to keep.</p>
+    <p>You can do all of it by hand with git and tmux, and this page shows how. Further down
+    it shows what an app does for you instead. Disclosure: that app, Agency, is ours, and
+    this site is its home.</p>
+
+    <h2>Why two agents in one checkout go wrong</h2>
+    <p>A coding agent reads files, edits them and runs commands in whatever folder you
+    start it in. Start two in the same folder and they share one working tree: one agent's
+    half-finished edit is the other agent's starting point, a test run picks up changes
+    neither agent meant to make, and a commit can sweep up the other agent's files. Nothing
+    has to crash for the result to be wrong.</p>
+
+    <h2>What a git worktree is</h2>
+    <p>A <a href="https://git-scm.com/docs/git-worktree">git worktree</a> is a second
+    checkout of the same repository, in its own folder, on its own branch. All the
+    worktrees share one history, so a commit made in one is visible from the others, but
+    each has its own files on disk. An agent in one worktree cannot touch the files in
+    another.</p>
+
+    <h2>Run agents in parallel by hand</h2>
+    <p>The commands assume a repository called <code>myapp</code> with a
+    <code>main</code> branch, and two tasks: fixing login and adding search.</p>
+    <ol class="steps">
+      <li>
+        <h3>Create a worktree and branch for each task</h3>
+        <p>Run these from inside <code>myapp</code>. Each makes a new folder next to it
+        and a new branch from <code>main</code>.</p>
+<pre class="dl-cmd"><code>git worktree add -b agent/fix-login ../myapp-fix-login main
+git worktree add -b agent/search ../myapp-search main</code></pre>
+      </li>
+      <li>
+        <h3>Set each one up</h3>
+        <p>A worktree is a fresh checkout, so it has no dependencies installed and none of
+        your untracked files, such as <code>.env</code>. Install and copy what the project
+        needs into each folder before an agent starts there.</p>
+      </li>
+      <li>
+        <h3>Start one agent per worktree</h3>
+        <p>Any agent CLI works, and they do not have to be the same one. With tmux, each
+        gets its own window in one session:</p>
+<pre class="dl-cmd"><code>tmux new-session -d -s agents -c "$PWD/../myapp-fix-login" claude
+tmux new-window -t agents -c "$PWD/../myapp-search" codex
+tmux attach -t agents</code></pre>
+        <p>Some CLIs can make the worktree themselves. Claude Code's
+        <code>claude --worktree fix-login</code> creates one under
+        <code>.claude/worktrees/fix-login</code> on a branch called
+        <code>worktree-fix-login</code>
+        (<a href="https://code.claude.com/docs/en/worktrees">its documentation</a>).</p>
+      </li>
+      <li>
+        <h3>Review each branch on its own</h3>
+        <p>When an agent says it is done, read what it changed against the point it
+        started from:</p>
+<pre class="dl-cmd"><code>git diff main...agent/fix-login</code></pre>
+      </li>
+      <li>
+        <h3>Merge what is good, then clean up</h3>
+<pre class="dl-cmd"><code>git merge agent/fix-login
+git worktree remove ../myapp-fix-login
+git branch -d agent/fix-login</code></pre>
+        <p>If two agents changed the same lines, the second merge stops with a conflict.
+        Resolve it the usual way; the worktrees only kept the agents apart while they
+        worked.</p>
+      </li>
+    </ol>
+
+    <h2>How many agents should you run at once?</h2>
+    <p>Fewer than you think. The limit is rarely the machine: it is how many diffs you can
+    read carefully, and the usage limits of the plan or API key behind each agent. Start
+    with two or three tasks that touch different parts of the code. Every worktree is a
+    full checkout with its own dependencies, so a large project also costs disk space per
+    agent.</p>
+
+    <h2>What gets hard by hand</h2>
+    <ul class="points">
+      <li>Knowing which agent has finished and which is stuck waiting on a question</li>
+      <li>Remembering which folder and branch belongs to which task</li>
+      <li>Reading each diff in a terminal, then merging and removing the worktree</li>
+      <li>Comparing two agents' attempts at the same task and keeping the better one</li>
+      <li>Cleaning up worktrees and branches from runs you abandoned</li>
+    </ul>
+
+    <h2>Doing the same with Agency</h2>
+    <p>Agency is a free, open-source desktop app for macOS and Linux that does this
+    bookkeeping. It runs the same agent CLIs, in real terminals, so nothing about how the
+    agents work changes.</p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th scope="col">Step</th><th scope="col">By hand</th><th scope="col">In Agency</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Isolate each task</td><td><code>git worktree add</code> per task</td><td>Every run gets its own worktree and branch</td></tr>
+          <tr><td>Start the agents</td><td>A tmux window per worktree</td><td>Pick the agent per run; each opens in a real terminal you can type into</td></tr>
+          <tr><td>Know who needs you</td><td>Check each window</td><td>Each run shows whether its agent is working, waiting or done, with a desktop alert</td></tr>
+          <tr><td>Review</td><td><code>git diff</code> per branch</td><td>A per-run diff, with comments you can send back to the agent</td></tr>
+          <tr><td>Merge and clean up</td><td><code>git merge</code>, <code>worktree remove</code>, <code>branch -d</code></td><td>Merge from the run, with conflict resolution in the app</td></tr>
+          <tr><td>Try one task several ways</td><td>A worktree per attempt, compared by hand</td><td>A race sends one prompt to several agents; keep the branch you like</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><strong>Who should not use it:</strong> anyone on Windows or an Intel Mac, which
+    Agency does not support yet, and anyone happy in tmux who runs one or two agents at a
+    time. The steps above are all you need there.</p>
+
+    <h2>Questions</h2>
+    <h3>Can two agents edit the same file at the same time?</h3>
+    <p>Yes, if each is in its own worktree. Each edits its own copy, and the two versions
+    only meet when you merge, where git shows you any conflict.</p>
+    <h3>Does each worktree copy the whole repository?</h3>
+    <p>No. Worktrees share the repository's history and objects; each one holds only its
+    own checked-out files. Dependencies and build output are per worktree, though.</p>
+    <h3>Do the agents have to be the same CLI?</h3>
+    <p>No. Each worktree is an ordinary folder, so you can run Claude Code in one, Codex
+    in another and Gemini CLI in a third.</p>
+
+    <div class="guide-cta">
+      <a class="btn" href="/download">Download Agency for macOS and Linux</a>
+      <a class="btn btn-ghost" href="/">What Agency does</a>
+    </div>
+  </div>
+</article>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <a class="brand" href="/" aria-label="Agency home">
+      <svg viewBox="14 8 72 82" fill="none" aria-hidden="true">
+        <path d="M22 84 L50 24 L78 84" stroke="var(--blue)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="36" y="55" width="20" height="7.5" rx="3.75" fill="var(--blue)" fill-opacity="0.55"/>
+        <rect x="44" y="67" width="20" height="7.5" rx="3.75" fill="var(--blue)"/>
+        <circle cx="50" cy="22" r="7.5" fill="var(--base)" stroke="var(--blue)" stroke-width="3.4"/>
+      </svg>
+      Agency
+    </a>
+    <nav class="footer-links" aria-label="Footer">
+      <a href="/download">Download</a>
+      <a href="/run-coding-agents-in-parallel" aria-current="page">Guide</a>
+      <a href="/privacy">Privacy</a>
+      <a class="gh-link" href="https://github.com/TennnisAI/Agency"><span class="gh-label">GitHub</span><svg class="gh-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+    </nav>
+    <p class="footer-fine">Brought to you by <a href="https://tennnis.no">Tennnis&#8202;&#x2197;&#xFE0E;</a></p>
+  </div>
+</footer>
+
+<script src="/assets/js/site.js" defer></script>
+
+</body>
+</html>

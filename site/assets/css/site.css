@@ -1,6 +1,11 @@
-/* getagency.dev, hand-written against the design system in the site design
-   record (kept privately, outside this repo — see site/README.md).
-   Tokens are named as the app names them (ui/src/lib/themes.ts); keep them in step. */
+/* getagency.dev, hand-written. No build step, no framework.
+   Tokens are named as the app names them (ui/src/lib/themes.ts); keep them in step.
+
+   The page is drawn as a git graph, because that is what the product does: in
+   the hero, six agent lanes fork off one trunk and land in the window; the
+   workflow runs down a single spine with a node per step; and at the closing
+   call to action the lanes merge back. That is the one loud idea. Everything
+   else stays quiet so it reads. */
 
 /* ---------- Fonts, self-hosted. Nothing loads from a third-party server. ---------- */
 
@@ -36,13 +41,17 @@
    where the visitor has expressed no preference. ---------- */
 
 :root {
+  /* The page sits on crust, one step below the app's own base, so a window
+     captured at base reads as an object on the page rather than a hole in it. */
+  --ground: #11111b;
   --base: #1e1e2e;
   --mantle: #181825;
   --crust: #11111b;
   --s0: #313244;
   --s1: #45475a;
   --s2: #585b70;
-  --line: #25253a;
+  --line: #232336;
+  --line-hi: #2e2e45;
   --o0: #6c7086;
   --o1: #7f849c;
   --o2: #9399b2;
@@ -57,30 +66,39 @@
   --yellow: #f9e2af;
   --peach: #fab387;
   --red: #f38ba8;
+  --on-accent: #11111b;
+  --glow: 0.22;
+  --shadow: rgba(0, 0, 0, 0.6);
 
   --sans: 'Geist Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', Menlo, monospace;
 
   --ease: cubic-bezier(.2, 0, 0, 1);
   --dur: 160ms;
+  --radius: 10px;
+  --radius-lg: 16px;
 
   color-scheme: dark;
 }
 
-/* Light: Paperback's ink and accents on a background lifted two steps. */
+/* Light: Paperback's ink and accents on a background lifted two steps. The
+   two blocks are identical; the media query covers "no choice" and the
+   attribute covers the toggle, so the toggle wins in both directions. */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
+    --ground: #f1f2ee;
     --base: #eceee9;
-    --mantle: #e2e5dd;
-    --crust: #d5dad2;
+    --mantle: #e6e8e2;
+    --crust: #dde1d8;
     --s0: #dfe2da;
     --s1: #c2c9bf;
     --s2: #aeb6ab;
-    --line: #c2c9bf;
+    --line: #d6dad1;
+    --line-hi: #c2c9bf;
     --o0: #8a8078;
     --o1: #6f6459;
     --o2: #6f6459;
-    --text: #382b26;
+    --text: #2f2420;
     --sub1: #4a3d35;
     --sub0: #5c4f45;
     --blue: #3f6175;
@@ -91,21 +109,26 @@
     --yellow: #8a6a1e;
     --peach: #8a5a2e;
     --red: #97402f;
+    --on-accent: #f1f2ee;
+    --glow: 0.12;
+    --shadow: rgba(40, 30, 20, 0.28);
     color-scheme: light;
   }
 }
 :root[data-theme="light"] {
+  --ground: #f1f2ee;
   --base: #eceee9;
-  --mantle: #e2e5dd;
-  --crust: #d5dad2;
+  --mantle: #e6e8e2;
+  --crust: #dde1d8;
   --s0: #dfe2da;
   --s1: #c2c9bf;
   --s2: #aeb6ab;
-  --line: #c2c9bf;
+  --line: #d6dad1;
+  --line-hi: #c2c9bf;
   --o0: #8a8078;
   --o1: #6f6459;
   --o2: #6f6459;
-  --text: #382b26;
+  --text: #2f2420;
   --sub1: #4a3d35;
   --sub0: #5c4f45;
   --blue: #3f6175;
@@ -116,6 +139,9 @@
   --yellow: #8a6a1e;
   --peach: #8a5a2e;
   --red: #97402f;
+  --on-accent: #f1f2ee;
+  --glow: 0.12;
+  --shadow: rgba(40, 30, 20, 0.28);
   color-scheme: light;
 }
 
@@ -125,20 +151,21 @@
 html { scroll-behavior: smooth; }
 body {
   margin: 0;
-  background: var(--base);
+  background: var(--ground);
   color: var(--text);
   font-family: var(--sans);
   font-size: 17px;
   line-height: 1.65;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  overflow-x: clip;
 }
 img, svg, video { max-width: 100%; height: auto; display: block; }
 a { color: var(--blue); text-decoration: none; transition: color var(--dur) var(--ease); }
 a:hover { color: var(--lav); }
 p { margin: 0 0 16px; }
 h1, h2, h3 { margin: 0; font-weight: 600; }
-code, kbd { font-family: var(--mono); }
+code, kbd { font-family: var(--mono); font-size: 0.9em; }
 
 :focus-visible {
   outline: 2px solid var(--blue);
@@ -148,43 +175,46 @@ code, kbd { font-family: var(--mono); }
 
 ::selection { background: color-mix(in srgb, var(--blue) 30%, transparent); }
 
-.wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+.wrap { max-width: 1160px; margin: 0 auto; padding: 0 24px; }
 .wrap-wide { max-width: 1360px; }
 .prose { max-width: 68ch; }
 
 /* ---------- Type roles ---------- */
 
 .display {
-  font-size: clamp(40px, 3.2vw + 24px, 64px);
-  line-height: 1.05;
-  letter-spacing: -0.02em;
-  font-weight: 600;
+  font-size: clamp(44px, 5.4vw + 18px, 92px);
+  line-height: 0.98;
+  letter-spacing: -0.045em;
+  font-weight: 640;
+  text-wrap: balance;
 }
 .h2 {
-  font-size: clamp(29px, 1.6vw + 20px, 40px);
-  line-height: 1.15;
-  letter-spacing: -0.015em;
-  font-weight: 600;
+  font-size: clamp(30px, 2.2vw + 18px, 48px);
+  line-height: 1.08;
+  letter-spacing: -0.03em;
+  font-weight: 620;
+  text-wrap: balance;
 }
 .h3 {
-  font-size: 22px;
+  font-size: 20px;
   line-height: 1.3;
-  letter-spacing: -0.01em;
-  font-weight: 550;
+  letter-spacing: -0.012em;
+  font-weight: 580;
 }
 .lead {
   font-size: clamp(18px, 0.5vw + 15px, 21px);
   line-height: 1.55;
   color: var(--sub1);
-  max-width: 62ch;
+  max-width: 58ch;
+  text-wrap: pretty;
 }
+/* Kept for the download and privacy pages. The home page labels with the
+   graph instead. */
 .eyebrow {
   display: block;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
   color: var(--sub0);
   margin-bottom: 12px;
 }
@@ -199,60 +229,87 @@ code, kbd { font-family: var(--mono); }
 /* ---------- Buttons and links ---------- */
 
 .btn {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
   background: var(--blue);
-  color: var(--crust);
+  color: var(--on-accent);
   font-family: var(--sans);
   font-size: 16px;
-  font-weight: 550;
+  font-weight: 580;
   line-height: 1;
-  padding: 14px 24px;
+  padding: 15px 22px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius);
   cursor: pointer;
-  transition: background var(--dur) var(--ease);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.35),
+    0 8px 28px -10px color-mix(in srgb, var(--blue) 70%, transparent);
+  transition: background var(--dur) var(--ease), box-shadow var(--dur) var(--ease), transform var(--dur) var(--ease);
 }
-.btn:hover { background: var(--lav); color: var(--crust); }
+.btn:hover {
+  background: var(--lav);
+  color: var(--on-accent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 10px 34px -8px color-mix(in srgb, var(--lav) 80%, transparent);
+}
+.btn:active { transform: translateY(1px); }
+.btn svg { width: 18px; height: 18px; flex: none; fill: currentColor; }
 .btn[aria-disabled="true"] {
   background: var(--s0);
   color: var(--o1);
   cursor: default;
   pointer-events: none;
+  box-shadow: none;
+}
+.btn-ghost {
+  background: transparent;
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--line-hi);
+}
+.btn-ghost:hover {
+  background: color-mix(in srgb, var(--s0) 60%, transparent);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--s1);
 }
 
-.textlink { font-weight: 500; }
-.textlink::after { content: " \2192"; }
-.textlink:hover { text-decoration: underline; text-underline-offset: 3px; }
+.textlink { font-weight: 520; }
+.textlink:hover { text-decoration: underline; text-underline-offset: 4px; }
 
 /* ---------- Nav ---------- */
 
+/* A floating bar rather than a ruled strip: it sits off the top edge so the
+   hero's ground runs up behind it. */
 .nav {
   position: sticky;
-  top: 0;
+  top: 12px;
   z-index: 10;
-  height: 64px;
-  background: color-mix(in srgb, var(--mantle) 80%, transparent);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border-bottom: 1px solid var(--line);
+  padding: 0 12px;
+  margin-top: 12px;
 }
 .nav-inner {
-  max-width: 1120px;
+  max-width: 1136px;
   margin: 0 auto;
-  padding: 0 24px;
-  height: 64px;
+  padding: 0 10px 0 18px;
+  height: 56px;
   display: flex;
   align-items: center;
   gap: 32px;
+  background: color-mix(in srgb, var(--base) 72%, transparent);
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  border: 1px solid var(--line);
+  border-radius: 14px;
 }
 .brand {
   display: flex;
   align-items: center;
   gap: 10px;
   color: var(--text);
-  font-weight: 600;
+  font-weight: 620;
   font-size: 17px;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
   margin-right: auto;
 }
 .brand:hover { color: var(--text); }
@@ -261,13 +318,19 @@ code, kbd { font-family: var(--mono); }
    mark collapsed to a 4px sliver and the theme toggle to a slice of its ring,
    while the text beside them kept every pixel. */
 .brand svg { width: 22px; height: 22px; flex: none; }
-.nav-links { display: flex; align-items: center; gap: 28px; }
+.nav-links { display: flex; align-items: center; gap: 6px; }
 .nav-links a {
   color: var(--sub1);
   font-size: 15px;
   font-weight: 500;
+  padding: 8px 12px;
+  border-radius: 8px;
+  transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
-.nav-links a:hover, .nav-links a[aria-current="page"] { color: var(--text); }
+.nav-links a:hover, .nav-links a[aria-current="page"] {
+  color: var(--text);
+  background: color-mix(in srgb, var(--s0) 55%, transparent);
+}
 
 /* Every link with a trailing glyph joined it with U+200A, which is a breakable
    space, and the nav is where it broke: on a phone "GitHub" held the line and
@@ -284,161 +347,376 @@ code, kbd { font-family: var(--mono); }
   color: var(--o1);
   font-size: 17px;
   line-height: 1;
-  padding: 8px;
-  border-radius: 6px;
+  padding: 10px;
+  border-radius: 8px;
   cursor: pointer;
-  transition: color var(--dur) var(--ease);
+  transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
-.theme-toggle:hover { color: var(--text); }
+.theme-toggle:hover { color: var(--text); background: color-mix(in srgb, var(--s0) 55%, transparent); }
 
 /* ---------- Sections ---------- */
 
-.section { padding: 128px 0; }
+.section { padding: 144px 0; }
 .section-band { background: var(--mantle); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
-.section + .section { border-top: 1px solid var(--line); }
+.section-head { max-width: 760px; margin-bottom: 64px; }
+.section-head .lead { margin-top: 20px; }
 
 /* ---------- Hero ---------- */
 
-.hero { padding: 96px 0 0; }
-.hero .lead { margin: 24px 0 32px; }
-.hero-cta { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
-.hero-meta { margin-top: 16px; }
-.hero-shot { margin-top: 64px; }
-/* Full bleed past the column, per the wireframe, once the viewport has room. */
-@media (min-width: 1281px) {
-  .hero-shot { margin-left: -120px; margin-right: -120px; }
+.hero { padding: 104px 0 0; position: relative; }
+.hero .lead { margin: 28px 0 36px; }
+.hero-cta { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+/* The facts a buyer checks before clicking, as a list rather than a
+   middle-dot string, so it wraps item by item on a phone. */
+.specs {
+  list-style: none;
+  margin: 22px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  font-size: 14px;
+  color: var(--sub0);
 }
+.specs li { display: inline-flex; align-items: center; gap: 8px; }
+.specs li::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--green);
+  opacity: 0.8;
+}
+
+/* The fork: one trunk under the call to action, six lanes landing on the
+   window's top edge. The SVG stretches to the column (preserveAspectRatio
+   none) and the strokes are non-scaling, so the curves keep a 2px line at any
+   width. The labels are HTML, positioned on the same percentages as the lane
+   ends, because text inside a stretched SVG would stretch with it. */
+.fork { position: relative; height: 150px; margin-top: 40px; }
+.fork svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.fork path {
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 0;
+}
+.fork .trunk { stroke: var(--o0); }
+.lane-1 { stroke: var(--blue); }
+.lane-2 { stroke: var(--mauve); }
+.lane-3 { stroke: var(--green); }
+.lane-4 { stroke: var(--peach); }
+.lane-5 { stroke: var(--teal); }
+.lane-6 { stroke: var(--yellow); }
+.fork-labels { list-style: none; margin: 0; padding: 0; }
+.fork-labels li {
+  position: absolute;
+  bottom: 14px;
+  transform: translateX(10px);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--sub0);
+  white-space: nowrap;
+}
+.fork-labels li:nth-child(1) { left: 8.333%; }
+.fork-labels li:nth-child(2) { left: 25%; }
+.fork-labels li:nth-child(3) { left: 41.667%; }
+.fork-labels li:nth-child(4) { left: 58.333%; }
+.fork-labels li:nth-child(5) { left: 75%; }
+.fork-labels li:nth-child(6) { left: 91.667%; }
+.fork-node {
+  position: absolute;
+  left: 0;
+  top: -6px;
+  width: 12px;
+  height: 12px;
+  margin-left: 1px;
+  border-radius: 50%;
+  background: var(--ground);
+  border: 2px solid var(--o0);
+}
+
+/* The page's one orchestrated motion: the lanes draw themselves once, on
+   load, trunk first. pathLength="1" on each path makes the dash maths a
+   fraction of its own length. */
+@media (prefers-reduced-motion: no-preference) {
+  .fork path { stroke-dashoffset: 1; animation: draw 1100ms var(--ease) forwards; }
+  .fork .trunk { animation-duration: 500ms; }
+  .fork .lane-1 { animation-delay: 380ms; }
+  .fork .lane-2 { animation-delay: 440ms; }
+  .fork .lane-3 { animation-delay: 500ms; }
+  .fork .lane-4 { animation-delay: 560ms; }
+  .fork .lane-5 { animation-delay: 620ms; }
+  .fork .lane-6 { animation-delay: 680ms; }
+  .fork-labels li { opacity: 0; animation: fade 500ms var(--ease) 1100ms forwards; }
+}
+@keyframes draw { to { stroke-dashoffset: 0; } }
+@keyframes fade { to { opacity: 1; } }
+
+/* ---------- The window: the app, playing ---------- */
+
+.stage { position: relative; }
+/* One soft wash of the lane colours under the window, so the six lines look
+   like they light it. Decoration, but the only piece of it on the page. */
+.stage::before {
+  content: "";
+  position: absolute;
+  inset: 6% 4% -4%;
+  z-index: -1;
+  background:
+    radial-gradient(40% 60% at 25% 40%, color-mix(in srgb, var(--blue) 100%, transparent), transparent 70%),
+    radial-gradient(40% 60% at 75% 45%, color-mix(in srgb, var(--mauve) 100%, transparent), transparent 70%),
+    radial-gradient(35% 50% at 50% 90%, color-mix(in srgb, var(--teal) 100%, transparent), transparent 70%);
+  opacity: var(--glow);
+  filter: blur(60px);
+}
+.window {
+  position: relative;
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--base);
+  border: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.35),
+    0 40px 90px -30px var(--shadow),
+    0 18px 40px -20px var(--shadow);
+}
+.window video, .window img { width: 100%; height: auto; display: block; aspect-ratio: 16 / 10; object-fit: cover; }
+.media-toggle {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  font: 500 13px/1 var(--sans);
+  color: #cdd6f4;
+  background: rgba(17, 17, 27, 0.72);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(205, 214, 244, 0.16);
+  border-radius: 999px;
+  padding: 8px 14px;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity var(--dur) var(--ease);
+}
+.media-toggle:hover, .media-toggle:focus-visible { opacity: 1; }
 
 /* Screenshots carry their own window chrome, rounded corners included, in the
    image's alpha. `drop-shadow` traces that silhouette, so the shadow follows
    the window's real corners at every column width. `box-shadow` traced the
-   element's rectangle instead, and the captures used to carry a baked drop
-   shadow in a transparent margin around the window, which made the rectangle
-   ~27px wider than the window on each side and 53px taller below. On the light
-   ground that composited to a convincing shadow and hid the mismatch. On the
-   dark ground it composited to a flat box a few steps darker than the page,
-   with square edges and no relation to the corners inside it, while the CSS
-   shadow underneath it was black on near-black and invisible. The margin is
-   cropped out of the images now; a `border-radius` here cannot replace it,
-   because the image scales with the column and a CSS radius does not. */
+   element's rectangle instead, and on the dark ground that composited to a
+   flat box with square edges and no relation to the corners inside it. The
+   captures are cropped to the window itself for the same reason; a CSS
+   `border-radius` cannot replace that, because the image scales with the
+   column and a CSS radius does not. */
 .shot img {
   width: 100%;
   display: block;
-  filter: drop-shadow(0 16px 36px rgba(0, 0, 0, 0.55));
-}
-:root[data-theme="light"] .shot img {
-  filter: drop-shadow(0 12px 30px rgba(0, 0, 0, 0.22));
-}
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) .shot img {
-    filter: drop-shadow(0 12px 30px rgba(0, 0, 0, 0.22));
-  }
+  filter: drop-shadow(0 24px 48px var(--shadow));
 }
 
 /* ---------- Agent strip ---------- */
 
-.strip { padding: 48px 0; text-align: center; }
-.strip .eyebrow { margin-bottom: 16px; }
-.strip-names {
-  font-family: var(--mono);
-  font-size: 15px;
-  line-height: 2;
-  color: var(--sub0);
-  max-width: 56ch;
-  margin: 0 auto;
+.strip { padding: 72px 0 0; }
+.strip-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: 40px;
+  align-items: start;
+  border-top: 1px solid var(--line);
+  padding-top: 32px;
 }
-.strip-names .dot { color: var(--o0); padding: 0 6px; }
-.strip-note { margin: 16px auto 0; max-width: 60ch; font-size: 15px; color: var(--sub0); }
+.strip-row p { color: var(--sub0); font-size: 15px; margin: 0; max-width: 34ch; }
+.strip-names {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.strip-names li {
+  font-family: var(--mono);
+  font-size: 13.5px;
+  color: var(--sub1);
+  padding: 6px 12px;
+  border: 1px solid var(--line-hi);
+  border-radius: 999px;
+}
 
 /* ---------- Local-first block ---------- */
 
+.local { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 64px; align-items: end; }
 .local-lines {
-  font-size: clamp(29px, 1.6vw + 20px, 40px);
-  line-height: 1.3;
-  letter-spacing: -0.015em;
-  font-weight: 600;
-  margin: 40px 0;
+  font-size: clamp(34px, 3vw + 18px, 64px);
+  line-height: 1.04;
+  letter-spacing: -0.04em;
+  font-weight: 640;
+  margin: 0;
 }
 .local-lines span { display: block; }
-.local-body { max-width: 64ch; color: var(--sub1); }
+.local-lines span + span { color: var(--o1); }
+.local-body { max-width: 52ch; color: var(--sub1); }
+.local-body p:last-of-type { margin-bottom: 24px; }
 
-/* ---------- Alternating blocks ---------- */
+/* ---------- The workflow: one spine, a node per step ---------- */
 
-/* The image always takes the 8fr track. A flipped block swaps the template
-   too; ordering alone was observed shrinking the image into the text side. */
-.alt {
-  display: grid;
-  grid-template-columns: 8fr 4fr;
-  gap: 40px;
-  align-items: center;
+.flow { position: relative; }
+/* The spine runs through every node centre: 12px is half the 24px node. */
+.flow::before {
+  content: "";
+  position: absolute;
+  left: 11px;
+  top: 12px;
+  bottom: 0;
+  width: 2px;
+  background: linear-gradient(to bottom, var(--o0), color-mix(in srgb, var(--o0) 0%, transparent));
+  opacity: 0.55;
 }
-.alt + .alt { margin-top: 128px; }
-.alt.flip { grid-template-columns: 4fr 8fr; }
-.alt.flip .alt-media { order: 2; }
-.alt-text .h2 { margin-bottom: 16px; }
-.alt-text .body { color: var(--sub1); margin-bottom: 24px; }
+.step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 4fr) minmax(0, 8fr);
+  column-gap: 40px;
+  align-items: start;
+}
+.step + .step { margin-top: 136px; }
+.step-node {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--ground);
+  border: 2px solid var(--c, var(--blue));
+  box-shadow: 0 0 0 6px var(--ground), 0 0 22px -2px color-mix(in srgb, var(--c, var(--blue)) 60%, transparent);
+  margin-top: 4px;
+}
+.step-node::after {
+  content: "";
+  display: block;
+  width: 8px;
+  height: 8px;
+  margin: 6px;
+  border-radius: 50%;
+  background: var(--c, var(--blue));
+}
+.step-text .step-label {
+  display: block;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--c, var(--blue));
+  margin-bottom: 14px;
+}
+.step-text .h2 { font-size: clamp(28px, 1.4vw + 18px, 38px); margin-bottom: 18px; }
+.step-text .body { color: var(--sub1); margin-bottom: 24px; }
+.step-media { margin-top: 2px; }
 .points { list-style: none; margin: 0; padding: 0; }
 .points li {
   position: relative;
-  padding-left: 28px;
+  padding-left: 22px;
   margin-bottom: 10px;
   color: var(--sub1);
   font-size: 15px;
   line-height: 1.6;
 }
 .points li::before {
-  content: "\2713";
+  content: "";
   position: absolute;
-  left: 0;
-  color: var(--blue);
-  opacity: 0.7;
+  left: 2px;
+  top: 0.62em;
+  width: 8px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--c, var(--blue));
 }
 
-/* ---------- Card grid ---------- */
+/* ---------- The rest, as a ruled grid ---------- */
 
-.cards {
+/* A hairline grid rather than six floating cards: the 1px gaps show the
+   line colour behind, so the rules are always exactly one pixel and meet. */
+.grid6 {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
-}
-.card {
-  background: var(--s0);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--line);
   border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 24px;
-  transition: border-color var(--dur) var(--ease);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
 }
-.card:hover { border-color: var(--s1); }
-.card-glyph {
-  font-size: 20px;
+.cell { background: var(--ground); padding: 32px 30px 34px; }
+.cell-glyph {
+  font-family: var(--mono);
+  font-size: 22px;
   line-height: 1;
   color: var(--o2);
-  font-family: var(--mono);
-  margin-bottom: 16px;
+  margin-bottom: 22px;
 }
-.card .h3 { margin-bottom: 8px; }
-.card p { color: var(--sub1); font-size: 15px; line-height: 1.6; margin: 0; }
+.cell .h3 { margin-bottom: 8px; }
+.cell p { color: var(--sub1); font-size: 15px; line-height: 1.6; margin: 0; }
 
-/* ---------- Closing CTA ---------- */
+/* ---------- Tour video ---------- */
 
-.closing { text-align: center; }
-.closing .h2 { margin-bottom: 32px; }
-.closing-cta { display: flex; justify-content: center; align-items: center; gap: 24px; flex-wrap: wrap; }
+.tour .window video { aspect-ratio: 16 / 9; }
+
+/* ---------- Proof: the commit history ---------- */
+
+.proof { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 64px; align-items: center; }
+.proof-figures { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--radius-lg); overflow: hidden; }
+.figure { background: var(--mantle); padding: 28px 28px 30px; margin: 0; }
+.figure b {
+  display: block;
+  font-size: clamp(44px, 3vw + 24px, 72px);
+  line-height: 1;
+  letter-spacing: -0.045em;
+  font-weight: 640;
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 12px;
+}
+.figure:first-child b { color: var(--green); }
+.figure span { color: var(--sub0); font-size: 15px; line-height: 1.5; display: block; }
+.proof-body .lead { margin: 20px 0 16px; }
+.proof-body p { color: var(--sub1); max-width: 54ch; }
+
+/* ---------- FAQ ---------- */
+
+.faq { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 64px; }
+.qa { padding: 28px 0 8px; border-top: 1px solid var(--line); }
+.qa .h3 { margin-bottom: 10px; }
+.qa p { color: var(--sub1); font-size: 16px; line-height: 1.65; }
+
+/* ---------- Closing CTA: the lanes merge back ---------- */
+
+.closing { text-align: center; padding-top: 0; }
+.merge { position: relative; height: 150px; max-width: 1112px; margin: 0 auto 8px; }
+.merge svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.merge path { fill: none; stroke-width: 2; stroke-linecap: round; vector-effect: non-scaling-stroke; opacity: 0.85; }
+.merge .trunk { stroke: var(--o0); }
+.merge-node {
+  width: 18px;
+  height: 18px;
+  margin: 0 auto 36px;
+  border-radius: 50%;
+  border: 2px solid var(--green);
+  background: var(--ground);
+  box-shadow: 0 0 0 6px var(--ground), 0 0 30px 2px color-mix(in srgb, var(--green) 50%, transparent);
+}
+.closing .h2 { margin-bottom: 20px; font-size: clamp(36px, 3.4vw + 18px, 72px); letter-spacing: -0.04em; }
+.closing .lead { margin: 0 auto 36px; }
+.closing-cta { display: flex; justify-content: center; align-items: center; gap: 12px; flex-wrap: wrap; }
 .closing-note { margin-top: 24px; font-size: 15px; color: var(--sub0); }
 
 /* ---------- Footer ---------- */
 
 .footer {
-  background: var(--mantle);
   border-top: 1px solid var(--line);
-  padding: 64px 0;
+  padding: 56px 0 64px;
 }
-.footer-inner { display: flex; flex-direction: column; gap: 16px; }
-.footer .brand { margin-right: 0; }
+.footer-inner { display: flex; flex-wrap: wrap; align-items: center; gap: 16px 40px; }
+.footer .brand { margin-right: auto; }
 .footer-links { display: flex; gap: 24px; }
 .footer-links a { color: var(--sub1); font-size: 15px; }
 .footer-links a:hover { color: var(--text); }
-.footer-fine { font-size: 14px; color: var(--sub0); margin: 0; }
+.footer-fine { font-size: 14px; color: var(--sub0); margin: 0; flex-basis: 100%; }
 
 /* ---------- Download page ---------- */
 
@@ -490,9 +768,9 @@ code, kbd { font-family: var(--mono); }
   text-align: left;
 }
 .dl-card {
-  background: var(--s0);
+  background: var(--mantle);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   padding: 24px;
 }
 .dl-card .h3 { margin-bottom: 12px; }
@@ -514,6 +792,58 @@ code, kbd { font-family: var(--mono); }
 }
 .page p { color: var(--sub1); max-width: 68ch; }
 .page .lead { color: var(--sub1); }
+
+/* ---------- Guides ---------- */
+
+.guide .wrap { max-width: 780px; }
+.guide-date { margin: 0 0 20px; }
+.guide .display { font-size: clamp(40px, 3.6vw + 18px, 68px); margin-bottom: 28px; }
+.guide .lead { margin-bottom: 20px; }
+.guide h3 { font-size: 19px; letter-spacing: -0.01em; margin: 0 0 8px; }
+.guide .dl-cmd { margin: 12px 0 14px; white-space: pre; }
+.guide .points { margin: 0 0 16px; }
+.guide .points li { font-size: 16px; }
+/* The steps really are a sequence, so they are numbered; the number sits on
+   the same spine-and-node device the home page uses for its workflow. */
+.steps { list-style: none; counter-reset: step; margin: 24px 0 0; padding: 0; }
+.steps > li {
+  counter-increment: step;
+  position: relative;
+  padding: 0 0 28px 48px;
+}
+.steps > li::before {
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid var(--blue);
+  color: var(--blue);
+  font: 600 13px/24px var(--mono);
+  text-align: center;
+  background: var(--ground);
+}
+.steps > li::after {
+  content: "";
+  position: absolute;
+  left: 13px;
+  top: 32px;
+  bottom: 4px;
+  width: 2px;
+  background: var(--line-hi);
+}
+.steps > li:last-child::after { display: none; }
+.steps p { color: var(--sub1); }
+.table-wrap { overflow-x: auto; margin: 8px 0 24px; border: 1px solid var(--line); border-radius: var(--radius); }
+.guide table { width: 100%; border-collapse: collapse; font-size: 15px; line-height: 1.5; min-width: 560px; }
+.guide th, .guide td { text-align: left; vertical-align: top; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.guide th { font-weight: 600; color: var(--text); background: var(--mantle); }
+.guide td { color: var(--sub1); }
+.guide tr:last-child td { border-bottom: 0; }
+.guide td:first-child { color: var(--text); font-weight: 520; }
+.guide-cta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 48px; padding-top: 40px; border-top: 1px solid var(--line); }
 
 /* ---------- 404 ---------- */
 
@@ -544,34 +874,37 @@ code, kbd { font-family: var(--mono); }
 /* ---------- Responsive ---------- */
 
 @media (max-width: 1024px) {
-  .section { padding: 80px 0; }
-  .alt, .alt.flip { grid-template-columns: 1fr; gap: 32px; }
-  .alt.flip .alt-media { order: 0; }
-  .alt + .alt { margin-top: 80px; }
-  .cards { grid-template-columns: 1fr 1fr; }
+  .section { padding: 96px 0; }
+  .step { grid-template-columns: 24px minmax(0, 1fr); row-gap: 32px; column-gap: 24px; }
+  .step-media { grid-column: 2; }
+  .step + .step { margin-top: 96px; }
+  .grid6 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .local, .proof { grid-template-columns: 1fr; gap: 40px; align-items: start; }
+  .strip-row { grid-template-columns: 1fr; gap: 20px; }
+  .faq { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 760px) {
+  /* Six labels do not fit a phone; the lanes alone still say "many". */
+  .fork-labels { display: none; }
+  .fork, .merge { height: 96px; }
 }
 
 @media (max-width: 640px) {
-  .section { padding: 64px 0; }
+  .section { padding: 72px 0; }
   .hero { padding: 64px 0 0; }
-  .cards { grid-template-columns: 1fr; }
+  .grid6 { grid-template-columns: 1fr; }
   .dl-cards { grid-template-columns: 1fr; }
   .dl-files { grid-template-columns: 1fr; }
-  /* Five items at the desktop's 15px labels and 28px gaps do not fit a phone.
-     Tightened this far the row holds on one line down to 340px; below that it
-     overruns the gutter (20px over at 320px, where .strip-names already
-     scrolls the page sideways anyway). */
-  .nav-inner { gap: 12px; }
-  .nav-links { gap: 12px; }
-  .nav-links a { font-size: 14px; }
-  .theme-toggle { padding: 6px; }
-  /* Nowrap would trade that wrap for an overflow: with the label shown the
-     links measure 239px and clear no phone's gutter, 1px over at 390 and 16px
-     over at 375. The mark carries the link on its own here, and the label is
-     clipped rather than display: none so the link keeps its accessible name.
-     The padding gives the 16px mark a 32px touch target; the negative margin
-     keeps that off the gaps either side. */
-  .nav-links .gh-link { padding: 8px; margin: -8px; }
+  .proof-figures { grid-template-columns: 1fr; }
+  .nav { padding: 0 8px; top: 8px; margin-top: 8px; }
+  .nav-inner { gap: 8px; padding: 0 6px 0 14px; }
+  .nav-links { gap: 0; }
+  .nav-links a { font-size: 14px; padding: 8px 8px; }
+  .theme-toggle { padding: 8px; }
+  /* With the label shown the links overrun every phone's gutter. The mark
+     carries the link on its own here, and the label is clipped rather than
+     display: none so the link keeps its accessible name. */
   .nav-links .gh-label {
     position: absolute;
     width: 1px;
@@ -579,10 +912,10 @@ code, kbd { font-family: var(--mono); }
     overflow: hidden;
     clip-path: inset(50%);
   }
-  /* The hero screenshot is the one place a horizontal scroll container is
-     acceptable, so the app window stays legible instead of shrinking. */
-  .hero-shot { overflow-x: auto; }
-  .hero-shot img { min-width: 720px; }
+  .hero-cta .btn { flex: 1 1 auto; justify-content: center; }
+  .window { border-radius: 10px; }
+  .media-toggle { right: 8px; bottom: 8px; padding: 6px 10px; font-size: 12px; }
+  .cell { padding: 26px 22px 28px; }
 }
 
 /* ---------- Motion ---------- */

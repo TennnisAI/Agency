@@ -3,18 +3,20 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Agency · run coding agents locally, side by side</title>
-<meta name="description" content="Agency is a free app for macOS and Linux that runs AI coding agents side by side on your own machine. Each agent gets a real terminal, its own git worktree, and its own branch. No account, no telemetry.">
+<title>Agency · run AI coding agents in parallel, each on its own branch</title>
+<meta name="description" content="Agency is a free, open-source desktop app for macOS and Linux that runs AI coding agents in parallel. Claude Code, Codex, Gemini CLI and more each get a real terminal, their own git worktree and branch. No account, no telemetry.">
 <link rel="canonical" href="https://getagency.dev/">
-<meta property="og:title" content="Agency · run coding agents locally, side by side">
-<meta property="og:description" content="Agency runs every coding agent you use, side by side, on your own machine.">
+<meta property="og:title" content="Agency · run AI coding agents in parallel, each on its own branch">
+<meta property="og:description" content="A free, open-source desktop app that runs the coding agent CLIs you already use side by side, each in its own git worktree and branch.">
+<meta property="og:image" content="https://getagency.dev/assets/img/og.jpg">
+<meta name="twitter:card" content="summary_large_image">
 <meta property="og:url" content="https://getagency.dev/">
 <meta property="og:type" content="website">
 <link rel="icon" href="/assets/img/agency-icon.svg" type="image/svg+xml">
 <link rel="icon" href="/assets/img/agency-icon-32.png" sizes="32x32" type="image/png">
 <link rel="apple-touch-icon" href="/assets/img/agency-icon-180.png">
 <link rel="preload" href="/assets/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="/assets/img/shot-overview.webp" as="image" type="image/webp">
+<link rel="preload" href="/assets/video/hero-poster.webp" as="image" type="image/webp">
 <link rel="stylesheet" href="/assets/css/site.css">
 <script>
 (function () {
@@ -25,6 +27,44 @@
     }
   } catch (e) {}
 })();
+</script>
+<script type="application/ld+json">
+[
+ {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Agency",
+  "url": "https://getagency.dev/",
+  "description": "A free, open-source desktop app that runs AI coding agent CLIs in parallel, each in its own git worktree and branch, with diff review and merge in one window.",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "macOS 11 or later (Apple Silicon), Linux (x86_64, arm64)",
+  "softwareVersion": "0.2.3",
+  "license": "https://www.apache.org/licenses/LICENSE-2.0",
+  "isAccessibleForFree": true,
+  "offers": {
+   "@type": "Offer",
+   "price": "0",
+   "priceCurrency": "USD"
+  },
+  "downloadUrl": "https://getagency.dev/download",
+  "codeRepository": "https://github.com/TennnisAI/Agency",
+  "image": "https://getagency.dev/assets/img/og.jpg",
+  "author": {
+   "@type": "Organization",
+   "name": "Tennnis",
+   "url": "https://tennnis.no"
+  }
+ },
+ {
+  "@context": "https://schema.org",
+  "@type": "Organization",
+  "name": "Tennnis",
+  "url": "https://tennnis.no",
+  "sameAs": [
+   "https://github.com/TennnisAI"
+  ]
+ }
+]
 </script>
 </head>
 <body>
@@ -53,192 +93,361 @@
 
 <section class="hero">
   <div class="wrap">
-    <h1 class="display">Many agents. Many branches.<br>One window.</h1>
-    <p class="lead">Agency runs the coding agent CLIs you already use, side by side on
-    your own machine. Each one gets a real terminal, its own git worktree, and its
-    own branch.</p>
+    <h1 class="display">Many agents.<br>Many branches.<br>One window.</h1>
+    <p class="lead">Agency is a free, open-source desktop app that runs AI coding agents in
+    parallel on your own machine. Claude Code, Codex, Gemini CLI and the other agent CLIs
+    you already use each get a real terminal, their own git worktree and their own branch.
+    You read the diffs and merge the good ones.</p>
     <div class="hero-cta">
       <a class="btn" href="/download">Download for macOS and Linux</a>
+      <a class="btn btn-ghost" href="https://github.com/TennnisAI/Agency"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>Source on GitHub</a>
     </div>
-    <p class="meta hero-meta">v0.2.3<span class="dot">&middot;</span> macOS 11 or later, Apple Silicon <span class="dot">&middot;</span> Linux, x86_64 and arm64 <span class="dot">&middot;</span> free <span class="dot">&middot;</span> no account</p>
-    <div class="hero-shot shot">
-      <img src="/assets/img/shot-overview.webp" width="2560" height="1588"
-        alt="The Agency window showing the all-projects overview: 18 projects and 12 agents, with live terminal output from several Claude Code runs and a Cursor agent, each on its own agent branch.">
+    <ul class="specs" aria-label="At a glance">
+      <li>v0.2.3, in beta</li>
+      <li>macOS 11 or later, Apple Silicon</li>
+      <li>Linux, x86_64 and arm64</li>
+      <li>Free and Apache-2.0</li>
+      <li>No account</li>
+    </ul>
+
+    <div class="fork" aria-hidden="true">
+      <span class="fork-node"></span>
+      <svg viewBox="0 0 1200 150" preserveAspectRatio="none">
+        <path class="trunk" pathLength="1" d="M7 0 V36"/>
+        <path class="lane-1" pathLength="1" d="M7 36 C7 96 100 84 100 150"/>
+        <path class="lane-2" pathLength="1" d="M7 36 C7 96 300 84 300 150"/>
+        <path class="lane-3" pathLength="1" d="M7 36 C7 96 500 84 500 150"/>
+        <path class="lane-4" pathLength="1" d="M7 36 C7 96 700 84 700 150"/>
+        <path class="lane-5" pathLength="1" d="M7 36 C7 96 900 84 900 150"/>
+        <path class="lane-6" pathLength="1" d="M7 36 C7 96 1100 84 1100 150"/>
+      </svg>
+      <ul class="fork-labels">
+        <li>claude</li>
+        <li>codex</li>
+        <li>gemini</li>
+        <li>opencode</li>
+        <li>cursor-agent</li>
+        <li>copilot</li>
+      </ul>
+    </div>
+
+    <div class="stage">
+      <div class="window">
+        <video id="hero-video" autoplay muted loop playsinline preload="auto"
+          width="1920" height="1200" poster="/assets/video/hero-poster.webp"
+          aria-label="Agency running several coding agents at once, each in its own terminal and branch, then an issue being dispatched, a diff being reviewed and a branch merged.">
+          <source src="/assets/video/hero.mp4" type="video/mp4">
+          <source src="/assets/video/hero.webm" type="video/webm">
+        </video>
+        <button class="media-toggle" id="hero-toggle" type="button" hidden>Pause</button>
+      </div>
     </div>
   </div>
 </section>
 
 <section class="strip">
   <div class="wrap">
-    <span class="eyebrow">Works with what you already run</span>
-    <p class="strip-names">Claude Code<span class="dot">&middot;</span>Codex<span class="dot">&middot;</span>Pi<span class="dot">&middot;</span>OpenCode<span class="dot">&middot;</span>Copilot CLI<span class="dot">&middot;</span>Cursor<span class="dot">&middot;</span>Hermes<span class="dot">&middot;</span>Gemini CLI<span class="dot">&middot;</span>Kimi Code<span class="dot">&middot;</span>Crush<span class="dot">&middot;</span>DeepSeek Harness</p>
-    <p class="strip-note">Agency finds what is on your PATH and offers to install what is not.
-    Your keys and subscriptions, unchanged.</p>
+    <div class="strip-row">
+      <p>Bring the agents you already pay for. Agency finds what is on your PATH and
+      offers to install what is not. Your keys and subscriptions stay as they are.</p>
+      <ul class="strip-names" aria-label="Supported agent CLIs">
+        <li>Claude Code</li>
+        <li>Codex</li>
+        <li>Gemini CLI</li>
+        <li>OpenCode</li>
+        <li>Cursor</li>
+        <li>Copilot CLI</li>
+        <li>Kimi Code</li>
+        <li>Crush</li>
+        <li>Hermes</li>
+        <li>Pi</li>
+        <li>DeepSeek Harness</li>
+        <li>any other CLI</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="how-it-works">
+  <div class="wrap wrap-wide">
+    <div class="section-head">
+      <h2 class="h2">From an issue to a merged branch</h2>
+      <p class="lead">Write the task down, give the agent the context, let several run at
+      once, and read every change before it lands on your base branch.</p>
+    </div>
+
+    <div class="flow">
+      <article class="step step-plan">
+        <div class="step-node" aria-hidden="true"></div>
+        <div class="step-text">
+          <span class="step-label">1 plan</span>
+          <h3 class="h2">Your tracker is a folder of markdown files</h3>
+          <p class="body">Issues live in your project as plain files. That is why an agent
+          can work them: picking one up, changing its status, commenting and filing a
+          follow-up are all just edits.</p>
+          <ul class="points">
+            <li>Dispatch an issue to an agent and it moves to In progress</li>
+            <li>Open a PR and it moves to In review. Merge and it closes</li>
+            <li>Comments, links, attachments and due dates, all in the file</li>
+          </ul>
+        </div>
+        <div class="step-media shot">
+          <img src="/assets/img/shot-issues.webp" width="2400" height="1500" loading="lazy"
+            alt="The Issues tab: a board grouped by Backlog, Todo, In progress and In review, with an issue open beside it showing its acceptance criteria, a comment and a linked issue.">
+        </div>
+      </article>
+
+      <article class="step step-context">
+        <div class="step-node" aria-hidden="true"></div>
+        <div class="step-text">
+          <span class="step-label">2 context</span>
+          <h3 class="h2">Notes your agents can actually read</h3>
+          <p class="body">A wiki that lives in your repo, with wikilinks, backlinks, tags,
+          an outline and a quick switcher, plus a journal with daily notes and a weekly
+          note built from what actually happened.</p>
+          <ul class="points">
+            <li>Hand a note to an agent and watch the page update as it writes</li>
+            <li>Put an agent in the side panel of the note you are working on</li>
+            <li>Keep a notes-only workspace with no code in it at all</li>
+          </ul>
+        </div>
+        <div class="step-media shot">
+          <img src="/assets/img/shot-docs.webp" width="2400" height="1500" loading="lazy"
+            alt="The Docs tab: an architecture note open with its properties, headings and a task list, the notes tree on the left, and the note's outline and backlinks on the right.">
+        </div>
+      </article>
+
+      <article class="step step-run">
+        <div class="step-node" aria-hidden="true"></div>
+        <div class="step-text">
+          <span class="step-label">3 run</span>
+          <h3 class="h2">Six agents, six branches, no collisions</h3>
+          <p class="body">Every run opens in its own git worktree: a second checkout of the
+          same repo on its own branch. Agents working the same project never touch each
+          other's files. Watch them all in a grid, or pull one full size when it needs
+          you.</p>
+          <ul class="points">
+            <li>Different agent CLIs on the same repo at the same time</li>
+            <li>Plain terminals alongside, in the project checkout, when you want one</li>
+            <li>Desktop alerts when an agent finishes, stalls on a question or hits a conflict</li>
+          </ul>
+        </div>
+        <div class="step-media shot">
+          <img src="/assets/img/shot-grid.webp" width="2400" height="1500" loading="lazy"
+            alt="The Agents grid: six agents working one repo at once, Claude Code, Codex, Gemini CLI, OpenCode, Cursor and Pi, each tile showing its branch, its diff size and its live terminal.">
+        </div>
+      </article>
+
+      <article class="step step-review">
+        <div class="step-node" aria-hidden="true"></div>
+        <div class="step-text">
+          <span class="step-label">4 review</span>
+          <h3 class="h2">Read the diff before you trust it</h3>
+          <p class="body">Per-hunk diffs, commit, history, branches and stash for whichever
+          worktree you are standing in. Review a pull request, open one, merge it, and
+          resolve the conflicts when two agents reach for the same lines.</p>
+          <ul class="points">
+            <li>Per-run diffs, so you review one agent's work at a time</li>
+            <li>Comment on a diff and send it straight back to the agent</li>
+          </ul>
+        </div>
+        <div class="step-media shot">
+          <img src="/assets/img/shot-merge.webp" width="2400" height="1500" loading="lazy"
+            alt="Source Control Changes: a side-by-side diff of an agent's fix to a flaky test, the commit form for its branch, and the branch history below.">
+        </div>
+      </article>
+    </div>
   </div>
 </section>
 
 <section class="section section-band">
   <div class="wrap">
-    <h2 class="h2">Nothing of yours comes to us</h2>
-    <p class="local-lines">
-      <span>No account.</span>
-      <span>No vendor backend.</span>
-      <span>No analytics, no telemetry.</span>
-    </p>
-    <div class="local-body">
-      <p>There is no server of ours for it to talk to. Nothing to sign up for:
-      download it, open it, point it at a repo. The agents are third party and
-      talk to their own providers.</p>
-      <a class="textlink" href="/privacy">Read the privacy page</a>
-    </div>
-  </div>
-</section>
-
-<section class="section">
-  <div class="wrap wrap-wide">
-
-    <div class="alt">
-      <div class="alt-media shot">
-        <img src="/assets/img/shot-focus.webp" width="2346" height="1404" loading="lazy"
-          alt="An agent in focus view: Claude Code working an issue in its own worktree, the run rail on the left listing other agents, and the changes and commit history panel on the right with an Approve button.">
-      </div>
-      <div class="alt-text">
-        <span class="eyebrow">Parallel by default</span>
-        <h2 class="h2">Six agents, six branches, no collisions</h2>
-        <p class="body">Every run opens in its own git worktree, so agents working the same
-        repo never touch each other's files. Watch them all in a grid, or
-        pull one full size when it needs you.</p>
-        <ul class="points">
-          <li>Different agent types on the same repo at the same time</li>
-          <li>Plain terminals alongside, in the project checkout, when you want one</li>
-          <li>Worktrees are the default, not a requirement</li>
-        </ul>
+    <div class="local">
+      <h2 class="local-lines">
+        <span>No account.</span>
+        <span>No vendor backend.</span>
+        <span>No telemetry.</span>
+      </h2>
+      <div class="local-body">
+        <p>Agency does no first-party data collection, and there is no server of ours for
+        it to talk to. The agents are third party and talk to their own providers, the
+        same as when you run them in a terminal.</p>
+        <p>The one request Agency makes on its own is a check against GitHub for a newer
+        release. It sends no identifiers, and one switch in Settings turns it off.</p>
+        <a class="textlink" href="/privacy">Read the privacy page</a>
       </div>
     </div>
-
-    <div class="alt flip">
-      <div class="alt-media shot">
-        <img src="/assets/img/shot-issues.webp" width="2352" height="1390" loading="lazy"
-          alt="The Issues tab: a board grouped by Todo, In progress and Done, with an open issue detail showing the body, properties, priority and linked mentions.">
-      </div>
-      <div class="alt-text">
-        <span class="eyebrow">Issues</span>
-        <h2 class="h2">Your tracker is a folder of markdown files</h2>
-        <p class="body">Issues live in your project as files. That is why an agent can work
-        them: picking one up, changing its status, adding a comment and
-        filing a follow-up are all just edits.</p>
-        <ul class="points">
-          <li>Dispatch an issue to an agent and it moves to In progress</li>
-          <li>Open a PR and it moves to In review. Merge and it closes</li>
-          <li>Comments, links, attachments and due dates, all in the file</li>
-        </ul>
-      </div>
-    </div>
-
-    <div class="alt">
-      <div class="alt-media shot">
-        <img src="/assets/img/shot-docs.webp" width="2400" height="1387" loading="lazy"
-          alt="The Docs tab: a rendered markdown design note open in the editor with the notes tree on the left, and the note's properties, outline and backlinks in the panel on the right.">
-      </div>
-      <div class="alt-text">
-        <span class="eyebrow">Docs</span>
-        <h2 class="h2">Notes your agents can actually read</h2>
-        <p class="body">A wiki that lives in your repo. Wikilinks, backlinks, tags,
-        properties, an outline and a quick switcher, plus a journal with
-        daily notes and a weekly note generated from what actually happened.</p>
-        <ul class="points">
-          <li>Hand a note to an agent and watch the page update as it writes</li>
-          <li>Put an agent in the side panel of the note you are working on</li>
-          <li>Keep a notes-only workspace with no code in it at all</li>
-        </ul>
-      </div>
-    </div>
-
-    <div class="alt flip">
-      <div class="alt-media shot">
-        <img src="/assets/img/shot-merge.webp" width="2352" height="1389" loading="lazy"
-          alt="Source Control Changes: a side-by-side diff open for review, the commit form for the agent branch, and the branch history graph below.">
-      </div>
-      <div class="alt-text">
-        <span class="eyebrow">Review</span>
-        <h2 class="h2">Read the diff before you trust it</h2>
-        <p class="body">Staged changes, per-hunk diffs, commit, history, branches and stash,
-        for whichever worktree you are standing in. Review a pull request,
-        create one, merge it, and resolve the conflicts when two agents
-        reach for the same lines.</p>
-        <ul class="points">
-          <li>Per-run diffs, so you review one agent's work at a time</li>
-          <li>Comment on a diff and send it straight back to the agent</li>
-        </ul>
-      </div>
-    </div>
-
   </div>
 </section>
 
 <section class="section">
   <div class="wrap">
-    <div class="cards">
-      <div class="card">
-        <div class="card-glyph" aria-hidden="true">&#x2273;&#xFE0E;</div>
+    <div class="section-head">
+      <h2 class="h2">The parts you notice on day two</h2>
+    </div>
+    <div class="grid6">
+      <div class="cell">
+        <div class="cell-glyph" aria-hidden="true">&#x2273;&#xFE0E;</div>
         <h3 class="h3">Terminal first</h3>
-        <p>Agency does not reimplement your agent. It spawns the CLI you already use in
-        a real terminal, TUI and all.</p>
+        <p>Agency does not reimplement your agent. It spawns the CLI you already use in a
+        real terminal, TUI and all, and you can type into it.</p>
       </div>
-      <div class="card">
-        <div class="card-glyph" aria-hidden="true">&#x21CB;&#xFE0E;</div>
+      <div class="cell">
+        <div class="cell-glyph" aria-hidden="true">&#x21CB;&#xFE0E;</div>
         <h3 class="h3">Agent agnostic</h3>
         <p>Eleven agent CLIs built in, and any other you can launch from a command line.
         Bring your own keys.</p>
       </div>
-      <div class="card">
-        <div class="card-glyph" aria-hidden="true">&#x25A6;&#xFE0E;</div>
+      <div class="cell">
+        <div class="cell-glyph" aria-hidden="true">&#x25A6;&#xFE0E;</div>
         <h3 class="h3">Many projects, one window</h3>
         <p>Set agents going on one project, switch to the next, and come back when they
         are done. One home screen covers all of them.</p>
       </div>
-      <div class="card">
-        <div class="card-glyph" aria-hidden="true">&#x25D4;&#xFE0E;</div>
-        <h3 class="h3">Notified when it matters</h3>
-        <p>Desktop alerts when an agent finishes, goes quiet waiting on you, crashes a
-        run script, or hits a merge conflict. Silent for the run you are watching.</p>
+      <div class="cell">
+        <div class="cell-glyph" aria-hidden="true">&#x25D4;&#xFE0E;</div>
+        <h3 class="h3">Quiet until it matters</h3>
+        <p>Alerts when an agent finishes, goes quiet waiting on you, crashes a run script
+        or hits a merge conflict. Silent for the run you are watching.</p>
       </div>
-      <div class="card">
-        <div class="card-glyph" aria-hidden="true">&#x27F3;&#xFE0E;</div>
+      <div class="cell">
+        <div class="cell-glyph" aria-hidden="true">&#x27F3;&#xFE0E;</div>
         <h3 class="h3">Auto-resume</h3>
-        <p>Quit with work in flight. Reopen, click the run, and the conversation picks
-        up where the agent's CLI can continue it.</p>
+        <p>Quit with work in flight. Reopen, click the run, and the conversation picks up
+        where the agent's CLI can continue it.</p>
       </div>
-      <div class="card">
-        <div class="card-glyph" aria-hidden="true">&#x2225;&#xFE0E;</div>
+      <div class="cell">
+        <div class="cell-glyph" aria-hidden="true">&#x2225;&#xFE0E;</div>
         <h3 class="h3">Race and loop</h3>
         <p>Send one prompt to four agents and keep the branch you like best. Or loop one
-        agent until your test command exits clean.</p>
+        agent until your test command exits clean, with hard caps on attempts, time and
+        tokens.</p>
       </div>
     </div>
   </div>
 </section>
 
-<section class="section section-band">
+<section class="section section-band tour" id="tour">
   <div class="wrap">
-    <span class="eyebrow">Built with itself</span>
-    <h2 class="h2">Agency built Agency</h2>
-    <div class="local-body" style="margin-top: 24px">
-      <p>Almost every feature on this page was written by agents running in
-      Agency, on worktrees Agency cut, reviewed and merged in the app. The
-      commit history is the receipt.</p>
+    <div class="section-head">
+      <h2 class="h2">Watch a run, start to finish</h2>
+      <p class="lead">An issue handed to an agent, four agents racing one prompt, a loop
+      running until the tests pass, and a branch merged. A one-minute tour, with no
+      sound.</p>
+    </div>
+    <div class="stage">
+      <div class="window">
+        <video controls playsinline preload="none" width="1920" height="1080"
+          poster="/assets/video/tour-poster.webp"
+          aria-label="A one-minute tour of Agency.">
+          <source src="/assets/video/tour.mp4" type="video/mp4">
+          <source src="/assets/video/tour.webm" type="video/webm">
+        </video>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <div class="proof">
+      <div class="proof-body">
+        <h2 class="h2">Agency built Agency</h2>
+        <p class="lead">Almost every feature on this page was written by agents running in
+        Agency, on worktrees Agency cut, then reviewed and merged in the app.</p>
+        <p>The commit history is the receipt, and it is public.</p>
+        <a class="textlink" href="https://github.com/TennnisAI/Agency/commits/main">Read the commit history</a>
+      </div>
+      <div class="proof-figures">
+        <p class="figure"><b>237</b><span>agent branches merged into main</span></p>
+        <p class="figure"><b>1,056</b><span>commits between 18 June and 6 October 2026</span></p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section section-band" id="faq">
+  <div class="wrap">
+    <div class="section-head">
+      <h2 class="h2">Questions</h2>
+    </div>
+    <div class="faq">
+      <div class="qa">
+        <h3 class="h3">What is Agency?</h3>
+        <p>A desktop app for macOS and Linux that runs AI coding agents in parallel. It
+        launches the agent CLIs you already have, gives each run its own git worktree and
+        branch, and lets you watch, review and merge them in one window.</p>
+      </div>
+      <div class="qa">
+        <h3 class="h3">Is Agency free?</h3>
+        <p>Yes. Agency is free and open source under the Apache-2.0 licence, with no paid
+        tier and no account. You pay only for the agents themselves, through whatever
+        plan or API key each one already uses.</p>
+      </div>
+      <div class="qa">
+        <h3 class="h3">Which coding agents does it work with?</h3>
+        <p>Eleven are built in: Claude Code, Codex, Cursor, Copilot CLI, OpenCode, Gemini
+        CLI, Kimi Code, Crush, Hermes, Pi and DeepSeek Harness. Any other agent you can
+        start from a command line runs too.</p>
+      </div>
+      <div class="qa">
+        <h3 class="h3">How do several agents work on one repo without conflicts?</h3>
+        <p>Each run gets a git worktree: a separate checkout of the same repository, on its
+        own branch, in its own folder. Agents never share a working tree, so they cannot
+        overwrite each other's files. Their work meets only when you merge it, and
+        Agency helps you resolve any conflicts then.</p>
+      </div>
+      <div class="qa">
+        <h3 class="h3">Does Agency send my code anywhere?</h3>
+        <p>Agency does no first-party data collection: no analytics, no telemetry, no
+        account. The agents it launches are third party and send your prompts and code
+        to their own providers, exactly as they do in a terminal. Agency's only request of
+        its own is an update check against GitHub, which you can turn off.</p>
+      </div>
+      <div class="qa">
+        <h3 class="h3">Why not just run agents in tmux?</h3>
+        <p>You can, and plenty of people do, with a worktree per pane. Agency does that
+        bookkeeping for you: it cuts the worktree and branch, tracks which agent is
+        working, waiting or done, shows each run's diff, and merges and cleans up after.
+        <a href="/run-coding-agents-in-parallel">The by-hand version</a> is a handful of git and tmux
+        commands, if that is all you need.</p>
+      </div>
+      <div class="qa">
+        <h3 class="h3">Does it run on Windows?</h3>
+        <p>Not yet. Agency runs on macOS 11 or later on Apple Silicon, and on Linux
+        (x86_64 and arm64) as a .deb, .rpm or AppImage. Windows is planned, with no date
+        yet.</p>
+      </div>
+      <div class="qa">
+        <h3 class="h3">Can an agent change things without my say?</h3>
+        <p>Agency never raises an agent's permissions behind your back. Each agent runs
+        with the permission mode you choose for it, in its own worktree, and nothing
+        reaches your base branch until you merge it.</p>
+      </div>
     </div>
   </div>
 </section>
 
 <section class="section closing">
+  <div class="merge" aria-hidden="true">
+    <svg viewBox="0 0 1200 150" preserveAspectRatio="none">
+      <path class="lane-1" d="M100 0 C100 70 600 70 600 150"/>
+      <path class="lane-2" d="M300 0 C300 70 600 70 600 150"/>
+      <path class="lane-3" d="M500 0 C500 70 600 70 600 150"/>
+      <path class="lane-4" d="M700 0 C700 70 600 70 600 150"/>
+      <path class="lane-5" d="M900 0 C900 70 600 70 600 150"/>
+      <path class="lane-6" d="M1100 0 C1100 70 600 70 600 150"/>
+    </svg>
+  </div>
   <div class="wrap">
-    <h2 class="h2">Get it</h2>
+    <div class="merge-node" aria-hidden="true"></div>
+    <h2 class="h2">Point it at a repo</h2>
+    <p class="lead">Free, with no account and nothing to sign up for. Pre-1.0 and in beta.
+    Windows is planned.</p>
     <div class="closing-cta">
       <a class="btn" href="/download">Download for macOS and Linux</a>
-      <a class="textlink" href="/download">Requirements</a>
+      <a class="btn btn-ghost" href="/download#requirements">Requirements</a>
     </div>
-    <p class="closing-note">Pre-1.0 and in beta. Windows is planned.</p>
   </div>
 </section>
 
@@ -257,6 +466,7 @@
     </a>
     <nav class="footer-links" aria-label="Footer">
       <a href="/download">Download</a>
+      <a href="/run-coding-agents-in-parallel">Guide</a>
       <a href="/privacy">Privacy</a>
       <a class="gh-link" href="https://github.com/TennnisAI/Agency"><span class="gh-label">GitHub</span><svg class="gh-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
     </nav>

@@ -1946,6 +1946,45 @@ fn a_message_waits_for_a_busy_agent_and_lands_once_it_is_quiet() {
     state.discard_run(&id).unwrap();
 }
 
+/// AGE-210's promise: a quit that leaves the agents running hands them to the
+/// next launch intact. Adoption used to be a crash-recovery accident with no
+/// test of its own. The same shell, not a new one: a variable set before the
+/// quit is still set after it, which a session relaunched on the run could not
+/// fake.
+#[test]
+fn a_quit_that_leaves_agents_running_hands_them_to_the_next_launch() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    // Held for the whole test and torn down last, panic or not, so the daemon
+    // the quit leaves behind is never leaked. It shares that daemon and does
+    // nothing else; the quitting app and the reopened one are the two below.
+    let teardown = common::state(&dir);
+    let db = dir.path().join("agency.db");
+
+    let quitting = AppState::new(&db, dir.path()).unwrap();
+    let project = quitting.add_project("demo", &repo).unwrap();
+    let id = live_terminal(&quitting, &project.id);
+    quitting.run_input(&id, b"export AGE210=held\r").unwrap();
+    assert!(pane_gets(&quitting, &id, "AGE210=held"), "the export must have run before the quit");
+    quitting.release_for_exit();
+    drop(quitting);
+
+    let reopened = AppState::new(&db, dir.path()).unwrap();
+    assert!(
+        matches!(reopened.run_status(&id).unwrap(), SessionStatus::Running),
+        "the session must still be running after the quit"
+    );
+    reopened.run_input(&id, b"echo \"${AGE210}-across-quit\"\r").unwrap();
+    assert!(
+        pane_gets(&reopened, &id, "held-across-quit"),
+        "the reopened app must be driving the shell from before the quit, not a new one"
+    );
+    drop(reopened);
+    drop(teardown);
+}
+
 /// The marker's whole point: while something is held, the run says so — and it
 /// is still said after a quit, because the queue outlives the app that made it.
 #[test]

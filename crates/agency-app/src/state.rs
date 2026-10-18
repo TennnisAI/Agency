@@ -11417,6 +11417,19 @@ impl AppState {
         let _ = self.term.read().unwrap().shutdown();
     }
 
+    /// Let go of everything for an exit that leaves the agents running: the
+    /// quit dialog's "leave running" and an update's relaunch (AGE-210). The
+    /// daemon and its sessions carry on, and the next [`AppState::new`] adopts
+    /// them.
+    ///
+    /// Graph builds are stopped all the same. They are this process's children,
+    /// not the daemon's, so nothing would reap one, record its outcome or offer
+    /// to stop it once the app is gone; the next launch would not know it was
+    /// running.
+    pub fn release_for_exit(&self) {
+        self.stop_all_knowledge_builds();
+    }
+
     /// Signal every running graph build to stop, on the way out. Signal only:
     /// the monitor threads that would reap them do not outlive this process.
     fn stop_all_knowledge_builds(&self) {

@@ -681,6 +681,9 @@ export const agentCliInfo = () => invoke<AgentCliInfo[]>("agent_cli_info");
 export const createInstallTerminal = (projectId: string, agent: string, command: string) =>
   invoke<RunInfo>("create_install_terminal", { projectId, agent, command });
 export const confirmQuit = () => invoke<void>("confirm_quit");
+// Quits without stopping the agents: the daemon keeps them, and the next launch
+// picks them back up (AGE-210).
+export const quitLeavingAgents = () => invoke<void>("quit_leaving_agents");
 // Fills an empty title from the first prompt, and when the branch is still the
 // empty-prompt `agent/<id>` fallback, renames it to match (AGE-183).
 export const setRunTitle = (id: string, firstPrompt: string) =>

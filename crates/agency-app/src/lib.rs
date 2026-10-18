@@ -390,6 +390,7 @@ pub fn run() {
             commands::import_path,
             commands::dropped_folders,
             commands::confirm_quit,
+            commands::quit_leaving_agents,
             commands::request_quit,
             commands::agent_installed,
             commands::agent_cli_info,
@@ -408,8 +409,11 @@ pub fn run() {
             // through our confirmation dialog instead of exiting immediately.
             // Once the user confirms, QUIT_CONFIRMED is set to true and we let
             // the subsequent exit triggered by app.exit(0) proceed unimpeded.
-            if let tauri::RunEvent::ExitRequested { api, .. } = event {
-                if !crate::lifecycle::QUIT_CONFIRMED.load(std::sync::atomic::Ordering::Relaxed) {
+            // A restart is never held (see lifecycle::holds_exit).
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
+                let confirmed =
+                    crate::lifecycle::QUIT_CONFIRMED.load(std::sync::atomic::Ordering::Relaxed);
+                if crate::lifecycle::holds_exit(code, confirmed) {
                     api.prevent_exit();
                     crate::lifecycle::request_quit(app);
                 }

@@ -348,11 +348,18 @@ pub fn request_quit(app: tauri::AppHandle) {
     crate::lifecycle::request_quit(&app);
 }
 
-/// Quit for real: invoked by the frontend once the user confirms the styled
-/// in-app quit dialog (see lifecycle::request_quit).
+/// Quit for real, stopping every agent: invoked by the frontend once the user
+/// confirms the styled in-app quit dialog (see lifecycle::request_quit).
 #[tauri::command]
 pub fn confirm_quit(app: tauri::AppHandle) {
-    crate::lifecycle::confirm_quit(&app);
+    crate::lifecycle::quit(&app, crate::lifecycle::Agents::Stop);
+}
+
+/// Quit, leaving the agents running in the daemon for the next launch to
+/// adopt: the quit dialog's other answer (AGE-210).
+#[tauri::command]
+pub fn quit_leaving_agents(app: tauri::AppHandle) {
+    crate::lifecycle::quit(&app, crate::lifecycle::Agents::Leave);
 }
 
 /// Derive a short title for a run from its first prompt, and when the branch is
@@ -2756,9 +2763,12 @@ pub fn running_sessions(state: State<'_, AppState>) -> usize {
 /// calling this whenever anything is running. Without a bump the old release's
 /// daemon is replaced only if it hosts nothing, and otherwise kept until a
 /// launch finds it idle or the user quits.
+///
+/// It goes through `lifecycle::restart`, the same leave-them-running quit the
+/// quit dialog offers, so an update never takes the path that kills them.
 #[tauri::command]
 pub fn restart_app(app: tauri::AppHandle) {
-    app.restart();
+    crate::lifecycle::restart(&app);
 }
 
 #[tauri::command]

@@ -34,9 +34,13 @@ due" function on the existing 2 s poller, and a table.
 - **Closing the window does not quit.** `lib.rs` turns `CloseRequested` into
   `window.hide()`; the app lives on in the menu bar with the notifier thread
   still ticking every 2 s. Only the tray's Quit (or Cmd-Q, confirmed) exits.
-- **Quitting stops everything.** `lifecycle::confirm_quit` kills every daemon
-  session and shuts `agency-termd` down. Nothing of Agency runs while it is
-  quit, and nothing is registered with launchd.
+- **Quitting stops everything, unless the user says not to.** With agents
+  running, the quit dialog offers both (AGE-210): "Stop and quit" goes through
+  `lifecycle::quit(Agents::Stop)`, which kills every daemon session and shuts
+  `agency-termd` down; "Leave running" exits the app alone, and the next launch
+  adopts whatever the daemon still hosts. An update's restart always takes the
+  second path. Either way the poller stops with the app, and nothing is
+  registered with launchd.
 - **There is no open-at-login.** Agency runs from the moment the user opens it
   until they quit it or log out.
 - **Sleep is invisible to the poller.** Nothing listens for sleep or wake. The
@@ -56,7 +60,7 @@ due" function on the existing 2 s poller, and a table.
 |---|---|---|---|
 | Agency running, awake (window open or hidden) | yes | yes | fires on time |
 | Mac asleep (lid closed, idle sleep) | no | frozen | fires on the first tick after wake, per the catch-up rule |
-| Agency quit, or logged out | no | none | fires on the first tick after next launch, per the catch-up rule |
+| Agency quit, or logged out | no | only sessions left running at quit, unwatched | fires on the first tick after next launch, per the catch-up rule |
 
 The first row is the product. The other two are where a desktop scheduler earns
 or loses trust, and both reduce to the same case: *the scheduler wakes up and

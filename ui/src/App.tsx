@@ -17,7 +17,8 @@ import Resizer from "./components/Resizer";
 import Toasts from "./components/Toasts";
 import { useShortcuts } from "./hooks/useShortcuts";
 import { usePaneWidth } from "./hooks/usePaneWidth";
-import { FileRoot, Project, QueueNotice, RepoReadiness, RunInfo, UpdateCheck, agentOnboardingNeeded, confirmQuit, createDir, createFile, createRun, ensureWorkspaceGuide, getWorkspace, gitLogGraph, inspectRepo, lastUpdateCheck, listArchivedRuns, listIssues, listProjects, readFile, rememberedModel, setMenuContext, setUiState, writeFile } from "./api";
+import { FileRoot, Project, QueueNotice, RepoReadiness, RunInfo, UpdateCheck, agentOnboardingNeeded, confirmQuit, createDir, createFile, createRun, ensureWorkspaceGuide, getWorkspace, gitLogGraph, inspectRepo, lastUpdateCheck, listArchivedRuns, listIssues, listProjects, quitLeavingAgents, readFile, rememberedModel, setMenuContext, setUiState, writeFile } from "./api";
+import { quitBody } from "./lib/quitPrompt";
 import { pickDefaultAgent } from "./lib/defaultAgent";
 import { PENDING_ISSUE_KEY, PENDING_QUICKADD_KEY, isClosed, issueLabel } from "./lib/issues";
 import { NAVIGATE_EVENT, NavTarget } from "./lib/navigate";
@@ -817,14 +818,18 @@ function Shell() {
         />
       )}
       {quitPrompt !== null && (
+        // With anything running, leaving it running is the confirm and stopping
+        // it the alternative: a quit used to kill every agent whether or not
+        // the user was done with them (AGE-210), and the safe answer belongs on
+        // the button that is not red.
         <ConfirmDialog
           title="Quit Agency?"
-          body={quitPrompt > 0
-            ? `Quitting will stop ${quitPrompt} running session${quitPrompt === 1 ? "" : "s"}. Agents resume where they left off next time you open Agency.`
-            : "All agents are idle; nothing will be interrupted."}
-          confirmLabel="Quit"
-          danger={quitPrompt > 0}
-          onConfirm={() => { confirmQuit().catch(() => {}); }}
+          body={quitBody(quitPrompt)}
+          confirmLabel={quitPrompt > 0 ? "Leave running" : "Quit"}
+          altLabel={quitPrompt > 0 ? "Stop and quit" : undefined}
+          altDanger
+          onAlt={() => { confirmQuit().catch(() => {}); }}
+          onConfirm={() => { (quitPrompt > 0 ? quitLeavingAgents() : confirmQuit()).catch(() => {}); }}
           onCancel={() => setQuitPrompt(null)}
         />
       )}

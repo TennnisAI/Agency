@@ -1,8 +1,9 @@
 # Design: agent state from the agent's own hooks
 
-Status: **phases 1 and 2 built** (AGE-206, 2026-10-04) for Claude Code. Drafted
-2026-09-08; the sections below record what was built, and where the build
-departed from the draft, why. Phases 3 and 4 are still open.
+Status: **phases 1 and 2 built** (AGE-206, 2026-10-04) for Claude Code; **phase
+3 begun** (AGE-251, 2026-10-19) with Codex. Drafted 2026-09-08; the sections
+below record what was built, and where the build departed from the draft, why.
+The rest of phase 3, and phase 4, are still open.
 
 Scope: take a run's state from what the agent reports about itself where it
 can, keep the pane-diff heuristic in `activity.rs` as the fallback, and split
@@ -66,7 +67,7 @@ inference is still needed because the coverage is never complete.
   agent whose CLI will tell us.
 - Reported state outranks inferred state while the report is live.
 - The pane-diff heuristic survives as the fallback, so an agent with no hooks
-  (Codex, today) and a plain shell run are no worse off than before.
+  (crush, today) and a plain shell run are no worse off than before.
 - No new dependency, no new daemon, no new port, no file the user did not
   already have Agency writing into their worktree.
 - Nothing here can slow down, block, or fail an agent's turn.
@@ -167,6 +168,62 @@ Per-agent coverage beyond Claude Code is a table to be built the way
 `skills.rs` built its directory table: against live binaries with the version
 pinned in the comment, never against documentation alone. This change is the
 precedent for why: four of the draft's documented assumptions were wrong.
+
+## Codex (AGE-251)
+
+Verified against Codex **0.153.4**, interactive in tmux and under `codex exec`,
+with `CODEX_HOME` pointed at a scratch directory (so nothing reached the
+user's own config) and the model a local stub serving the Responses API. The
+hooks are fired by the binary, not the model, and the stub is what made a
+permission dialog, a question and a subagent happen on cue. The findings are in
+`state_hooks.rs::CODEX_EVENTS`; the ones that shaped the design:
+
+- **Codex only runs hooks the user has trusted**, in its own "Hooks need
+  review" dialog at startup, which shows each command in full. The trust is
+  saved in the user's `~/.codex/config.toml`, keyed by where the hook came from
+  and a hash of it. A `.codex/hooks.json` in the worktree is keyed by its
+  absolute path, so every new worktree would ask again. A hook passed with `-c`
+  is keyed `/<session-flags>/config.toml:<event>:0:0`, the same for every
+  launch. So Agency passes the hooks on the command line, byte for byte the same
+  every time, with everything per run (port, session, token file) in the
+  environment: the user reviews them once, ever, until Agency changes them.
+  Nothing is written into the worktree, and Agency never writes the trust
+  itself, which would be both a global config edit and a silent escalation.
+- **Declining is not remembered**: the dialog comes back at every launch. So
+  Settings has "Let Codex report its state" (`codex_state_hooks`, on unless
+  set). Off, Codex launches without them and is on the pane heuristic.
+- **Hooks can only run a command.** The decision AGE-206 avoided: no script in
+  the worktree, and the one thing assumed on the PATH is `curl`, which ships
+  with macOS and nearly every Linux. The flags are passed only when `curl`
+  resolves on the agent's PATH. The token is read from a 0600 file named in
+  the environment (`curl -H @file`), not put on the command line, where `ps`
+  shows it to every account on the machine. Errors are silenced and the exit
+  is always 0: a nonzero `Stop` hook is how a hook asks Codex to keep going.
+  Flags without the environment (the server could not bind) post nowhere,
+  silently; verified live.
+- **A child cannot speak for its parent.** The hooks are in the parent's argv,
+  which a `codex` it starts does not inherit. That is what makes it safe for
+  `SessionStart` to move the tab's pin (`Event::opens`): after `/clear`, Codex's
+  next prompt comes under a new `session_id`, with no `SessionEnd` for the old
+  one.
+
+| hook event | state |
+| --- | --- |
+| `SessionStart` (`startup`, `resume`, `clear`) | `idle`, and the tab is pinned to the new conversation |
+| `UserPromptSubmit`, `PostToolUse` | `working` |
+| `PreToolUse` | `working`; **`blocked`** for `request_user_input`, Codex's question, which fires no `PermissionRequest` |
+| `PermissionRequest` | **`blocked`** |
+| `Stop` | `done` |
+| `Interrupt` | `done`: Esc on a dialog or mid-turn. Unlike Claude Code, a refusal says so |
+| `SessionEnd` | `idle` (exit only, once per conversation the process had) |
+
+The route is `/__agency__/state/codex`, so each agent's events are parsed
+against its own allowlist (`report::Dialect`): Claude Code's posts never open a
+conversation, and an `Interrupt` on Claude Code's route means nothing. A
+subagent posts under its parent's `session_id` with its own `agent_id`, so the
+subagent rule is Claude Code's. The server sweep cannot read a file to know a
+run reports, so it keeps the server up for a live run with a Codex agent in it
+while the setting is on.
 
 ## Transport
 
@@ -421,10 +478,9 @@ issue row's activity dot turns red when a linked agent is blocked.
    four states on the wire, the UI.
 2. **`notifier.rs`.** Built: `Blocked` and turn-finished as edges on reported
    state, the setting, the copy.
-3. **The rest of the catalog.** Open. Per-agent hook tables verified against
-   live binaries, one agent per change, each landing with its own test. For
-   an agent whose hooks can only run a command, that means a shell hook, and a
-   decision about writing a script into the worktree that this change avoided.
+3. **The rest of the catalog.** Codex built (AGE-251); the command-hook
+   decision is recorded under *Codex*. The others are open, one agent per
+   change, each verified against a live binary and landing with its own test.
 4. **The roll-up and the sort** (AGE-213, AGE-215). Open, and now unblocked.
 
 AGE-207 (declarative screen rules) is the tier for agents phase 3 cannot

@@ -215,6 +215,7 @@ export default function Settings({
     defaultAgent: null,
     defaultWorktree: true,
     shareOpenFile: false,
+    codexStateHooks: true,
   });
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const { models, reload: reloadModels } = useAgentModels();
@@ -1469,6 +1470,18 @@ export default function Settings({
                   <Toggle
                     checked={settings.defaultWorktree}
                     onChange={(next) => persistSettingsNow({ ...settings, defaultWorktree: next })}
+                  />
+                </div>
+                <div className="settings-notif-row">
+                  <span
+                    className="settings-notif-label"
+                    title="Codex asks you once to trust the hooks Agency passes it, which tell Agency when it is working, waiting on you, or done. Turn this off if you would rather not: Agency then reads Codex's state off its screen."
+                  >
+                    Let Codex report its state
+                  </span>
+                  <Toggle
+                    checked={settings.codexStateHooks}
+                    onChange={(next) => persistSettingsNow({ ...settings, codexStateHooks: next })}
                   />
                 </div>
               </div>

@@ -651,7 +651,7 @@ fn handle_conn(mut stream: TcpStream, ctx: &Ctx) {
 /// nobody's report: a script on the previewed page reached this route
 /// same-origin with nothing but a run id. A browser puts `Origin` on every
 /// POST, and the agent's hook client puts it on none.
-fn state_report(stream: &mut TcpStream, req: &http::Request, ctx: &Ctx) {
+fn state_report(stream: &mut TcpStream, req: &http::Request, ctx: &Ctx, from: report::Dialect) {
     let _ = http::write_response(stream, 204, "No Content", &[], b"");
     if req.header("origin").is_some() || req.header("sec-fetch-site").is_some() {
         return;
@@ -661,7 +661,7 @@ fn state_report(stream: &mut TcpStream, req: &http::Request, ctx: &Ctx) {
         return;
     }
     let session = req.header(crate::state_hooks::SESSION_HEADER).unwrap_or("").trim();
-    if let (false, Some(ev)) = (session.is_empty(), report::parse(&req.body)) {
+    if let (false, Some(ev)) = (session.is_empty(), report::parse(from, &req.body)) {
         (ctx.hooks.report)(session, ev);
     }
 }
@@ -670,8 +670,13 @@ fn control(stream: &mut TcpStream, req: &http::Request, ctx: &Ctx) {
     // Ahead of the parse below: a `PostToolUse` body carries the tool's whole
     // output, a file read or a build log, and every tool call posts one that
     // the agent waits on. Built into a `Value` first, each was parsed twice.
-    if req.method == "POST" && req.path() == crate::state_hooks::STATE_PATH {
-        state_report(stream, req, ctx);
+    let from = match req.path() {
+        crate::state_hooks::STATE_PATH => Some(report::Dialect::Claude),
+        crate::state_hooks::CODEX_STATE_PATH => Some(report::Dialect::Codex),
+        _ => None,
+    };
+    if let (Some(from), "POST") = (from, req.method.as_str()) {
+        state_report(stream, req, ctx, from);
         return;
     }
     let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
@@ -1143,6 +1148,24 @@ mod tests {
             *seen.lock().unwrap(),
             vec![("fix-a1--2".to_string(), report::Reported::Blocked)]
         );
+    }
+
+    #[test]
+    fn the_route_a_report_arrives_on_says_whose_events_it_holds() {
+        let seen: Arc<Mutex<Vec<report::Reported>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let hooks = Hooks {
+            report: Arc::new(move |_, ev: report::Event| sink.lock().unwrap().push(ev.state)),
+            ..with_open_file(None, Err("n/a"), Caps::none(), OpenFocus::Nothing)
+        };
+        let srv = start(hooks);
+        let headers = [("X-Agency-Token", TOKEN), ("X-Agency-Session", "fix-a1")];
+        let interrupt = json!({ "hook_event_name": "Interrupt" }).to_string();
+        let codex = crate::state_hooks::CODEX_STATE_PATH;
+        assert_eq!(request(srv.port(), "POST", codex, &interrupt, &headers).0, 204);
+        let claude = crate::state_hooks::STATE_PATH;
+        assert_eq!(request(srv.port(), "POST", claude, &interrupt, &headers).0, 204);
+        assert_eq!(*seen.lock().unwrap(), vec![report::Reported::Done], "Codex's word only");
     }
 
     #[test]

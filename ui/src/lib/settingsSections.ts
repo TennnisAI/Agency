@@ -78,7 +78,7 @@ export const SECTIONS: Section[] = [
   { id: "notifications", label: "Notifications", group: "interface",
     terms: "notify alerts idle seconds banner agent finished exited crashed merge loop watching" },
   { id: "agents", label: "Agent profiles", group: "agents",
-    terms: "default model worktree command arguments resume loop environment cli catalog custom" },
+    terms: "default model worktree command arguments resume loop environment cli catalog custom codex hooks state report blocked trust" },
   { id: "mcp", label: "MCP servers", group: "agents",
     terms: "model context protocol tools stdio http sse oauth authenticate headers env import json" },
   { id: "localModel", label: "Local model", group: "agents",

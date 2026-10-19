@@ -2,9 +2,10 @@
 //! to badge and time.
 //!
 //! Two sources, ranked (AGE-206). An agent with lifecycle hooks
-//! (`agency_core::state_hooks`, Claude Code today) says what it is doing, and
-//! while it does that is the answer. Everything else is read off the pane: the
-//! notifier tick captures every pane anyway, and "did it change" is one bit.
+//! (`agency_core::state_hooks`, Claude Code and Codex today) says what it is
+//! doing, and while it does that is the answer. Everything else is read off the
+//! pane: the notifier tick captures every pane anyway, and "did it change" is
+//! one bit.
 //!
 //! - **working** — reported, or the pane changed recently. The one state the
 //!   pane gets right: agents redraw while they work.
@@ -672,7 +673,7 @@ mod tests {
     #[test]
     fn a_subagent_working_on_does_not_end_anothers_dialog() {
         use agency_core::preview::report::Event;
-        let ev = |state, subagent| Event { state, conversation: None, subagent };
+        let ev = |state, subagent| Event { state, conversation: None, subagent, opens: false };
         let e = apply_event(None, &ev(Reported::Blocked, true), 1_000);
         assert!(awaiting_answer(&e));
         let e = apply_event(Some(e), &ev(Reported::Working, true), 2_000);

@@ -236,6 +236,7 @@ fn settings_default_and_roundtrip() {
             default_agent: Some("codex".into()),
             default_worktree: true,
             share_open_file: false,
+            codex_state_hooks: true,
         })
         .unwrap();
     let s2 = state.get_settings().unwrap();
@@ -249,6 +250,7 @@ fn settings_default_and_roundtrip() {
             default_agent: None,
             default_worktree: false,
             share_open_file: false,
+            codex_state_hooks: true,
         })
         .unwrap();
     assert_eq!(state.get_settings().unwrap().default_agent, None);
@@ -260,6 +262,7 @@ fn settings_default_and_roundtrip() {
             default_agent: None,
             default_worktree: true,
             share_open_file: false,
+            codex_state_hooks: true,
         })
         .unwrap();
     assert!(state.get_settings().unwrap().default_worktree);
@@ -272,6 +275,7 @@ fn settings_default_and_roundtrip() {
             default_agent: None,
             default_worktree: true,
             share_open_file: true,
+            codex_state_hooks: true,
         })
         .unwrap();
     assert!(state.get_settings().unwrap().share_open_file);
@@ -282,6 +286,7 @@ fn settings_default_and_roundtrip() {
             default_agent: None,
             default_worktree: true,
             share_open_file: false,
+            codex_state_hooks: true,
         })
         .unwrap();
     assert!(!state.get_settings().unwrap().share_open_file);
@@ -310,6 +315,7 @@ fn create_run_injects_provider_env() {
             default_agent: None,
             default_worktree: true,
             share_open_file: false,
+            codex_state_hooks: true,
         })
         .unwrap();
     // Profile echoes env vars and then sleeps so we can capture output.
@@ -357,6 +363,7 @@ fn create_run_injects_provider_env() {
             default_agent: None,
             default_worktree: true,
             share_open_file: false,
+            codex_state_hooks: true,
         })
         .unwrap();
     let off = state.create_run(&project.id, "p", "envcheck", None, "HEAD", None).unwrap();
@@ -401,6 +408,7 @@ fn the_prefilled_local_model_url_is_cleared_once() {
                 default_agent: None,
                 default_worktree: true,
                 share_open_file: false,
+                codex_state_hooks: true,
             })
             .unwrap();
     }
@@ -1004,6 +1012,7 @@ fn save_settings_rejects_bad_provider_url() {
         default_agent: None,
         default_worktree: true,
         share_open_file: false,
+        codex_state_hooks: true,
     };
     assert!(state.save_settings(&bad).is_err());
     // embedded credentials are rejected
@@ -1012,6 +1021,7 @@ fn save_settings_rejects_bad_provider_url() {
         default_agent: None,
         default_worktree: true,
         share_open_file: false,
+        codex_state_hooks: true,
     };
     assert!(state.save_settings(&creds).is_err());
     // localhost, IPv6 loopback http, and https are allowed
@@ -1022,6 +1032,7 @@ fn save_settings_rejects_bad_provider_url() {
             default_agent: None,
             default_worktree: true,
             share_open_file: false,
+            codex_state_hooks: true,
         };
         assert!(state.save_settings(&s).is_ok(), "should accept {ok}");
     }

@@ -35,6 +35,11 @@ const SETTING_UPDATE_CHECK: &str = "update_check_enabled";
 /// Unset means off: an agent seeing the user's screen is a thing to opt into,
 /// once, knowingly.
 const SETTING_SHARE_OPEN_FILE: &str = "share_open_file";
+/// "0" stops passing Codex its state hooks (AGE-251). Unset = on: Codex asks
+/// the user to trust them once, in its own dialog, and the choice is theirs
+/// there. This is the way out for a user who said no to it, since saying no
+/// is not remembered and the dialog would come back at every launch.
+const SETTING_CODEX_STATE_HOOKS: &str = "codex_state_hooks";
 /// "0" makes the add-agent menu default to working in the project checkout
 /// instead of cutting a worktree. Unset = worktrees on, the isolated default.
 const SETTING_DEFAULT_WORKTREE: &str = "default_worktree";
@@ -80,6 +85,9 @@ pub struct ProviderSettings {
     /// the `editor_open_file` MCP tool. Off by default, and off is a real off:
     /// the tool is not listed, and nothing about the open file is recorded.
     pub share_open_file: bool,
+    /// Whether Codex is launched with the hooks that report its state (see
+    /// [`SETTING_CODEX_STATE_HOOKS`]).
+    pub codex_state_hooks: bool,
 }
 
 /// How a sync pass ended. "Needs seeding" is an outcome rather than an error
@@ -1273,6 +1281,36 @@ fn with_model(profile: &AgentProfile, model: Option<&str>) -> AgentProfile {
     AgentProfile {
         args: with_extra(&profile.args),
         loop_args: profile.loop_args.as_deref().map(with_extra),
+        ..profile.clone()
+    }
+}
+
+/// A copy of `profile` whose every launch passes Codex the hooks that report
+/// its state (AGE-251), when `on`. Folded into the profile like [`with_model`],
+/// and for the same reason: fresh, resume, rerun, extra tab and loop attempt
+/// all launch from it, so none can be the one that goes without. Appended, and
+/// in front of a resume recipe since a resume launches `args` first: `-c` is
+/// Codex's own flag, read before its subcommand as well as after.
+///
+/// Only for a profile that runs Codex, and never twice.
+fn with_state_hooks(profile: &AgentProfile, on: bool) -> AgentProfile {
+    let ours = agency_core::state_hooks::codex_args();
+    let carried = |recipe: &[String]| agency_core::state_hooks::carries_codex_args(recipe);
+    if !on || recipe_command(profile) != "codex" || carried(&profile.args) {
+        return profile.clone();
+    }
+    let with_ours = |recipe: &[String]| -> Vec<String> {
+        recipe.iter().cloned().chain(ours.iter().cloned()).collect()
+    };
+    AgentProfile {
+        args: with_ours(&profile.args),
+        loop_args: profile.loop_args.as_deref().map(|l| {
+            if carried(l) {
+                l.to_vec()
+            } else {
+                with_ours(l)
+            }
+        }),
         ..profile.clone()
     }
 }
@@ -2991,6 +3029,13 @@ pub struct AppState {
     /// read is an atomic load rather than a database round trip on a mutex the
     /// notifier tick also wants.
     share_open_file: Arc<std::sync::atomic::AtomicBool>,
+    /// Mirror of the `codex_state_hooks` setting, read while a launch already
+    /// holds the registry.
+    codex_state_hooks: std::sync::atomic::AtomicBool,
+    /// The file a Codex hook reads the token header from (see
+    /// `agency_core::state_hooks::token_headers`). `None` if it could not be
+    /// written, and Codex is then launched without hooks.
+    state_headers: Option<PathBuf>,
     /// Run id → the line its agent last wrote about itself with `set_status`
     /// (AGE-208). An `Arc` because each run's preview server captures it, like
     /// `open_file` above. In-memory only, and dropped when an agent that could
@@ -3250,6 +3295,10 @@ impl AppState {
         unprefill_local_model_url(&registry)?;
         let share_open_file =
             registry.get_setting(SETTING_SHARE_OPEN_FILE)?.as_deref() == Some("1");
+        let codex_state_hooks =
+            registry.get_setting(SETTING_CODEX_STATE_HOOKS)?.as_deref() != Some("0");
+        let state_token = agency_core::state_hooks::token(data_dir);
+        let state_headers = agency_core::state_hooks::token_headers(data_dir, &state_token);
         let repo_gates = Arc::new(crate::gates::KeyedGates::new());
         let state = AppState {
             registry: Mutex::new(registry),
@@ -3266,7 +3315,8 @@ impl AppState {
             report_pins: Arc::new(Mutex::new(HashMap::new())),
             hooks_armed: Mutex::new(HashMap::new()),
             hooks_seen: Mutex::new(HashMap::new()),
-            state_token: Arc::from(agency_core::state_hooks::token(data_dir)),
+            state_token: Arc::from(state_token),
+            state_headers,
             mcp_named: Mutex::new(HashSet::new()),
             usage: Mutex::new(HashMap::new()),
             prompted: Mutex::new(HashSet::new()),
@@ -3295,6 +3345,7 @@ impl AppState {
             preview_shot: std::sync::Arc::new(std::sync::OnceLock::new()),
             open_file: Arc::new(Mutex::new(None)),
             share_open_file: Arc::new(std::sync::atomic::AtomicBool::new(share_open_file)),
+            codex_state_hooks: std::sync::atomic::AtomicBool::new(codex_state_hooks),
             agent_status: Arc::new(Mutex::new(HashMap::new())),
             last_update_check: Mutex::new(None),
             update_install: Mutex::new(crate::update::Install::default()),
@@ -3561,6 +3612,8 @@ impl AppState {
             // Unset = off, unlike every other flag here: this one lets an agent
             // see something about the user rather than about the project.
             share_open_file: reg.get_setting(SETTING_SHARE_OPEN_FILE)?.as_deref() == Some("1"),
+            // Unset = on, like every flag here but the one above.
+            codex_state_hooks: reg.get_setting(SETTING_CODEX_STATE_HOOKS)? != Some("0".to_string()),
         })
     }
 
@@ -3571,7 +3624,9 @@ impl AppState {
         reg.set_setting(SETTING_DEFAULT_AGENT, s.default_agent.as_deref().unwrap_or(""))?;
         reg.set_setting(SETTING_DEFAULT_WORKTREE, if s.default_worktree { "1" } else { "0" })?;
         reg.set_setting(SETTING_SHARE_OPEN_FILE, if s.share_open_file { "1" } else { "0" })?;
+        reg.set_setting(SETTING_CODEX_STATE_HOOKS, if s.codex_state_hooks { "1" } else { "0" })?;
         drop(reg);
+        self.codex_state_hooks.store(s.codex_state_hooks, std::sync::atomic::Ordering::SeqCst);
         // The switch and what it guards move together: turning it off has to
         // drop the path already recorded, or the last file the user had open
         // stays answerable until they open another one.
@@ -4385,7 +4440,8 @@ impl AppState {
             let profile = reg
                 .get_profile(spec.agent)?
                 .ok_or_else(|| anyhow!("unknown agent profile: {agent}", agent = spec.agent))?;
-            let profile = with_model(&profile, model.as_deref());
+            let profile =
+                with_state_hooks(&with_model(&profile, model.as_deref()), self.codex_hooks_on());
             let profile = with_web_ui(
                 &profile,
                 gui_port_for(&config, Some(port), spec.agent),
@@ -6549,6 +6605,22 @@ impl AppState {
         }
     }
 
+    /// Whether any of the run's agents runs Codex, while Codex is launched with
+    /// state hooks. Asked only of a run with an agent alive in it.
+    fn runs_codex_hooks(&self, run_id: &str, run_agent: &str) -> bool {
+        if !self.codex_hooks_on() {
+            return false;
+        }
+        let is_codex = |agent: &str| {
+            crate::agent_catalog::recipe_command(&self.profile_command(agent)) == "codex"
+        };
+        if is_codex(run_agent) {
+            return true;
+        }
+        let tabs = self.registry.lock().unwrap().list_run_sessions(run_id).unwrap_or_default();
+        tabs.iter().any(|t| is_codex(&t.agent))
+    }
+
     /// `state_hooks::emitted`, re-read only when the settings file changes.
     /// The sweep asks for every worktree run every 2s, and the answer only
     /// moves when a launch or this sweep writes the file.
@@ -6582,7 +6654,7 @@ impl AppState {
     /// `sync_preview_servers` against a listing the caller already has (the
     /// notifier tick's).
     pub fn sync_preview_servers_in(&self, live: Option<&[(String, SessionStatus)]>) {
-        let runs: Vec<(String, PathBuf, Option<u16>, PathBuf)> = {
+        let runs: Vec<(String, PathBuf, Option<u16>, PathBuf, String)> = {
             let reg = self.registry.lock().unwrap();
             let Ok(projects) = reg.list_projects() else { return };
             projects
@@ -6591,7 +6663,7 @@ impl AppState {
                 .flat_map(|(repo, runs)| {
                     runs.into_iter().filter(|r| r.worktree && r.kind == "agent").map(move |r| {
                         let worktree = workspace_dir(&repo, &r);
-                        (r.id, repo.clone(), r.port_base, worktree)
+                        (r.id, repo.clone(), r.port_base, worktree, r.agent)
                     })
                 })
                 .collect()
@@ -6610,9 +6682,9 @@ impl AppState {
             up.keys().filter(|id| named.contains(*id)).cloned().collect()
         };
         self.hooks_armed.lock().unwrap().retain(|_, at| at.elapsed() < HOOKS_ARMING);
-        let worktrees: HashSet<PathBuf> = runs.iter().map(|(_, _, _, w)| w.clone()).collect();
+        let worktrees: HashSet<PathBuf> = runs.iter().map(|(_, _, _, w, _)| w.clone()).collect();
         self.hooks_seen.lock().unwrap().retain(|w, _| worktrees.contains(w));
-        for (id, repo, port_base, worktree) in runs {
+        for (id, repo, port_base, worktree, agent) in runs {
             let config = agency_core::config::load(&repo);
             let has_server = serving.contains(&id);
             // Read off the worktree, not remembered: an agent that survived an
@@ -6641,7 +6713,11 @@ impl AppState {
                     }
                 }
             }
-            let reports = hooked && (alive || arming);
+            // Codex's hooks are in its argv, so there is no file to read. A
+            // live run with a Codex agent in it may have been launched with
+            // them (by this start of the app or the last), and posts to this
+            // port if it was.
+            let reports = (alive || arming) && (hooked || self.runs_codex_hooks(&id, &agent));
             if let Some(bind) =
                 preview_port_this_sweep(&config, port_base, shares, reports, has_server)
             {
@@ -7831,14 +7907,10 @@ impl AppState {
         // point nowhere, or whose reports cannot say which tab they are from.
         //
         // Only an agent whose hooks we write is told its session. A `claude`
-        // that a Codex tab ran through its shell inherited the variable, posted
-        // under the Codex tab's id, pinned that tab's conversation and left it
-        // reading done.
-        if self.prepare_state_hooks(profile, worktree, repo, run_id, session, port) {
-            use agency_core::state_hooks::{SESSION_ENV, TOKEN_ENV};
-            env.push((SESSION_ENV.to_string(), session.to_string()));
-            env.push((TOKEN_ENV.to_string(), self.state_token.to_string()));
-        }
+        // that a pane-only tab ran through its shell inherited the variable,
+        // posted under that tab's id, pinned that tab's conversation and left
+        // it reading done.
+        env.extend(self.prepare_state_hooks(profile, worktree, repo, run_id, session, port));
         // The daemon inherited this process's PATH when it was spawned at
         // startup; an agent installed since then may live in a directory
         // adopted after that (pathenv::adopt_new_dirs), so the session gets
@@ -7865,8 +7937,12 @@ impl AppState {
     /// when it cannot be: Claude Code prints a hook error into the transcript
     /// on every tool call whose post is refused.
     ///
-    /// Whether the agent is one Agency writes hooks for, in a worktree, and
-    /// so one that should be told its session.
+    /// Codex's hooks are already in the profile's arguments (see
+    /// [`with_state_hooks`]), and need only the server and the environment they
+    /// read. Without the environment they post nowhere, quietly.
+    ///
+    /// The variables the agent is to be launched with: none for an agent that
+    /// reports nothing, which is then not told its session.
     fn prepare_state_hooks(
         &self,
         profile: &AgentProfile,
@@ -7875,7 +7951,8 @@ impl AppState {
         run_id: &str,
         session: &str,
         port: Option<u16>,
-    ) -> bool {
+    ) -> Vec<(String, String)> {
+        use agency_core::state_hooks::{HEADERS_ENV, SESSION_ENV, TOKEN_ENV, URL_ENV};
         // A new process. What the last one reported is not about this one, and
         // nothing would replace it before the first prompt: `SessionStart` does
         // not fire an `http` hook.
@@ -7886,19 +7963,45 @@ impl AppState {
         // The project's own checkout is the user's, and nothing is written into
         // it at launch; see `emit_mcp`'s caller.
         let command = recipe_command(profile);
-        if worktree == repo || !agency_core::state_hooks::agent_supported(&command) {
-            return false;
+        let codex = command == "codex"
+            && agency_core::state_hooks::carries_codex_args(&profile.args)
+            && self.state_headers.is_some();
+        if worktree == repo || !(codex || agency_core::state_hooks::agent_supported(&command)) {
+            return Vec::new();
         }
         let config = agency_core::config::load(repo);
         self.hooks_armed.lock().unwrap().insert(run_id.to_string(), Instant::now());
         self.ensure_preview_server(run_id, repo, port, &config, true);
         let listening = self.preview.lock().unwrap().get(run_id).map(|s| s.port());
+        let session_var = (SESSION_ENV.to_string(), session.to_string());
+        if codex {
+            let (Some(port), Some(headers)) = (listening, &self.state_headers) else {
+                return Vec::new();
+            };
+            let path = agency_core::state_hooks::CODEX_STATE_PATH;
+            return vec![
+                session_var,
+                (URL_ENV.to_string(), format!("http://127.0.0.1:{port}{path}")),
+                (HEADERS_ENV.to_string(), headers.to_string_lossy().into_owned()),
+            ];
+        }
         if let Err(e) =
             agency_core::state_hooks::emit_for_agent(&command, worktree, repo, listening)
         {
             log::warn!("writing state hooks into {}: {e}", worktree.display());
         }
-        true
+        vec![session_var, (TOKEN_ENV.to_string(), self.state_token.to_string())]
+    }
+
+    /// Whether a Codex launch now gets the hooks that report its state: the
+    /// user has not turned them off, the token header could be written, and
+    /// there is a `curl` on the agent's PATH for them to post with. Without
+    /// one, every hook would fail and Codex would still have asked the user to
+    /// trust them.
+    fn codex_hooks_on(&self) -> bool {
+        self.codex_state_hooks.load(std::sync::atomic::Ordering::SeqCst)
+            && self.state_headers.is_some()
+            && crate::agent_diag::resolve_on_path("curl").is_some()
     }
 
     /// Mint the conversation a fresh launch of `session` will open, and record
@@ -9296,7 +9399,7 @@ impl AppState {
             // run's model belongs to that agent's namespace — "opus" means
             // nothing to Codex. Only carry it when the tab is the same agent.
             let model = (agent == run.agent).then_some(run.model.as_deref()).flatten();
-            let profile = with_model(&profile, model);
+            let profile = with_state_hooks(&with_model(&profile, model), self.codex_hooks_on());
             // Same GUI port as the run would use: start_run_session refuses a
             // second web-GUI session in one workspace, so it can't be taken.
             with_web_ui(&profile, gui_port_for(&config, run.port_base, agent), &self.data_dir)
@@ -9676,7 +9779,10 @@ impl AppState {
             // Whatever model the run started on, it comes back on: a resume
             // that quietly changed model would rewrite the session's terms
             // halfway through the work.
-            let profile = with_model(&profile, run.model.as_deref());
+            let profile = with_state_hooks(
+                &with_model(&profile, run.model.as_deref()),
+                self.codex_hooks_on(),
+            );
             with_web_ui(&profile, gui_port_for(&config, run.port_base, &run.agent), &self.data_dir)
         };
         let env = self.agent_env(&profile, &worktree, &repo, &run.id, id, run.port_base)?;
@@ -9791,7 +9897,10 @@ impl AppState {
             let profile = reg
                 .get_profile(&run.agent)?
                 .ok_or_else(|| anyhow!("unknown agent profile: {}", run.agent))?;
-            let profile = with_model(&profile, run.model.as_deref());
+            let profile = with_state_hooks(
+                &with_model(&profile, run.model.as_deref()),
+                self.codex_hooks_on(),
+            );
             with_web_ui(&profile, gui_port_for(&config, run.port_base, &run.agent), &self.data_dir)
         };
         let env = self.agent_env(&profile, &worktree, &repo, &run.id, id, run.port_base)?;
@@ -9854,7 +9963,7 @@ impl AppState {
             let profile = reg
                 .get_profile(&run.agent)?
                 .ok_or_else(|| anyhow!("unknown agent profile: {}", run.agent))?;
-            with_model(&profile, run.model.as_deref())
+            with_state_hooks(&with_model(&profile, run.model.as_deref()), self.codex_hooks_on())
         };
         // Re-emit into the existing worktree on every attempt. A headless
         // attempt is a fresh agent process with no memory of the last one, and
@@ -13103,6 +13212,44 @@ mod tests {
         // Loop: at the end, so {{prompt}} stays where the recipe put it.
         let (_cmd, args) = super::loop_argv(&pinned, no_worktree(), "go", None, None).unwrap();
         assert_eq!(args, vec!["-p", "go", "--permission-mode", "acceptEdits", "--model", "opus"]);
+    }
+
+    #[test]
+    fn codex_gets_its_state_hooks_on_every_launch_path() {
+        let codex = AgentProfile {
+            name: "codex".into(),
+            command: "codex".into(),
+            args: vec![],
+            env: vec![],
+            resume_args: Some(vec!["resume".into(), "--last".into()]),
+            loop_args: Some(vec!["exec".into(), "{{prompt}}".into()]),
+        };
+        let hooks = agency_core::state_hooks::codex_args();
+        let hooked = super::with_state_hooks(&codex, true);
+        let (_cmd, args) = super::fresh_agent_argv(&hooked, no_worktree(), "go", None, None);
+        assert_eq!(args, [hooks.clone(), vec!["go".into()]].concat());
+        // Ahead of `resume`: Codex reads `-c` before its subcommand.
+        let (_cmd, args) = agent_argv(&hooked, no_worktree(), "go", true, None, None);
+        assert_eq!(args, [hooks.clone(), vec!["resume".into(), "--last".into()]].concat());
+        let (_cmd, args) = super::loop_argv(&hooked, no_worktree(), "go", None, None).unwrap();
+        assert_eq!(args, [vec!["exec".into(), "go".into()], hooks.clone()].concat());
+        // Once, however often it is applied.
+        assert_eq!(super::with_state_hooks(&hooked, true), hooked);
+    }
+
+    #[test]
+    fn state_hooks_go_to_codex_alone_and_only_while_on() {
+        let codex = AgentProfile {
+            name: "codex".into(),
+            command: "codex".into(),
+            args: vec![],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        };
+        assert_eq!(super::with_state_hooks(&codex, false), codex);
+        let claude = AgentProfile { name: "claude".into(), command: "claude".into(), ..codex };
+        assert_eq!(super::with_state_hooks(&claude, true), claude, "Claude Code's are a file");
     }
 
     #[test]

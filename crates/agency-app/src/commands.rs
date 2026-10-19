@@ -1002,6 +1002,18 @@ pub async fn merge_pr(
     state.merge_pr(&project_id, number, &method, delete_branch).map_err(|e| e.to_string())
 }
 
+/// Merge the run's own open pull request on GitHub, pinned to the branch's
+/// local tip.
+#[tauri::command]
+pub async fn merge_run_pr(
+    state: State<'_, AppState>,
+    task_id: String,
+    method: String,
+    delete_branch: bool,
+) -> Result<agency_core::gh::PrMergeResult, String> {
+    state.merge_run_pr(&task_id, &method, delete_branch).map_err(|e| e.to_string())
+}
+
 /// Delete a merged run's branch from its remote. Best effort by contract: the
 /// caller is a merge that has already landed, so a refusal here is a note, not
 /// a failed merge.

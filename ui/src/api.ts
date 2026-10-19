@@ -1342,6 +1342,9 @@ export interface MergePreview {
   branch: string;
   commitsAhead: number;
   commitsBehind: number;
+  /** Commits no remote has yet: what merging the branch's PR would leave out,
+   *  so the window pushes them first. Zero for a branch never published. */
+  commitsUnpushed: number;
   worktreeDirty: boolean;
   dirtyFiles: string[];
   /** The branch's remote-tracking refs (`origin/agent/foo`), empty when the
@@ -1521,6 +1524,10 @@ export const prMergeMethods = (projectId: string) =>
   invoke<MergeMethods>("pr_merge_methods", { projectId });
 export const mergePr = (projectId: string, number: number, method: MergeMethod, deleteBranch: boolean) =>
   invoke<PrMergeResult>("merge_pr", { projectId, number, method, deleteBranch });
+// The Approve window's PR merge: the run's own open PR, found from its branch
+// by the backend and pinned to the branch's local tip.
+export const mergeRunPr = (taskId: string, method: MergeMethod, deleteBranch: boolean) =>
+  invoke<PrMergeResult>("merge_run_pr", { taskId, method, deleteBranch });
 /** Where a conflicted PR's conflicts are. GitHub only reports *that* a PR
  * conflicts, so the files come from a local probe: `probed` false means that
  * probe couldn't run, and `files` is empty for want of an answer rather than

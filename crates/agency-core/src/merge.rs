@@ -428,6 +428,15 @@ pub fn is_pushed(repo: &Path, branch: &str) -> bool {
         .is_some_and(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
 }
 
+/// Commits on `branch` that no remote-tracking ref has: the work a pull request
+/// on this branch would leave out if it were merged now. Answered from the
+/// local ref store, like [`is_pushed`], so a stale fetch can overcount but
+/// never report a commit as pushed that isn't.
+pub fn commits_unpushed(repo: &Path, branch: &str) -> Result<usize> {
+    let out = git_ok(repo, &["rev-list", "--count", branch, "--not", "--remotes"])?;
+    Ok(out.trim().parse().unwrap_or(0))
+}
+
 /// Commits on `branch` that `range_base` does not have, newest first, as
 /// `(short hash, subject)`. Capped at `limit` so one record cannot be a
 /// thousand lines of log.

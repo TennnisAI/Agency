@@ -918,6 +918,10 @@ pub struct MergePreview {
     pub branch: String,
     pub commits_ahead: usize,
     pub commits_behind: usize,
+    /// Commits no remote has yet. Only counted for a published branch: it is
+    /// what merging the branch's pull request would leave out, so the window
+    /// pushes them first.
+    pub commits_unpushed: usize,
     pub worktree_dirty: bool,
     pub dirty_files: Vec<String>,
     /// The branch's remote-tracking refs (`origin/agent/foo`) when it has been
@@ -4470,6 +4474,7 @@ impl AppState {
             // PR head checked out as it stands belongs to whoever pushed it.
             branch_cut: Some(spec.worktree && spec.existing_branch.is_none()),
             own_branch: None,
+            pr_merged_head: None,
         };
         {
             let reg = self.registry.lock().unwrap();
@@ -6769,6 +6774,7 @@ impl AppState {
             primary_closed_at: None,
             branch_cut: None,
             own_branch: None,
+            pr_merged_head: None,
             pin_rank: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
@@ -6990,6 +6996,7 @@ impl AppState {
             primary_closed_at: None,
             branch_cut: None,
             own_branch: None,
+            pr_merged_head: None,
             pin_rank: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
@@ -7656,7 +7663,8 @@ impl AppState {
             cut_branch: on_own_branch(&repo, run),
             commits_ahead: ahead.unwrap_or(0),
             commits_known: ahead.is_some(),
-            merged: agency_core::merge::is_merged(&repo, &run.branch, &base),
+            merged: agency_core::merge::is_merged(&repo, &run.branch, &base)
+                || run.pr_merged_at(agency_core::merge::rev(&repo, &run.branch).as_deref()),
             pushed: agency_core::merge::is_pushed(&repo, &run.branch),
             gone: false,
             dirty: worktree.exists()
@@ -9644,7 +9652,7 @@ impl AppState {
     fn rerun_locked(&self, id: &str) -> Result<RunInfo> {
         let run = self.run_record(id)?;
         if has_active_loop(&run) {
-            bail!("this run is looping — stop the loop before rerunning it manually");
+            bail!("this run is looping. Stop the loop before rerunning it manually");
         }
         // Rerunning is how a closed first tab comes back (AGE-184): it is the
         // one gesture that already means "start this run's own agent again",
@@ -10500,11 +10508,17 @@ impl AppState {
             Vec::new()
         };
         let remote_branches = agency_core::merge::remote_copies(&repo, &run.branch);
+        let commits_unpushed = if remote_branches.is_empty() {
+            0
+        } else {
+            agency_core::merge::commits_unpushed(&repo, &run.branch).unwrap_or(0)
+        };
         Ok(MergePreview {
             base,
             branch: run.branch,
             commits_ahead,
             commits_behind,
+            commits_unpushed,
             worktree_dirty: !dirty_files.is_empty(),
             dirty_files,
             remote_branches,
@@ -10531,7 +10545,7 @@ impl AppState {
         // An active loop is still committing attempts onto this branch; merging
         // mid-flight would take a half-done attempt and keep drifting after.
         if has_active_loop(&run) {
-            bail!("this run is looping — stop the loop before merging");
+            bail!("this run is looping. Stop the loop before merging");
         }
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
         // try_with, not with: a merge that queued behind whatever else is
@@ -10567,8 +10581,13 @@ impl AppState {
     /// already succeeded and must not be reported as a failure.
     fn after_merge_landed(&self, run: &agency_core::registry::Run, repo: &std::path::Path) {
         self.maybe_rebuild_knowledge_graph(repo);
-        // A merged run completes its issue; the forward-only guard in
-        // `advance_issue` keeps this from regressing anything.
+        self.complete_run_issue(run);
+    }
+
+    /// A merged run completes its issue, whichever way it was merged; the
+    /// forward-only guard in `advance_issue` keeps this from regressing
+    /// anything.
+    fn complete_run_issue(&self, run: &agency_core::registry::Run) {
         if let Some(issue_id) = &run.issue_id {
             let reg = self.registry.lock().unwrap();
             if let Err(e) = self.advance_issue(&reg, issue_id, IssueStatus::Done) {
@@ -10826,7 +10845,64 @@ impl AppState {
         delete_branch: bool,
     ) -> Result<agency_core::gh::PrMergeResult> {
         let repo = self.project_repo(project_id)?;
-        agency_core::gh::GhCli::default().merge_pr(&repo, number, method, delete_branch)
+        agency_core::gh::GhCli::default().merge_pr(&repo, number, method, delete_branch, None)
+    }
+
+    /// Merge this run's own pull request on GitHub: the Approve window's ending
+    /// for a branch that has one. A local merge followed by deleting the remote
+    /// branch got the commits onto the base too, but GitHub closes a PR whose
+    /// head branch disappears rather than marking it merged, so every agent PR
+    /// finished that way read as abandoned.
+    ///
+    /// The PR is looked up from the branch here, not taken from the caller, so
+    /// the window cannot merge a PR it only believes is this run's. The merge is
+    /// pinned to the branch's local tip: what the user reviewed in the worktree
+    /// is what lands, or nothing does.
+    pub fn merge_run_pr(
+        &self,
+        id: &str,
+        method: &str,
+        delete_branch: bool,
+    ) -> Result<agency_core::gh::PrMergeResult> {
+        let run = self.branch_run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+        require_own_branch(&run, &repo, "merge")?;
+        require_branch_exists(&run, &repo)?;
+        if has_active_loop(&run) {
+            bail!("this run is looping. Stop the loop before merging");
+        }
+        let gh = agency_core::gh::GhCli::default();
+        let pr = gh
+            .view_pr(&repo, &run.branch)?
+            .filter(|p| p.state == "OPEN")
+            .ok_or_else(|| anyhow!("{} has no open pull request", run.branch))?;
+        let tip = agency_core::merge::rev(&repo, &run.branch)
+            .ok_or_else(|| anyhow!("couldn't read the tip of {}", run.branch))?;
+        // The window pushes just before calling this, and GitHub moves the
+        // PR's head to a pushed commit, then recomputes its mergeability, a
+        // moment after the push itself returns. A pinned merge sent in that
+        // gap is refused as though the branch had diverged, which is not
+        // what happened. Wait out the gap, briefly: past the deadline, or if
+        // gh cannot say, the pin still decides.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while std::time::Instant::now() < deadline {
+            match gh.pr_head(&repo, pr.number) {
+                Ok(head) if !head.caught_up_with(&tip) => {
+                    std::thread::sleep(std::time::Duration::from_secs(1))
+                }
+                _ => break,
+            }
+        }
+        let merged = gh.merge_pr(&repo, pr.number, method, delete_branch, Some(&tip))?;
+        // The local base never saw this merge, and a squash or rebase lands
+        // commits the branch does not have, so record what landed for the
+        // teardown to read (see `Run::pr_merged_head`). Best effort: the merge
+        // itself has happened and must not be reported as a failure.
+        if let Err(e) = self.registry.lock().unwrap().set_pr_merged_head(&run.id, &tip) {
+            log::warn!("recording the PR merge of {}: {e}", run.id);
+        }
+        self.complete_run_issue(&run);
+        Ok(merged)
     }
 
     /// The PR's full multi-file diff, split per file for the diff renderer.
@@ -12086,6 +12162,7 @@ mod tests {
             primary_closed_at: None,
             branch_cut: None,
             own_branch: None,
+            pr_merged_head: None,
             pin_rank: None,
         };
         assert!(super::wants_web_ui(&base));
@@ -13076,6 +13153,7 @@ mod tests {
             primary_closed_at: None,
             branch_cut: None,
             own_branch: None,
+            pr_merged_head: None,
             pin_rank: None,
         }
     }
@@ -13433,6 +13511,7 @@ mod tests {
             primary_closed_at: None,
             branch_cut: None,
             own_branch: None,
+            pr_merged_head: None,
             pin_rank: None,
         };
         assert_eq!(run.kind, "terminal");
@@ -13467,6 +13546,7 @@ mod tests {
             primary_closed_at: None,
             branch_cut: None,
             own_branch: None,
+            pr_merged_head: None,
             pin_rank: None,
         }
     }

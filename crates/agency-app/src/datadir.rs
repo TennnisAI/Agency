@@ -133,6 +133,7 @@ mod tests {
                 primary_closed_at: None,
                 branch_cut: None,
                 own_branch: None,
+                pr_merged_head: None,
                 pin_rank: None,
             })
             .unwrap();

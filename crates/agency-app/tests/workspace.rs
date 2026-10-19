@@ -108,6 +108,7 @@ fn move_workspace_refuses_while_agent_runs_are_live() {
         primary_closed_at: None,
         branch_cut: None,
         own_branch: None,
+        pr_merged_head: None,
         pin_rank: None,
     };
     reg.insert_run(&run).unwrap();

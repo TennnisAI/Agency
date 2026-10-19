@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import {
   CloneProgress,
+  MergeMethod,
+  MergeMethods,
   MergeOutcome,
   MergePreview,
   MergeState,
   PrInfo,
+  PrMergeResult,
   RunCleanup,
   RunSessionInfo,
   abortMergeTask,
@@ -12,10 +15,13 @@ import {
   deleteRunRemoteBranch,
   discardRun,
   finishMergeTask,
+  gitPush,
   listRunSessions,
   mergePreview,
+  mergeRunPr,
   mergeStatus,
   mergeTask,
+  prMergeMethods,
   runCleanup,
   sendMergeConflict,
   spawnMergeConflictAgent,
@@ -24,6 +30,7 @@ import { mergeTidyCopy, removalCopy } from "../lib/runRemoval";
 import { loadFocusTab, PRIMARY_TAB } from "../lib/focusTab";
 import { agentLabel } from "../agents";
 import PillSelect from "./PillSelect";
+import { prMergeError } from "../lib/prMergeError";
 import PrSection from "./PrSection";
 import ConfirmDialog from "./ConfirmDialog";
 import RemovalSummary, { BranchProbeNote } from "./RemovalSummary";
@@ -54,6 +61,31 @@ function refList(refs: string[]) {
 // the value is what keeps it apart from every real session id, which is either
 // a run id or `<run id>--<n>` and can hold neither a space nor this word.
 const NEW_AGENT = "new agent";
+
+const METHOD_LABEL: Record<MergeMethod, string> = {
+  merge: "Merge commit",
+  squash: "Squash",
+  rebase: "Rebase",
+};
+
+// The merge method last used on this project's PRs, so a repo that squashes
+// does not have to be told so on every approve. Per viewer and best effort: a
+// storage that throws just means the first allowed method.
+const methodKey = (projectId: string) => `agency.prMergeMethod.${projectId}`;
+function loadMethod(projectId: string): string | null {
+  try {
+    return localStorage.getItem(methodKey(projectId));
+  } catch {
+    return null;
+  }
+}
+function saveMethod(projectId: string, method: MergeMethod) {
+  try {
+    localStorage.setItem(methodKey(projectId), method);
+  } catch {
+    /* only a preference */
+  }
+}
 
 // How an extra tab is named in the picker and in the sentence that follows:
 // the agent, then the tab number the strip draws.
@@ -102,24 +134,34 @@ export default function MergeModal({
   // focus view already remembers it per run.
   const [target, setTarget] = useState<string | null>(null);
   // Whether the merge takes the branch's remote copy with it. Ticked by
-  // default, as the PR merge dialog's own delete-branch box is, and offered
-  // only for a branch that has actually been published. Before AGE-201 nothing
-  // in this window could reach the remote at all: the teardown under it takes
-  // the worktree and the local branch, and every locally merged agent branch
-  // stayed on the remote for good.
+  // default, as GitHub's own delete-branch box is, and offered only for a
+  // branch that has actually been published. Before AGE-201 nothing in this
+  // window could reach the remote at all: the teardown under it takes the
+  // worktree and the local branch, and every locally merged agent branch
+  // stayed on the remote for good. With an open PR it is the PR merge's
+  // delete-branch option instead, which is the same promise kept by GitHub.
   const [deleteRemote, setDeleteRemote] = useState(true);
-  // Read instead of the state when the deletion actually runs. `attempt` and
-  // `finish` are rebuilt every render, so the `tidyRemoteBranch` they call is
-  // the one from the render the button was clicked on, and the value it closes
-  // over is the checkbox as it stood then. Anything that unticks the box while
-  // the merge is out (an open PR arriving, below) would be read past, and the
-  // branch deleted anyway.
-  const deleteRemoteRef = useRef(deleteRemote);
-  deleteRemoteRef.current = deleteRemote;
   // The branch's PR, probed once by the section below and reported up here.
   // Null both before the probe answers and when there is no PR; only an
   // explicitly open one changes anything above.
   const [pr, setPr] = useState<PrInfo | null>(null);
+  // Read when the local merge lands. The section reporting `pr` unmounts as
+  // the merge starts, but a probe it already had out can still answer after
+  // that, and the `tidyRemoteBranch` that runs then is the one from the render
+  // the button was clicked on.
+  const prRef = useRef(pr);
+  prRef.current = pr;
+  // With an open PR, approving merges that PR on GitHub. The window used to
+  // merge locally and then delete the remote branch, and GitHub closes a PR
+  // whose head branch disappears instead of marking it merged, so the tidy
+  // option was the one that left every agent PR reading as abandoned.
+  const [methods, setMethods] = useState<MergeMethods | null>(null);
+  const [methodsError, setMethodsError] = useState(false);
+  const [method, setMethod] = useState<MergeMethod>("merge");
+  const [prMerged, setPrMerged] = useState<PrMergeResult | null>(null);
+  // The push ahead of a PR merge, for the progress line: commits the agent
+  // made since the last push are not in the PR until they are on GitHub.
+  const [pushing, setPushing] = useState(false);
   // Whether that probe is still out. It is two IPC round-trips, the second of
   // which shells out to `gh`, and until it lands `pr` is null and reads as "no
   // PR". See `prUnknown` below for what waits on it.
@@ -141,13 +183,10 @@ export default function MergeModal({
     const t = window.setTimeout(() => setPrProbeSlow(true), 5000);
     return () => window.clearTimeout(t);
   }, [prProbing, preview]);
-  // Set when a merge landed with the box still ticked but the PR state still
-  // unknown, so the panel can say the branch is still out there and why.
+  // Set when a local merge landed with the box still ticked but a PR on the
+  // branch either unknown or open, so the panel can say the branch is still
+  // out there and why.
   const [remoteSkipped, setRemoteSkipped] = useState(false);
-  // Whether the user has had an opinion about the checkbox yet. An open PR
-  // arrives after the modal has already drawn the box ticked, and unticking it
-  // under a user who ticked it themselves would be the app overruling them.
-  const [remoteTouched, setRemoteTouched] = useState(false);
   // What became of that once the merge landed: the refs that went, empty when
   // the remotes turned out not to have the branch any more.
   const [remoteGone, setRemoteGone] = useState<{ refs: string[] } | null>(null);
@@ -251,14 +290,29 @@ export default function MergeModal({
       .catch(() => {});
   }, [taskId]);
 
-  // GitHub closes a pull request whose head branch is deleted; it only marks it
-  // merged once the commits reach the base branch on the remote, which a local
-  // merge hasn't done yet. So an open PR turns the default off, with the reason
-  // beside the box: the branch is better deleted by merging that PR from Source
-  // Control, which is what leaves the PR saying "merged".
+  // The merge methods the repo allows, asked once an open PR turns up. The
+  // remembered one wins when the repo still allows it; otherwise a plain merge
+  // commit, then whatever is left, which is GitHub's own order.
+  const prOpen = !!projectId && pr?.state === "OPEN";
   useEffect(() => {
-    if (pr?.state === "OPEN" && !remoteTouched) setDeleteRemote(false);
-  }, [pr, remoteTouched]);
+    if (!prOpen || !projectId) return;
+    let live = true;
+    prMergeMethods(projectId)
+      .then((m) => {
+        if (!live) return;
+        setMethods(m);
+        const saved = loadMethod(projectId);
+        const ok = (k: string | null): k is MergeMethod =>
+          k === "merge" || k === "squash" || k === "rebase" ? m[k] : false;
+        setMethod(ok(saved) ? saved : m.merge ? "merge" : m.squash ? "squash" : "rebase");
+      })
+      .catch((e) => {
+        if (!live) return;
+        setMethodsError(true);
+        setError(String(e));
+      });
+    return () => { live = false; };
+  }, [prOpen, projectId]);
 
   // The run's agent tabs, loaded once: "Fix with agent" needs to know whether
   // there is a choice to offer before it offers one.
@@ -341,12 +395,12 @@ export default function MergeModal({
   // contract — the merge has landed, so a remote that says no is a note under
   // the outcome rather than an error over it.
   async function tidyRemoteBranch() {
-    if (!deleteRemoteRef.current || !preview?.remoteBranches.length) return;
+    if (!deleteRemote || !preview?.remoteBranches.length) return;
     // The PR probe never answered, and the merge stopped waiting for it (see
-    // `prProbeSlow`). GitHub closes a PR whose head branch is deleted rather
-    // than marking it merged, so a branch whose PR state is unknown is one
-    // this does not touch.
-    if (projectId && prProbingRef.current) {
+    // `prProbeSlow`), or it answered late with an open PR. GitHub closes a PR
+    // whose head branch is deleted rather than marking it merged, so a branch
+    // whose PR is unknown or open is one this does not touch.
+    if (projectId && (prProbingRef.current || prRef.current?.state === "OPEN")) {
       setRemoteSkipped(true);
       return;
     }
@@ -384,6 +438,43 @@ export default function MergeModal({
       setGitStep(null);
     }
     if (landed) await tidyRemoteBranch();
+  }
+
+  // Merge the branch's open PR on GitHub. Anything the agent committed since
+  // the last push goes up first, since a PR merge takes what GitHub has and
+  // nothing else; the backend then pins the merge to the branch's local tip,
+  // so a push that GitHub has not caught up with fails rather than merging
+  // the PR short.
+  async function mergeViaPr() {
+    if (!preview || !projectId) return;
+    setError("");
+    setMerging(true);
+    setGitStep(null);
+    saveMethod(projectId, method);
+    try {
+      // Read again rather than trusted from when the window opened: an agent
+      // still at work can commit while the window sits there, and a commit
+      // the preview never counted is one that is not pushed, so the pinned
+      // merge would refuse it as a mismatch.
+      const fresh = await mergePreview(taskId);
+      setPreview(fresh);
+      if (fresh.commitsUnpushed > 0) {
+        setPushing(true);
+        await gitPush(taskId, setGitStep);
+        setPushing(false);
+        setGitStep(null);
+      }
+      setPrMerged(await mergeRunPr(taskId, method, deleteRemote));
+    } catch (e) {
+      setError(prMergeError(e, pr?.baseRefName || preview.base));
+      // A push that landed before the merge was refused changes what is left
+      // to push, and the button's label with it.
+      mergePreview(taskId).then(setPreview).catch(() => {});
+    } finally {
+      setMerging(false);
+      setPushing(false);
+      setGitStep(null);
+    }
   }
 
   // Hand the conflict to one of the workspace's agents: it already has the
@@ -470,7 +561,7 @@ export default function MergeModal({
     return () => {
       live = false;
     };
-  }, [taskId, outcome?.kind, state?.merged]);
+  }, [taskId, outcome?.kind, state?.merged, prMerged]);
 
   const conflicts = outcome?.kind === "conflicts";
   // The hand-off's own wording, which the sentinel changes: a new agent is
@@ -541,33 +632,39 @@ export default function MergeModal({
   // finish: either uncommitted (we commit it) or already committed by the agent
   // (we just record it and restore the branch).
   const canFinish = !!state && state.unresolved.length === 0 && (state.merging || state.merged);
-  const step = outcome?.kind === "clean"
+  const step = outcome?.kind === "clean" || prMerged
     ? "done"
     : conflicts
       ? "resolve"
       : merging
         ? "merge"
         : "review";
+  const nothingToMerge = !!preview && preview.commitsAhead === 0;
+  // The PR is the merge: GitHub does it, so there is no local conflict to
+  // resolve and no shared checkout to wait on.
+  const prMode = prOpen && !nothingToMerge;
+  const prBase = pr?.baseRefName || preview?.base || "main";
+  const unpushed = preview?.commitsUnpushed ?? 0;
+  const allowed: MergeMethod[] = methods
+    ? (["merge", "squash", "rebase"] as MergeMethod[]).filter((k) => methods[k])
+    : [];
   const steps: { key: string; label: string }[] = [
     { key: "review", label: "Review" },
     { key: "merge", label: "Merge" },
-    { key: "resolve", label: "Resolve" },
+    ...(prMode || prMerged ? [] : [{ key: "resolve", label: "Resolve" }]),
     { key: "done", label: "Done" },
   ];
-
-  const nothingToMerge = !!preview && preview.commitsAhead === 0;
   // Another run left a merge unfinished in the shared project checkout. Nothing
   // here can proceed until that one is finished or aborted, from its own window.
   const blockedBy = state?.blockedBy ?? null;
-  // The PR probe hasn't answered and there is a remote copy riding on what it
-  // says. Merging now deletes that copy on a default that was never checked
-  // against an open PR, and GitHub closes a PR whose head branch goes rather
-  // than marking it merged. The probe is two IPC round-trips and the button
-  // below has `autoFocus`, so Enter beats it comfortably; worse, the section
-  // that runs it unmounts the moment merging starts, so a probe that hasn't
-  // landed by then never lands. Waiting is only needed while something is
-  // actually at stake: no remote copy, or no project to ask about, and there
-  // is nothing for the answer to change.
+  // The PR probe hasn't answered for a branch that has a remote copy, so it
+  // could have a PR. The answer decides which merge this window offers: a PR
+  // is merged on GitHub, anything else locally. The probe is two IPC
+  // round-trips and the button below has `autoFocus`, so Enter beats it
+  // comfortably; worse, the section that runs it unmounts the moment merging
+  // starts, so a probe that hasn't landed by then never lands. A branch never
+  // pushed, or a project with nothing to ask, cannot have a PR, and waits for
+  // nothing.
   const prUnknown =
     !!projectId &&
     prProbing &&
@@ -619,18 +716,26 @@ export default function MergeModal({
           ) : preview ? (
             <div className="merge-review">
               <p className="merge-summary">
-                Merge <code>{preview.branch}</code> → <code>{preview.base}</code>
+                {prMode
+                  ? <>Merge pull request #{pr.number} → <code>{prBase}</code></>
+                  : <>Merge <code>{preview.branch}</code> → <code>{preview.base}</code></>}
               </p>
               {nothingToMerge ? (
                 <p className="merge-warn">
-                  Nothing to merge — this agent has no committed changes on top of <code>{preview.base}</code>.
+                  Nothing to merge: this agent has no committed changes on top of <code>{preview.base}</code>.
                 </p>
               ) : (
                 <p className="merge-note">
                   {preview.commitsAhead} commit{preview.commitsAhead === 1 ? "" : "s"} ahead of <code>{preview.base}</code>.
+                  {/* A PR merge takes only what GitHub has, so anything newer
+                      goes up first, and the button says so too. */}
+                  {prMode && unpushed > 0 &&
+                    ` ${unpushed} ${unpushed === 1 ? "isn't" : "aren't"} on GitHub yet, so ${
+                      unpushed === 1 ? "it's" : "they're"
+                    } pushed first.`}
                 </p>
               )}
-              {!nothingToMerge && preview.commitsBehind > 0 && (
+              {!prMode && !nothingToMerge && preview.commitsBehind > 0 && (
                 <p className="merge-warn">
                   <code>{preview.base}</code> has moved ahead by {preview.commitsBehind} commit
                   {preview.commitsBehind === 1 ? "" : "s"} since this agent branched, so the merge may hit conflicts.
@@ -643,55 +748,91 @@ export default function MergeModal({
                   work is merged. Commit them in Source Control first to include them.
                 </p>
               )}
-              {blockedBy && (
+              {!prMode && blockedBy && (
                 <p className="merge-warn">
                   <code>{blockedBy}</code> is part-way through a merge in the project's checkout, and every agent
                   merges there. Finish or abort that one from its own Approve window first; this branch is untouched
                   in the meantime.
                 </p>
               )}
+              {/* The count above is against the run's own merge target, and
+                  the PR merges into its own base. Said when the two differ,
+                  so the summary and the count are not about different
+                  branches without a word. */}
+              {prMode && pr.baseRefName && pr.baseRefName !== preview.base && (
+                <p className="merge-warn">
+                  #{pr.number} merges into <code>{pr.baseRefName}</code>, not <code>{preview.base}</code>,
+                  which this agent was set to merge into.
+                </p>
+              )}
+              {prMode && pr.isDraft && (
+                <p className="merge-warn">
+                  #{pr.number} is a draft. Mark it ready for review on GitHub, then merge it here.
+                </p>
+              )}
+              {prMode && methods && allowed.length === 0 && (
+                <p className="merge-warn">This repository has no merge methods enabled for pull requests.</p>
+              )}
               {/* Only for a branch that has a remote copy: everything else has
                   nothing to offer deleting, and an unticked box for a branch
-                  that was never pushed is one more thing to read past. */}
-              {!nothingToMerge && preview.remoteBranches.length > 0 && (
+                  that was never pushed is one more thing to read past. Held
+                  back while the PR probe is out, since its answer changes
+                  which promise the box makes. */}
+              {!nothingToMerge && !prUnknown && preview.remoteBranches.length > 0 && (
                 <label
                   className="merge-option"
-                  // The second sentence is the honest version of what the
-                  // backend checks: it proves the commits are on the local
-                  // base, which is not the same as proving they are anywhere
-                  // else. A merge from this window is unpushed when the
-                  // deletion runs, so for that moment this checkout is the
-                  // only copy of the work.
-                  title="Deletes the branch on the remotes it was pushed to, once the merge has landed. The merge itself is local until you push it, so until then the merged commits live only in this checkout. The agent's worktree and its local branch stay until you archive or delete the agent."
+                  title={
+                    prMode
+                      ? "GitHub deletes the branch once the pull request is merged. The agent's worktree and its local branch stay until you archive or delete the agent."
+                      // The second sentence is the honest version of what the
+                      // backend checks: it proves the commits are on the local
+                      // base, which is not the same as proving they are
+                      // anywhere else. A merge from this window is unpushed
+                      // when the deletion runs, so for that moment this
+                      // checkout is the only copy of the work.
+                      : "Deletes the branch on the remotes it was pushed to, once the merge has landed. The merge itself is local until you push it, so until then the merged commits live only in this checkout. The agent's worktree and its local branch stay until you archive or delete the agent."
+                  }
                 >
                   <input
                     type="checkbox"
                     checked={deleteRemote}
-                    onChange={(e) => { setRemoteTouched(true); setDeleteRemote(e.target.checked); }}
+                    onChange={(e) => setDeleteRemote(e.target.checked)}
                   />
-                  <span>Delete {refList(preview.remoteBranches)} after merging</span>
+                  {prMode
+                    ? <span>Delete the branch on GitHub</span>
+                    : <span>Delete {refList(preview.remoteBranches)} after merging</span>}
                 </label>
-              )}
-              {!nothingToMerge && preview.remoteBranches.length > 0 && pr?.state === "OPEN" && (
-                <p className="merge-warn">
-                  #{pr.number} is open on this branch. Deleting the branch on the remote closes
-                  that PR rather than marking it merged, so merging the PR from Source Control is
-                  the tidier ending; it deletes the branch for you.
-                </p>
               )}
               {!nothingToMerge && (
                 <div className="git-actions">
-                  <button ref={mergeBtn} autoFocus onClick={attempt}
-                    disabled={!!blockedBy || prUnknown}
-                    title={
-                      blockedBy
-                        ? `Blocked: ${blockedBy} is mid-merge`
-                        : prUnknown
-                          ? "Checking whether this branch has an open pull request, which decides whether the merge takes the remote branch with it."
-                          : undefined
-                    }>
-                    Merge into {preview.base}
-                  </button>
+                  {/* How GitHub merges it, beside the button that asks it to.
+                      Only a choice when the repo allows more than one. */}
+                  {prMode && allowed.length > 1 && (
+                    <PillSelect
+                      value={method}
+                      options={allowed.map((k) => ({ value: k, label: METHOD_LABEL[k] }))}
+                      onChange={setMethod}
+                      title="How GitHub merges the pull request"
+                    />
+                  )}
+                  {prMode ? (
+                    <button ref={mergeBtn} autoFocus onClick={mergeViaPr}
+                      disabled={pr.isDraft || (!methods && !methodsError) || (!!methods && allowed.length === 0)}>
+                      {unpushed > 0 ? "Push and merge" : "Merge pull request"}
+                    </button>
+                  ) : (
+                    <button ref={mergeBtn} autoFocus onClick={attempt}
+                      disabled={!!blockedBy || prUnknown}
+                      title={
+                        blockedBy
+                          ? `Blocked: ${blockedBy} is mid-merge`
+                          : prUnknown
+                            ? "Checking whether this branch has an open pull request, which decides how it is merged."
+                            : undefined
+                      }>
+                      {prUnknown ? "Checking GitHub…" : `Merge into ${preview.base}`}
+                    </button>
+                  )}
                   <button className="ghost" onClick={onClose}>Cancel</button>
                 </div>
               )}
@@ -710,13 +851,37 @@ export default function MergeModal({
           ) : null
         )}
 
-        {merging && <ProgressReadout progress={gitStep} fallback="Merging…" />}
+        {merging && (
+          <ProgressReadout
+            progress={gitStep}
+            fallback={pushing ? "Pushing…" : prMode ? "Merging on GitHub…" : "Merging…"}
+          />
+        )}
 
-        {outcome?.kind === "clean" && (
+        {(outcome?.kind === "clean" || prMerged) && (
           <div className="merge-done">
-            <p className="merge-ok">
-              ✓ Merged cleanly into {preview?.base ?? "main"} · <code>{outcome.commit.slice(0, 10)}</code>
-            </p>
+            {prMerged ? (
+              <>
+                <p className="merge-ok">
+                  ✓ Merged #{pr?.number} into {prBase}
+                </p>
+                {/* GitHub did this merge, so the project's checkout has not
+                    seen it, where a local merge would have moved it. */}
+                <p className="merge-note">
+                  Your local <code>{prBase}</code> doesn't have it yet. Pull <code>{prBase}</code> to bring it in.
+                </p>
+                {prMerged.branchDeleted && (
+                  <p className="merge-note">Deleted <code>{prMerged.branchDeleted}</code> on GitHub.</p>
+                )}
+                {/* The merge landed; only the branch cleanup didn't. A note,
+                    not an error, so it cannot read as a failed merge. */}
+                {prMerged.warning && <p className="removal-warn">{prMerged.warning}</p>}
+              </>
+            ) : outcome?.kind === "clean" && (
+              <p className="merge-ok">
+                ✓ Merged cleanly into {preview?.base ?? "main"} · <code>{outcome.commit.slice(0, 10)}</code>
+              </p>
+            )}
             {/* What happened to the remote copy, said here rather than in a
                 toast: it is part of what this merge did, and the buttons under
                 it are about what is left. */}
@@ -737,10 +902,9 @@ export default function MergeModal({
             )}
             {remoteSkipped && (
               <p className="removal-warn">
-                Kept {refList(preview?.remoteBranches ?? [])} on the remote. The check for an open
-                pull request on this branch didn't answer, and deleting the branch under an open
-                PR closes it rather than marking it merged. Delete it from Source Control once
-                you've looked.
+                Kept {refList(preview?.remoteBranches ?? [])} on the remote. This branch may have an
+                open pull request, and deleting the branch under one closes it rather than marking
+                it merged. Delete it from Source Control once you've looked.
               </p>
             )}
             {remoteError && <p className="removal-warn">{remoteError}</p>}

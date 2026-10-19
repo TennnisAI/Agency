@@ -3064,6 +3064,129 @@ enum CheckStatus {
 struct CheckSlot {
     status: Mutex<CheckStatus>,
     cancelled: std::sync::atomic::AtomicBool,
+    /// The check's process group, once it has spawned.
+    pgid: Mutex<Option<u32>>,
+}
+
+/// Run one loop check to completion, cancellation or timeout, and record how it
+/// ended in `slot`. Runs on its own thread, which dies with the app.
+fn run_check(worktree: &Path, command: &str, timeout: std::time::Duration, slot: &CheckSlot) {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    let mut cmd = std::process::Command::new(shell);
+    cmd.arg("-lc")
+        .arg(command)
+        .current_dir(worktree)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    // Its own process group, so an exit can stop the whole check (the test
+    // runner a `cargo test` starts, say) and not only the shell Agency spawned.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("loop check failed to spawn: {e}");
+            *slot.status.lock().unwrap() = CheckStatus::Done(Some(127));
+            return;
+        }
+    };
+    *slot.pgid.lock().unwrap() = Some(child.id());
+    let deadline = std::time::Instant::now() + timeout;
+    let code = loop {
+        // Loop stopped/discarded: kill the child now rather than let a
+        // full test run keep writing into a worktree that may be
+        // removed out from under it.
+        if slot.cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        match child.try_wait() {
+            // `code()` is None when the check died on a signal; both
+            // that and timeout report as None (a failed check).
+            Ok(Some(status)) => break status.code(),
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(500)),
+            Err(e) => {
+                log::warn!("loop check wait failed: {e}");
+                break Some(127);
+            }
+        }
+    };
+    *slot.status.lock().unwrap() = CheckStatus::Done(code);
+}
+
+/// Stop a check on the way out of the app. Setting `cancelled` is not enough
+/// here: the thread that would act on it exits with the process, so the check
+/// is signalled directly. A quit or an update's restart that left the agents
+/// running used to leave a running check behind with nothing to reap it, and
+/// the next launch, finding the loop still Checking with no check in flight,
+/// started a second one in the same worktree beside it (AGE-210).
+fn stop_check_for_exit(slot: &CheckSlot) {
+    slot.cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+    if let Some(pgid) = *slot.pgid.lock().unwrap() {
+        signal_group_stop(pgid);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod loop_check_tests {
+    use super::{run_check, stop_check_for_exit, CheckSlot, CheckStatus};
+    use std::sync::{atomic::AtomicBool, Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    fn alive(pid: &str) -> bool {
+        std::process::Command::new("/bin/kill")
+            .args(["-0", pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+
+    fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    /// The check's own child is what a `cargo test` check spends its time in,
+    /// so stopping the shell alone would leave the real work running.
+    #[test]
+    fn an_exit_stops_the_whole_check_and_not_only_its_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("child.pid");
+        let command = format!("sleep 120 & echo $! > {}; wait", pidfile.display());
+        let slot = Arc::new(CheckSlot {
+            status: Mutex::new(CheckStatus::Running),
+            cancelled: AtomicBool::new(false),
+            pgid: Mutex::new(None),
+        });
+        let worktree = dir.path().to_path_buf();
+        let runner = slot.clone();
+        let thread = std::thread::spawn(move || {
+            run_check(&worktree, &command, Duration::from_secs(120), &runner)
+        });
+
+        let read_pid = || std::fs::read_to_string(&pidfile).ok().filter(|s| s.ends_with('\n'));
+        wait_for("the check to start its child", || read_pid().is_some());
+        let child = read_pid().unwrap().trim().to_string();
+        assert!(alive(&child), "the check's child must be running first");
+
+        stop_check_for_exit(&slot);
+        wait_for("the check's child to stop", || !alive(&child));
+        thread.join().unwrap();
+        assert!(matches!(*slot.status.lock().unwrap(), CheckStatus::Done(None)));
+    }
 }
 
 /// A loop reaching a terminal state this tick, for the watcher thread to
@@ -9781,56 +9904,12 @@ impl AppState {
         let slot = std::sync::Arc::new(CheckSlot {
             status: Mutex::new(CheckStatus::Running),
             cancelled: std::sync::atomic::AtomicBool::new(false),
+            pgid: Mutex::new(None),
         });
         self.checks.lock().unwrap().insert(run.id.clone(), slot.clone());
         let command = cfg.check_command.clone();
         let timeout = std::time::Duration::from_secs(cfg.check_timeout_secs.max(1));
-        std::thread::spawn(move || {
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-            let spawned = std::process::Command::new(shell)
-                .arg("-lc")
-                .arg(&command)
-                .current_dir(&worktree)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
-            let mut child = match spawned {
-                Ok(c) => c,
-                Err(e) => {
-                    log::warn!("loop check failed to spawn: {e}");
-                    *slot.status.lock().unwrap() = CheckStatus::Done(Some(127));
-                    return;
-                }
-            };
-            let deadline = std::time::Instant::now() + timeout;
-            let code = loop {
-                // Loop stopped/discarded: kill the child now rather than let a
-                // full test run keep writing into a worktree that may be
-                // removed out from under it.
-                if slot.cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    break None;
-                }
-                match child.try_wait() {
-                    // `code()` is None when the check died on a signal; both
-                    // that and timeout report as None (a failed check).
-                    Ok(Some(status)) => break status.code(),
-                    Ok(None) if std::time::Instant::now() >= deadline => {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        break None;
-                    }
-                    Ok(None) => std::thread::sleep(std::time::Duration::from_millis(500)),
-                    Err(e) => {
-                        log::warn!("loop check wait failed: {e}");
-                        break Some(127);
-                    }
-                }
-            };
-            *slot.status.lock().unwrap() = CheckStatus::Done(code);
-        });
+        std::thread::spawn(move || run_check(&worktree, &command, timeout, &slot));
         Ok(())
     }
 
@@ -11394,10 +11473,15 @@ impl AppState {
         self.kill_all_and_shutdown();
     }
 
-    /// Count of all sessions currently tracked by the daemon (used for the quit
-    /// confirmation message). Returns 0 on any error.
-    pub(crate) fn session_count(&self) -> usize {
-        self.term.read().unwrap().list().map(|s| s.len()).unwrap_or(0)
+    /// How many daemon sessions are running, for the quit and restart prompts.
+    /// `None` when the daemon could not be asked, which a prompt has to read as
+    /// "maybe some", never as none. This used to count exited sessions too, so
+    /// the quit dialog offered to leave running agents that had already
+    /// finished, and it read an error as 0, so a daemon that did not answer got
+    /// the idle prompt, whose only button stopped every session.
+    pub(crate) fn running_session_count(&self) -> Option<usize> {
+        let sessions = self.term.read().unwrap().list().ok()?;
+        Some(sessions.iter().filter(|(_, s)| matches!(s, SessionStatus::Running)).count())
     }
 
     /// Kill every daemon session, then tell the daemon to shut down.
@@ -11406,8 +11490,9 @@ impl AppState {
     pub(crate) fn kill_all_and_shutdown(&self) {
         // A graph build is not a daemon session, so it used to outlive the
         // quit: graphify kept running with the agent CLI it spawns per document
-        // still billing, and no window left to say so or to stop it.
-        self.stop_all_knowledge_builds();
+        // still billing, and no window left to say so or to stop it. A loop
+        // check is not one either.
+        self.stop_app_children();
         let sessions = self.term.read().unwrap().list();
         if let Ok(sessions) = sessions {
             for (id, _) in sessions {
@@ -11417,17 +11502,29 @@ impl AppState {
         let _ = self.term.read().unwrap().shutdown();
     }
 
-    /// Let go of everything for an exit that leaves the agents running: the
-    /// quit dialog's "leave running" and an update's relaunch (AGE-210). The
-    /// daemon and its sessions carry on, and the next [`AppState::new`] adopts
-    /// them.
+    /// Get ready to exit, doing with the agents what the user chose. `Stop`
+    /// ends every session and the daemon. `Leave`, the quit dialog's "Leave
+    /// running" and every update's relaunch (AGE-210), lets go of the daemon
+    /// and its sessions carry on for the next [`AppState::new`] to adopt.
     ///
-    /// Graph builds are stopped all the same. They are this process's children,
-    /// not the daemon's, so nothing would reap one, record its outcome or offer
-    /// to stop it once the app is gone; the next launch would not know it was
-    /// running.
-    pub fn release_for_exit(&self) {
+    /// Graph builds and loop checks are stopped either way. They are this
+    /// process's children, not the daemon's, so nothing would reap one, record
+    /// its outcome or offer to stop it once the app is gone; the next launch
+    /// would not know it was running.
+    pub fn prepare_exit(&self, agents: crate::lifecycle::Agents) {
+        match agents {
+            crate::lifecycle::Agents::Stop => self.kill_all_and_shutdown(),
+            crate::lifecycle::Agents::Leave => self.stop_app_children(),
+        }
+    }
+
+    /// Stop what this process spawned itself rather than through the daemon.
+    fn stop_app_children(&self) {
         self.stop_all_knowledge_builds();
+        let checks: Vec<_> = self.checks.lock().unwrap().values().cloned().collect();
+        for slot in &checks {
+            stop_check_for_exit(slot);
+        }
     }
 
     /// Signal every running graph build to stop, on the way out. Signal only:
@@ -11775,20 +11872,29 @@ fn wait_for_build(
 /// graphify spawns per document is what is actually spending the user's plan,
 /// and signalling only the process Agency started leaves it running.
 fn signal_build_stop(child: &Arc<Mutex<std::process::Child>>) {
+    let pgid = child.lock().unwrap().id();
+    if !signal_group_stop(pgid) {
+        let _ = child.lock().unwrap().kill();
+    }
+}
+
+/// SIGTERM to every process in the group `pgid` leads. False when it could not
+/// be sent, including everywhere but unix.
+fn signal_group_stop(pgid: u32) -> bool {
     #[cfg(unix)]
     {
-        let pgid = child.lock().unwrap().id();
-        let signalled = std::process::Command::new("/bin/kill")
+        std::process::Command::new("/bin/kill")
             .args(["-TERM", &format!("-{pgid}")])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
-            .is_ok_and(|s| s.success());
-        if signalled {
-            return;
-        }
+            .is_ok_and(|s| s.success())
     }
-    let _ = child.lock().unwrap().kill();
+    #[cfg(not(unix))]
+    {
+        let _ = pgid;
+        false
+    }
 }
 
 /// Whether the program a command line runs is installed. Command overrides and

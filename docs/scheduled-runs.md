@@ -39,8 +39,17 @@ due" function on the existing 2 s poller, and a table.
   `lifecycle::quit(Agents::Stop)`, which kills every daemon session and shuts
   `agency-termd` down; "Leave running" exits the app alone, and the next launch
   adopts whatever the daemon still hosts. An update's restart always takes the
-  second path. Either way the poller stops with the app, and nothing is
-  registered with launchd.
+  second path, and so does the single Quit offered when nothing is running: a
+  scheduled run can fire while that prompt is up, and the daemon exits by
+  itself once it has no clients and nothing running. A count the daemon could
+  not give is treated as "maybe some", so both choices are offered. Either way
+  the poller stops with the app, graph builds and loop checks (the app's own
+  children) are stopped, and nothing is registered with launchd. Left-running sessions are unwatched until the next
+  launch: no notifications, no queued-message delivery, no loop steps, and no
+  preview or editor tools, which the app serves. Adoption is not guaranteed
+  either: a next launch on a release that bumps the daemon's
+  `PROTOCOL_VERSION`, installed by hand rather than through the update panel,
+  replaces the daemon and ends them, and they resume as after a stop.
 - **There is no open-at-login.** Agency runs from the moment the user opens it
   until they quit it or log out.
 - **Sleep is invisible to the poller.** Nothing listens for sleep or wake. The

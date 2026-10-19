@@ -680,10 +680,24 @@ export interface AgentCliInfo {
 export const agentCliInfo = () => invoke<AgentCliInfo[]>("agent_cli_info");
 export const createInstallTerminal = (projectId: string, agent: string, command: string) =>
   invoke<RunInfo>("create_install_terminal", { projectId, agent, command });
-export const confirmQuit = () => invoke<void>("confirm_quit");
-// Quits without stopping the agents: the daemon keeps them, and the next launch
-// picks them back up (AGE-210).
-export const quitLeavingAgents = () => invoke<void>("quit_leaving_agents");
+// What a quit does with the daemon's sessions: "leave" keeps them running
+// while Agency is closed (AGE-210), "stop" ends them.
+export type QuitAgents = "stop" | "leave";
+export interface QuitChoice {
+  label: string;
+  agents: QuitAgents;
+}
+// The quit prompt, built by the backend (`lifecycle::prompt`) so the styled
+// dialog and the native fallback say and do the same thing.
+export interface QuitPrompt {
+  title: string;
+  body: string;
+  confirm: QuitChoice;
+  alt: QuitChoice | null;
+}
+// Quits with the agents treated as one of the prompt's choices said. Only the
+// first call counts.
+export const quit = (agents: QuitAgents) => invoke<void>("quit", { agents });
 // Fills an empty title from the first prompt, and when the branch is still the
 // empty-prompt `agent/<id>` fallback, renames it to match (AGE-183).
 export const setRunTitle = (id: string, firstPrompt: string) =>
@@ -1915,7 +1929,8 @@ export const lastUpdateCheck = () => invoke<UpdateCheck | null>("last_update_che
  *  Resolves with the version installed. Never restarts — see `restartApp`. */
 export const installUpdate = () => invoke<string>("install_update");
 /** Sessions the terminal daemon is running, for the restart warning. */
-export const runningSessions = () => invoke<number>("running_sessions");
+// null when the daemon could not be asked.
+export const runningSessions = () => invoke<number | null>("running_sessions");
 /** Relaunch into the version that was just installed. */
 export const restartApp = () => invoke<void>("restart_app");
 export const getUpdateCheckEnabled = () => invoke<boolean>("get_update_check_enabled");

@@ -34,6 +34,8 @@ mod webview_menu;
 pub use sendq::{Notice, NoticeKind};
 // The derived state a run is in, so the attention tests can assert on it.
 pub use activity::ActivityState;
+// How a quit treats the agents, so the exit tests can choose.
+pub use lifecycle::Agents;
 pub use state::{
     AppState, IssueKeyPreview, KeyMismatch, KnowledgeConfigDto, ProviderSettings, RunInfo,
     SyncResult,
@@ -389,8 +391,7 @@ pub fn run() {
             commands::import_file,
             commands::import_path,
             commands::dropped_folders,
-            commands::confirm_quit,
-            commands::quit_leaving_agents,
+            commands::quit,
             commands::request_quit,
             commands::agent_installed,
             commands::agent_cli_info,

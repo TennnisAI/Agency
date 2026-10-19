@@ -1,4 +1,4 @@
-use agency_app_lib::{ActivityState, AppState, NoticeKind};
+use agency_app_lib::{ActivityState, Agents, AppState, NoticeKind};
 use std::path::Path;
 
 mod common;
@@ -1968,7 +1968,7 @@ fn a_quit_that_leaves_agents_running_hands_them_to_the_next_launch() {
     let id = live_terminal(&quitting, &project.id);
     quitting.run_input(&id, b"export AGE210=held\r").unwrap();
     assert!(pane_gets(&quitting, &id, "AGE210=held"), "the export must have run before the quit");
-    quitting.release_for_exit();
+    quitting.prepare_exit(Agents::Leave);
     drop(quitting);
 
     let reopened = AppState::new(&db, dir.path()).unwrap();
@@ -1983,6 +1983,25 @@ fn a_quit_that_leaves_agents_running_hands_them_to_the_next_launch() {
     );
     drop(reopened);
     drop(teardown);
+}
+
+/// The other answer: "Stop and quit" ends the sessions it was asked to. With
+/// the test above, a quit wired the wrong way round fails one or the other.
+#[test]
+fn a_quit_that_stops_the_agents_ends_their_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let state = common::state(&dir);
+    let project = state.add_project("demo", &repo).unwrap();
+    let id = live_terminal(&state, &project.id);
+
+    state.prepare_exit(Agents::Stop);
+    assert!(
+        !matches!(state.run_status(&id), Ok(SessionStatus::Running)),
+        "a stopping quit must not leave the session running"
+    );
 }
 
 /// The marker's whole point: while something is held, the run says so — and it
@@ -3528,6 +3547,29 @@ fn a_running_build_shows_its_output_and_can_be_stopped() {
     assert!(cfg.last_build_secs.is_some(), "a finished build says how long it took");
     assert!(!cfg.build_log.is_empty(), "the output stays readable after the build ends");
     assert!(state.stop_knowledge_build(&p.id).is_err(), "nothing to stop is an error, not a no-op");
+}
+
+/// A quit that leaves the agents running still stops graph builds (AGE-210).
+/// A build is the app's child, not the daemon's: left running, it would go on
+/// spending through the agent CLI it spawns per document with nothing to reap
+/// it, and the next launch would not know it had ever started.
+#[test]
+fn a_quit_that_leaves_agents_running_still_stops_graph_builds() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = common::state(&dir);
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let p = state.add_project("demo", &repo).unwrap();
+
+    let build = "printf 'started\\n'; sleep 120";
+    state.save_knowledge_config(&p.id, true, true, None, Some(build.to_string())).unwrap();
+    state.build_knowledge_graph(&p.id).unwrap();
+    assert!(state.knowledge_config(&p.id).unwrap().building, "the build must be running first");
+
+    state.prepare_exit(Agents::Leave);
+    let cfg = await_settled_build(&state, &p.id);
+    assert!(cfg.last_build_stopped, "the quit must have stopped the build, not let it finish");
 }
 
 /// Picking a model writes the build command and starts nothing. The whole

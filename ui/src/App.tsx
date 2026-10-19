@@ -17,8 +17,7 @@ import Resizer from "./components/Resizer";
 import Toasts from "./components/Toasts";
 import { useShortcuts } from "./hooks/useShortcuts";
 import { usePaneWidth } from "./hooks/usePaneWidth";
-import { FileRoot, Project, QueueNotice, RepoReadiness, RunInfo, UpdateCheck, agentOnboardingNeeded, confirmQuit, createDir, createFile, createRun, ensureWorkspaceGuide, getWorkspace, gitLogGraph, inspectRepo, lastUpdateCheck, listArchivedRuns, listIssues, listProjects, quitLeavingAgents, readFile, rememberedModel, setMenuContext, setUiState, writeFile } from "./api";
-import { quitBody } from "./lib/quitPrompt";
+import { FileRoot, Project, QueueNotice, RepoReadiness, RunInfo, UpdateCheck, agentOnboardingNeeded, createDir, createFile, createRun, ensureWorkspaceGuide, getWorkspace, gitLogGraph, inspectRepo, lastUpdateCheck, listArchivedRuns, listIssues, listProjects, quit, QuitAgents, QuitPrompt, readFile, rememberedModel, setMenuContext, setUiState, writeFile } from "./api";
 import { pickDefaultAgent } from "./lib/defaultAgent";
 import { PENDING_ISSUE_KEY, PENDING_QUICKADD_KEY, isClosed, issueLabel } from "./lib/issues";
 import { NAVIGATE_EVENT, NavTarget } from "./lib/navigate";
@@ -62,9 +61,11 @@ function Shell() {
   // confirm dialog the tile, the rail and the focus header use.
   // null = no confirmation showing.
   const [agentAction, setAgentAction] = useState<{ action: Removal; run: RunInfo } | null>(null);
-  // Sessions the quit would stop (from the backend's quit-requested event);
-  // null = no quit confirmation showing.
-  const [quitPrompt, setQuitPrompt] = useState<number | null>(null);
+  // The backend's quit-requested prompt; null = no quit confirmation showing.
+  const [quitPrompt, setQuitPrompt] = useState<QuitPrompt | null>(null);
+  // An answer is on its way. The exit is not immediate, and a second click
+  // meanwhile could turn "Leave running" into "Stop and quit".
+  const [quitting, setQuitting] = useState(false);
   const sidebar = usePaneWidth("sidebar", 266, 200, 460);
 
   // Picks the agent a menu/shortcut "New Agent" spawns — the shared pick
@@ -629,11 +630,16 @@ function Shell() {
     return () => window.removeEventListener(PROJECTS_CHANGED_EVENT, onProjects);
   }, []);
 
+  function answerQuit(agents: QuitAgents) {
+    setQuitting(true);
+    quit(agents).catch(() => setQuitting(false));
+  }
+
   // Backend-driven navigation: quit confirmations, tray-menu and app-menu
   // clicks arrive as Tauri events.
   useEffect(() => {
     const subs = [
-      listen<number>("quit-requested", (e) => setQuitPrompt(e.payload)),
+      listen<QuitPrompt>("quit-requested", (e) => setQuitPrompt(e.payload)),
       listen<string>("menu", (e) => menuRef.current(e.payload)),
       listen<{ projectId: string; runId: string }>("tray-open-run", async (e) => {
         const p = (await listProjects().catch(() => [])).find((x) => x.id === e.payload.projectId);
@@ -818,18 +824,17 @@ function Shell() {
         />
       )}
       {quitPrompt !== null && (
-        // With anything running, leaving it running is the confirm and stopping
-        // it the alternative: a quit used to kill every agent whether or not
-        // the user was done with them (AGE-210), and the safe answer belongs on
-        // the button that is not red.
+        // Which button means which quit is the backend's call
+        // (`lifecycle::prompt`), so this only passes the answer back.
         <ConfirmDialog
-          title="Quit Agency?"
-          body={quitBody(quitPrompt)}
-          confirmLabel={quitPrompt > 0 ? "Leave running" : "Quit"}
-          altLabel={quitPrompt > 0 ? "Stop and quit" : undefined}
+          title={quitPrompt.title}
+          body={quitPrompt.body}
+          confirmLabel={quitPrompt.confirm.label}
+          altLabel={quitPrompt.alt?.label}
           altDanger
-          onAlt={() => { confirmQuit().catch(() => {}); }}
-          onConfirm={() => { (quitPrompt > 0 ? quitLeavingAgents() : confirmQuit()).catch(() => {}); }}
+          busy={quitting}
+          onAlt={() => { if (quitPrompt.alt) answerQuit(quitPrompt.alt.agents); }}
+          onConfirm={() => answerQuit(quitPrompt.confirm.agents)}
           onCancel={() => setQuitPrompt(null)}
         />
       )}

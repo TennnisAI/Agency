@@ -24,9 +24,9 @@
 //!   directory per process, so pointing each Agency session at one of its own
 //!   makes "the most recent conversation here" that session's, with no state
 //!   for Agency to keep.
-//! - **A conversation of its own** ([`Pin::Id`], claude, copilot, cursor and
-//!   kimi). The CLI names conversations, so Agency mints an id, opens the
-//!   conversation under it, records it against the session, and later
+//! - **A conversation of its own** ([`Pin::Id`], claude, copilot, cursor, kimi
+//!   and gemini). The CLI names conversations, so Agency mints an id, opens
+//!   the conversation under it, records it against the session, and later
 //!   reopens that exact one.
 //!
 //! Everything else keeps its old resume recipe. A guessed flag would be worse
@@ -66,6 +66,15 @@
 //! the whole question. What each writes at launch and what only a turn adds
 //! is recorded on [`conversation_path`] and [`turn_marker`], because the two
 //! differ.
+//!
+//! Gemini 0.64.0 (AGE-192), the same way: no credential here either, so it
+//! was pointed at a stand-in for the Gemini API through its own
+//! `GOOGLE_GEMINI_BASE_URL`, replying with every "remember the word X" in the
+//! request. In a pty under tmux, two conversations opened in one directory
+//! under ids sharing their first 8 characters, kiwi and mango; `--resume
+//! <first>` with a typed follow-up sent kiwi and the follow-up and nothing of
+//! mango, and `--resume <second>` the reverse. Where it keeps them is on
+//! [`gemini_chats_dir`], because no one path will do.
 
 use md5::{Digest, Md5};
 use std::path::{Path, PathBuf};
@@ -111,9 +120,9 @@ pub enum Pin {
 ///   `OPENCODE_DB` (or `XDG_DATA_HOME` above it, which also carries
 ///   `auth.json`) would log the user out on every Agency launch.
 ///
-/// Hermes and gemini stay absent too, after AGE-190 installed and read all
-/// four agents that had no resume recipe (cursor and kimi are in
-/// [`id_flags`] now):
+/// Hermes stays absent too, after AGE-190 installed and read all four agents
+/// that had no resume recipe (cursor and kimi are in [`id_flags`] now, and
+/// gemini followed once a turn could be driven, AGE-192):
 ///
 /// - **hermes** mints its own session id, `<YYYYmmdd_HHMMSS>_<6 hex>`, in its
 ///   CLI and takes none from outside: no flag, and the one variable that
@@ -131,22 +140,6 @@ pub enum Pin {
 ///   read back after the first turn (the newest row whose cwd is the
 ///   worktree); that is a third lever, discovering rather than naming, and
 ///   is not built.
-/// - **gemini** has claude's shape, read off 0.58.0's `--help` and source:
-///   `--session-id <id>` "Start a new session with a manually provided UUID"
-///   and refuses one already present ("already exists. Use --resume to
-///   resume it"), `--resume <uuid>` reopens exactly and exits on an unknown
-///   one. It is not here because no turn could be driven (it takes a
-///   `GEMINI_API_KEY` or a login, and this machine had neither), and the
-///   probe would need more than a path: the transcript is
-///   `~/.gemini/tmp/<slug>/chats/session-<YYYY-MM-DDTHH-MM>-<first 8 of
-///   id>.jsonl`, where the slug is assigned per project root in
-///   `~/.gemini/projects.json` rather than derived from it, so the file is
-///   found by registry lookup and glob. Launched in a pty with a fresh id,
-///   it wrote that file at once with the metadata line alone; on the next
-///   launch `--resume <that id>` said "No previous sessions found for this
-///   project" and the file was gone. So a session with no turn is not a
-///   session, and the probe's question would be whether the file has a
-///   second line.
 pub fn pin(command: &str) -> Pin {
     match base(command) {
         "pi" => Pin::Store,
@@ -194,6 +187,15 @@ pub fn pin(command: &str) -> Pin {
 /// new session" under that same id. Driven in 1.50.0: a fresh id opened a
 /// session, the same id later reopened it with its first prompt still in the
 /// request, and a second id in the same directory stayed separate.
+///
+/// Gemini has claude's shape, driven in 0.64.0. `--session-id <id>` "Start a
+/// new session with a manually provided UUID", and an id already in this
+/// project is refused with "Session ID ... already exists. Use --resume to
+/// resume it" and exit 42. `--resume <id>` reopened the exact session; on an
+/// id it has no turn for, it says "Invalid session identifier" and exits 42
+/// within seconds, so unlike claude a wrong "Has" does not hang the pane.
+/// `--session-file` loads a conversation from a file of the user's, which
+/// names one too.
 fn id_flags(command: &str) -> Option<IdFlags> {
     match base(command) {
         "claude" => Some(IdFlags {
@@ -215,6 +217,11 @@ fn id_flags(command: &str) -> Option<IdFlags> {
             open: "--session",
             resume: "--session",
             theirs: &["--session", "-S", "--resume", "-r", "--continue", "-C"],
+        }),
+        "gemini" => Some(IdFlags {
+            open: "--session-id",
+            resume: "--resume",
+            theirs: &["--session-id", "--resume", "-r", "--session-file"],
         }),
         _ => None,
     }
@@ -244,7 +251,7 @@ struct IdFlags {
 /// "--session-id <uuid>: Use a specific session ID for the conversation (must
 /// be a valid UUID)", copilot's "or set the UUID for a new session", cursor's
 /// "expected a UUIDv4" (a version-4 one specifically, which is what `new_v4`
-/// mints), and kimi's own ids are UUIDs. Never reused, minted per fresh
+/// mints), kimi's own ids are UUIDs, and gemini's "manually provided UUID". Never reused, minted per fresh
 /// launch: a rerun is a new conversation by definition, and claude and cursor
 /// refuse an id already in use.
 pub fn mint(command: &str) -> Option<String> {
@@ -278,6 +285,9 @@ pub fn resume_args(command: &str, conversation: &str, so_far: &[String]) -> Vec<
 /// The file `conversation` is kept in, for an agent that names them, so a
 /// caller can ask whether there is anything to reopen before trying. Whether
 /// the file existing is enough of an answer is [`turn_marker`]'s to say.
+///
+/// `None` for gemini as well, which names conversations but files them where
+/// no path computed from the id alone can find them: [`gemini_chats_dir`].
 pub fn conversation_path(
     home: &Path,
     command: &str,
@@ -364,6 +374,141 @@ pub fn cursor_meta_records_turn(contents: &str) -> bool {
         .ok()
         .and_then(|v| v.get("hasConversation")?.as_bool())
         .unwrap_or(false)
+}
+
+/// Gemini's project registry, for `command` gemini, which the caller reads and
+/// hands to [`gemini_chats_dir`]. `None` for everyone else.
+///
+/// The root can be moved by `GEMINI_CLI_HOME`, and gemini's own macOS sandbox
+/// keeps everything under `~/.cache/.gemini` instead. Neither is followed, as
+/// with [`store_dir`]: a store this cannot see is a probe answering "None" and
+/// a fresh launch, not a wrong resume.
+pub fn gemini_registry(home: &Path, command: &str) -> Option<PathBuf> {
+    (base(command) == "gemini").then(|| home.join(".gemini").join("projects.json"))
+}
+
+/// The directory gemini keeps every conversation from `worktree` in, given
+/// the contents of [`gemini_registry`].
+///
+/// Gemini files conversations under a short name per project, not under the
+/// path or a hash of it: `~/.gemini/tmp/<slug>/chats/`, where `<slug>` is
+/// what `projects.json` maps the launch directory to. 0.64.0 claims the
+/// directory's basename and counts up on a clash (`wt`, then `wt-1` for
+/// another directory of the same name; 0.58.0 handed out `a` in a fresh home),
+/// so it has to be looked up, never computed. The key is the directory gemini was
+/// started in, not its git root (a launch from a repo's subdirectory
+/// registered the subdirectory), and is not resolved through symlinks, which
+/// Agency's worktrees do not go through.
+///
+/// The slug is held to gemini's own registry schema (`^[a-z0-9-]+$`), which
+/// also keeps it a single path component.
+pub fn gemini_chats_dir(home: &Path, registry: &str, worktree: &Path) -> Option<PathBuf> {
+    let registry: serde_json::Value = serde_json::from_str(registry).ok()?;
+    let slug = registry.get("projects")?.get(worktree.to_str()?)?.as_str()?;
+    let ok = !slug.is_empty()
+        && slug.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    ok.then(|| home.join(".gemini").join("tmp").join(slug).join("chats"))
+}
+
+/// Whether `file_name`, in [`gemini_chats_dir`], may hold `conversation`, or
+/// with `None` any conversation at all.
+///
+/// The file is `session-<YYYY-MM-DDTHH-MM>-<first 8 of id>.jsonl`, named for
+/// the minute it was opened, so only the tail can be matched. And the tail is
+/// not unique: two ids opened in one minute with the same first 8 characters
+/// were filed as `session-2026-10-19T14-03-0b6f1a52.jsonl` and
+/// `session-2026-10-19T14-03-1-0b6f1a52.jsonl`. So this narrows, and
+/// [`gemini_chat_records_turn`] decides by the id written inside, which is
+/// what gemini's own lookup does.
+pub fn gemini_chat_file(file_name: &str, conversation: Option<&str>) -> bool {
+    if !file_name.starts_with("session-") {
+        return false;
+    }
+    match conversation {
+        Some(c) => file_name.ends_with(&format!("-{}.jsonl", c.get(..8).unwrap_or(c))),
+        None => file_name.ends_with(".jsonl"),
+    }
+}
+
+/// Whether a gemini chat file, given as `contents`, is `conversation` (or with
+/// `None`, any conversation) and has a turn in it: gemini's own rule for what
+/// `--resume` will reopen, so that "Has" means it will.
+///
+/// The file is written at launch, before any turn, and a line count says
+/// nothing. 0.64.0 opened a promptless session with three lines: the metadata
+/// (`sessionId`, `projectHash`, `kind`), a `"type":"user"` message that is
+/// gemini's own `<session_context>` preamble, and a `$set`. `--resume` on that
+/// id answered "Invalid session identifier" and exit 42, and a clean exit
+/// deleted the file. (0.58.0 wrote the metadata line alone, which is why a
+/// second line looked like the answer before a turn was driven.) The first
+/// turn appends the prompt as a `"type":"user"` message and the reply as a
+/// `"type":"gemini"` one.
+///
+/// So, as gemini's `isResumableMessageRecord` has it: a user message counts
+/// unless its text is empty or starts with `/`, `?`, `<session_context>` or
+/// `<hook_context>`, and a gemini message counts if it says anything, calls a
+/// tool or thinks. A `$rewindTo` drops the messages from the one it names on,
+/// or all of them if that one is not there. A `subagent` session is never
+/// reopened. Unparseable lines are skipped, as gemini skips them.
+pub fn gemini_chat_records_turn(contents: &str, conversation: Option<&str>) -> bool {
+    use serde_json::Value;
+    let mut session: Option<String> = None;
+    let mut subagent = false;
+    let mut messages: Vec<(String, bool)> = Vec::new();
+    for line in contents.lines() {
+        let Ok(record) = serde_json::from_str::<Value>(line) else { continue };
+        if let Some(to) = record.get("$rewindTo").and_then(Value::as_str) {
+            match messages.iter().position(|(id, _)| id == to) {
+                Some(i) => messages.truncate(i),
+                None => messages.clear(),
+            }
+            continue;
+        }
+        if record.get("$patch").is_some() {
+            continue;
+        }
+        if let Some(id) = record.get("id").and_then(Value::as_str) {
+            messages.push((id.to_string(), gemini_message_is_turn(&record)));
+            continue;
+        }
+        // The metadata line, or a `$set` merged over it.
+        let meta = record.get("$set").unwrap_or(&record);
+        if let Some(id) = meta.get("sessionId").and_then(Value::as_str) {
+            session = Some(id.to_string());
+        }
+        if let Some(kind) = meta.get("kind").and_then(Value::as_str) {
+            subagent = kind == "subagent";
+        }
+    }
+    let ours = match conversation {
+        Some(c) => session.as_deref() == Some(c),
+        None => session.is_some(),
+    };
+    ours && !subagent && messages.iter().any(|(_, turn)| *turn)
+}
+
+fn gemini_message_is_turn(message: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    let text: String = match message.get("content") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(parts)) => {
+            parts.iter().filter_map(|p| p.get("text").and_then(Value::as_str)).collect()
+        }
+        _ => String::new(),
+    };
+    let text = text.trim();
+    let any = |key: &str| message.get(key).and_then(Value::as_array).is_some_and(|a| !a.is_empty());
+    match message.get("type").and_then(Value::as_str) {
+        Some("user") => {
+            !(text.is_empty()
+                || text.starts_with('/')
+                || text.starts_with('?')
+                || text.starts_with("<session_context>")
+                || text.starts_with("<hook_context>"))
+        }
+        Some("gemini") => !text.is_empty() || any("toolCalls") || any("thoughts"),
+        _ => false,
+    }
 }
 
 /// The directory an agent keeps every conversation from `worktree` in, for
@@ -509,11 +654,10 @@ mod tests {
     fn agents_whose_cli_offers_no_lever_are_left_alone() {
         let home = Path::new("/home/u");
         let wt = Path::new("/w");
-        // All four are here having been asked, not assumed: codex will not be
-        // told a thread id, opencode refuses one it has not seen, hermes
-        // mints its own and keys `--continue` globally, and gemini has the
-        // lever but no driven turn behind it (see `pin`).
-        for command in ["codex", "opencode", "hermes", "gemini"] {
+        // All three are here having been asked, not assumed: codex will not be
+        // told a thread id, opencode refuses one it has not seen, and hermes
+        // mints its own and keys `--continue` globally (see `pin`).
+        for command in ["codex", "opencode", "hermes"] {
             assert_eq!(pin(command), Pin::None, "{command}");
             assert_eq!(dir(home, command, wt, "agent-3f9c"), None, "{command}");
             assert!(env(home, command, wt, "agent-3f9c").is_empty(), "{command}");
@@ -522,24 +666,179 @@ mod tests {
             assert!(resume_args(command, "x", &[]).is_empty(), "{command}");
             assert_eq!(conversation_path(home, command, wt, "x"), None, "{command}");
             assert_eq!(store_dir(home, command, wt), None, "{command}");
+            assert_eq!(gemini_registry(home, command), None, "{command}");
         }
     }
 
     /// Every agent [`pin`] calls [`Pin::Id`] has to have both halves of the
     /// recipe, or it would launch with the generic "most recent here" one and
-    /// this module would report a pin it is not applying.
+    /// this module would report a pin it is not applying. And somewhere the
+    /// probe can look for the conversation, or a resume could never be chosen.
     #[test]
     fn every_named_conversation_agent_can_be_opened_and_reopened() {
         let home = Path::new("/home/u");
         let wt = Path::new("/Users/x/proj");
         let id = "9674f5a1-334c-49a5-9952-89e592b0bc5b";
-        for command in ["claude", "copilot", "cursor-agent", "kimi"] {
+        for command in ["claude", "copilot", "cursor-agent", "kimi", "gemini"] {
             assert_eq!(pin(command), Pin::Id, "{command}");
             assert!(mint(command).is_some(), "{command}");
             assert!(!open_args(command, id, &[]).is_empty(), "{command}");
             assert!(!resume_args(command, id, &[]).is_empty(), "{command}");
-            assert!(conversation_path(home, command, wt, id).is_some(), "{command}");
+            assert!(
+                conversation_path(home, command, wt, id).is_some()
+                    || gemini_registry(home, command).is_some(),
+                "{command}"
+            );
         }
+    }
+
+    /// Claude's split, flag for flag: `--session-id` opens and refuses an id
+    /// in use, `--resume` reopens and refuses one with no turn.
+    #[test]
+    fn gemini_opens_with_session_id_and_reopens_with_resume() {
+        let id = "0b6f1a52-9c1e-4f6e-a1d2-3c4b5a697801";
+        assert_eq!(open_args("gemini", id, &[]), vec!["--session-id", id]);
+        assert_eq!(resume_args("gemini", id, &[]), vec!["--resume", id]);
+        assert_eq!(open_args("/opt/homebrew/bin/gemini", id, &[]), vec!["--session-id", id]);
+        // No single file to name; the probe goes through the registry.
+        let home = Path::new("/home/u");
+        assert_eq!(conversation_path(home, "gemini", Path::new("/w"), id), None);
+        assert_eq!(store_dir(home, "gemini", Path::new("/w")), None);
+        assert_eq!(
+            gemini_registry(home, "gemini").unwrap(),
+            Path::new("/home/u/.gemini/projects.json")
+        );
+        for theirs in [
+            vec!["--resume".to_string(), "latest".to_string()],
+            vec!["-r".to_string(), "3".to_string()],
+            vec!["--session-file=/tmp/s.json".to_string()],
+        ] {
+            assert!(open_args("gemini", id, &theirs).is_empty(), "{theirs:?}");
+            assert!(resume_args("gemini", id, &theirs).is_empty(), "{theirs:?}");
+        }
+    }
+
+    /// The registry as 0.64.0 wrote it for two directories: the slug is
+    /// looked up by the exact launch directory, and nothing else matches.
+    #[test]
+    fn gemini_chats_dir_is_looked_up_in_the_registry() {
+        let home = Path::new("/home/u");
+        let registry = r#"{
+  "projects": {
+    "/Users/x/agency/.agency/worktrees/wt": "wt",
+    "/Users/y/wt": "wt-1"
+  }
+}"#;
+        assert_eq!(
+            gemini_chats_dir(home, registry, Path::new("/Users/x/agency/.agency/worktrees/wt"))
+                .unwrap(),
+            Path::new("/home/u/.gemini/tmp/wt/chats")
+        );
+        assert_eq!(
+            gemini_chats_dir(home, registry, Path::new("/Users/y/wt")).unwrap(),
+            Path::new("/home/u/.gemini/tmp/wt-1/chats")
+        );
+        // Never launched there: no entry, no directory to guess at.
+        assert_eq!(gemini_chats_dir(home, registry, Path::new("/Users/z/wt")), None);
+        assert_eq!(gemini_chats_dir(home, registry, Path::new("/Users/y/wt/")), None);
+        assert_eq!(gemini_chats_dir(home, "", Path::new("/Users/y/wt")), None);
+        assert_eq!(gemini_chats_dir(home, "{}", Path::new("/Users/y/wt")), None);
+        // A slug outside gemini's own schema is not a path component to join.
+        for bad in ["..", "a/b", "", "A"] {
+            let registry = format!(r#"{{"projects":{{"/w":"{bad}"}}}}"#);
+            assert_eq!(gemini_chats_dir(home, &registry, Path::new("/w")), None, "{bad:?}");
+        }
+    }
+
+    /// File names as 0.64.0 wrote them, including the counter it inserts when
+    /// two ids opened in one minute share their first 8 characters.
+    #[test]
+    fn gemini_chat_files_are_matched_on_the_short_id() {
+        let id = "0b6f1a52-9c1e-4f6e-a1d2-3c4b5a697801";
+        assert!(gemini_chat_file("session-2026-10-19T14-03-0b6f1a52.jsonl", Some(id)));
+        assert!(gemini_chat_file("session-2026-10-19T14-03-1-0b6f1a52.jsonl", Some(id)));
+        assert!(!gemini_chat_file("session-2026-10-19T14-03-7d1e2c3b.jsonl", Some(id)));
+        assert!(!gemini_chat_file("0b6f1a52.jsonl", Some(id)));
+        assert!(!gemini_chat_file("session-2026-10-19T14-03-0b6f1a52.jsonl.tmp", Some(id)));
+        assert!(gemini_chat_file("session-2026-10-19T14-03-7d1e2c3b.jsonl", None));
+        assert!(!gemini_chat_file(".project_root", None));
+    }
+
+    /// Lines as 0.64.0 wrote them: at launch, and after the first turn.
+    const GEMINI_LAUNCHED: &str = r#"{"sessionId":"0b6f1a52-9c1e-4f6e-a1d2-3c4b5a697801","projectHash":"8457e373","startTime":"2026-10-19T14:03:12.335Z","lastUpdated":"2026-10-19T14:03:12.335Z","kind":"main"}
+{"id":"d04923d38bb0f6017037e74183378ef4","timestamp":"2026-10-19T14:03:12.336Z","type":"user","content":[{"text":"<session_context>\nThis is the Gemini CLI. We are setting up the context for our chat.\n</session_context>"}]}
+{"$set":{"lastUpdated":"2026-10-19T14:03:12.336Z"}}
+"#;
+    const GEMINI_TURN: &str = r#"{"id":"da565697-69b0-4889-92c5-4cbd20aef517","timestamp":"2026-10-19T14:03:13.092Z","type":"user","content":[{"text":"Please remember the word kiwi"}]}
+{"$set":{"lastUpdated":"2026-10-19T14:03:13.093Z"}}
+{"id":"18bb8465-b505-4c30-beb2-b2b54319a092","timestamp":"2026-10-19T14:03:13.103Z","type":"gemini","content":"WORDS=kiwi","thoughts":[],"tokens":{"total":13},"model":"gemini-3.1-pro-preview"}
+"#;
+
+    #[test]
+    fn gemini_chat_records_a_turn_only_once_one_is_appended() {
+        let id = "0b6f1a52-9c1e-4f6e-a1d2-3c4b5a697801";
+        // Two lines and a user message already, and still nothing to reopen:
+        // the message is gemini's own preamble.
+        assert!(!gemini_chat_records_turn(GEMINI_LAUNCHED, Some(id)));
+        assert!(!gemini_chat_records_turn(GEMINI_LAUNCHED, None));
+        let answered = format!("{GEMINI_LAUNCHED}{GEMINI_TURN}");
+        assert!(gemini_chat_records_turn(&answered, Some(id)));
+        assert!(gemini_chat_records_turn(&answered, None));
+        // The prompt alone is enough: gemini reopens a turn it never
+        // answered, with the prompt in it.
+        let asked = format!("{GEMINI_LAUNCHED}{}\n", GEMINI_TURN.lines().next().unwrap());
+        assert!(gemini_chat_records_turn(&asked, Some(id)));
+        // Same short id, other conversation: the id inside decides.
+        assert!(!gemini_chat_records_turn(&answered, Some("0b6f1a52-9c1e-4f6e-a1d2-3c4b5a697802")));
+        // Half-written, empty or not gemini's at all: no turn.
+        assert!(!gemini_chat_records_turn("", Some(id)));
+        assert!(!gemini_chat_records_turn("{\"sessionId\":", Some(id)));
+        assert!(!gemini_chat_records_turn(GEMINI_TURN, Some(id)), "no metadata, no session");
+    }
+
+    #[test]
+    fn gemini_chat_follows_what_gemini_counts_as_a_turn() {
+        let id = "0b6f1a52-9c1e-4f6e-a1d2-3c4b5a697801";
+        let with = |line: &str| format!("{GEMINI_LAUNCHED}{line}\n");
+        // A slash command or a help request is not a conversation.
+        for text in ["/help", "?", "   ", "<hook_context>x</hook_context>"] {
+            let line = serde_json::json!({"id": "m1", "type": "user", "content": [{"text": text}]});
+            assert!(!gemini_chat_records_turn(&with(&line.to_string()), Some(id)), "{text:?}");
+        }
+        // A reply counts by itself, and so does a tool call with no text.
+        assert!(gemini_chat_records_turn(
+            &with(r#"{"id":"m1","type":"gemini","content":"hi"}"#),
+            Some(id)
+        ));
+        assert!(gemini_chat_records_turn(
+            &with(r#"{"id":"m1","type":"gemini","content":"","toolCalls":[{"name":"ls"}]}"#),
+            Some(id)
+        ));
+        assert!(!gemini_chat_records_turn(
+            &with(r#"{"id":"m1","type":"gemini","content":"","toolCalls":[]}"#),
+            Some(id)
+        ));
+        // Info lines are not turns.
+        assert!(!gemini_chat_records_turn(
+            &with(r#"{"id":"m1","type":"info","content":"Resumed"}"#),
+            Some(id)
+        ));
+        // Rewound to before the first turn: nothing left to reopen.
+        let rewound = format!(
+            "{GEMINI_LAUNCHED}{GEMINI_TURN}{}\n",
+            r#"{"$rewindTo":"da565697-69b0-4889-92c5-4cbd20aef517"}"#
+        );
+        assert!(!gemini_chat_records_turn(&rewound, Some(id)));
+        // Rewound to the reply only: the prompt stays.
+        let partly = format!(
+            "{GEMINI_LAUNCHED}{GEMINI_TURN}{}\n",
+            r#"{"$rewindTo":"18bb8465-b505-4c30-beb2-b2b54319a092"}"#
+        );
+        assert!(gemini_chat_records_turn(&partly, Some(id)));
+        // A subagent's transcript is never what `--resume` opens.
+        let subagent =
+            format!("{GEMINI_LAUNCHED}{GEMINI_TURN}").replace("\"main\"", "\"subagent\"");
+        assert!(!gemini_chat_records_turn(&subagent, Some(id)));
     }
 
     /// Copilot's one flag does both, and creates the session when the id is
@@ -578,7 +877,7 @@ mod tests {
         assert!(open_args("pi", "x", &[]).is_empty());
         assert!(resume_args("pi", "x", &[]).is_empty(), "pi keeps -c, scoped by its own store");
 
-        for named in ["claude", "copilot", "cursor-agent", "kimi"] {
+        for named in ["claude", "copilot", "cursor-agent", "kimi", "gemini"] {
             assert_eq!(pin(named), Pin::Id, "{named}");
             assert_eq!(dir(home, named, wt, "agent-3f9c"), None, "{named}");
             assert!(env(home, named, wt, "agent-3f9c").is_empty(), "{named}");

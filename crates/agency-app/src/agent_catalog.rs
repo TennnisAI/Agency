@@ -125,8 +125,8 @@ pub struct CatalogEntryInfo {
 pub fn builtins() -> &'static [CatalogEntry] {
     // Resume recipes are each CLI's "most recent conversation in this
     // directory" and nothing broader: hermes keys its `--continue` globally
-    // (and moves into the other session's directory), so it has none, and
-    // gemini's is unread (see `sessionstore::pin` for both). A session's own
+    // (and moves into the other session's directory), so it has none (see
+    // `sessionstore::pin`). A session's own
     // conversation, once recorded, replaces the recipe with an exact one
     // (`sessionstore::resume_args`). Loop recipes are the agents' headless
     // one-shot modes; agents without a known headless mode get None and simply
@@ -297,9 +297,17 @@ pub fn builtins() -> &'static [CatalogEntry] {
             CatalogEntry {
                 id: "gemini",
                 command: "gemini",
-                // Unverified (not installed here).
+                // `gemini [query..]`, "Initial prompt. Runs in interactive
+                // mode by default". Driven in a pty against 0.64.0: the
+                // positional prompt went out as the first turn, even with the
+                // folder-trust dialog still up.
                 prompt: PromptDelivery::Positional,
-                resume_args: None,
+                // Per project, which is the launch directory. "latest" is the
+                // most recently *started* conversation there with a turn in
+                // it, not the most recently used. With none, 0.64.0 warns "No
+                // previous sessions found for this project" and starts fresh
+                // instead of refusing.
+                resume_args: Some(vec!["--resume".into(), "latest".into()]),
                 loop_args: None,
                 // `-m, --model`, whose aliases ('pro', 'flash') are the
                 // stable names Google documents; the dated ids behind them are

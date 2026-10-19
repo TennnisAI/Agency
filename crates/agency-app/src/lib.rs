@@ -34,6 +34,8 @@ mod webview_menu;
 pub use sendq::{Notice, NoticeKind};
 // The derived state a run is in, so the attention tests can assert on it.
 pub use activity::ActivityState;
+// How a quit treats the agents, so the exit tests can choose.
+pub use lifecycle::Agents;
 pub use state::{
     AppState, IssueKeyPreview, KeyMismatch, KnowledgeConfigDto, ProviderSettings, RunInfo,
     SyncResult,
@@ -390,7 +392,7 @@ pub fn run() {
             commands::import_file,
             commands::import_path,
             commands::dropped_folders,
-            commands::confirm_quit,
+            commands::quit,
             commands::request_quit,
             commands::agent_installed,
             commands::agent_cli_info,
@@ -409,8 +411,11 @@ pub fn run() {
             // through our confirmation dialog instead of exiting immediately.
             // Once the user confirms, QUIT_CONFIRMED is set to true and we let
             // the subsequent exit triggered by app.exit(0) proceed unimpeded.
-            if let tauri::RunEvent::ExitRequested { api, .. } = event {
-                if !crate::lifecycle::QUIT_CONFIRMED.load(std::sync::atomic::Ordering::Relaxed) {
+            // A restart is never held (see lifecycle::holds_exit).
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
+                let confirmed =
+                    crate::lifecycle::QUIT_CONFIRMED.load(std::sync::atomic::Ordering::Relaxed);
+                if crate::lifecycle::holds_exit(code, confirmed) {
                     api.prevent_exit();
                     crate::lifecycle::request_quit(app);
                 }

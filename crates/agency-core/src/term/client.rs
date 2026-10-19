@@ -86,9 +86,10 @@ enum Reuse {
 /// handshake failed, `build` is `None` from a daemon older than the field, and
 /// `sessions` is `None` when the count could not be read.
 ///
-/// The in-app updater restarts the app without going through quit, and quit is
-/// the only thing that shuts the daemon down, so the daemon survives into the
-/// new release still running the old one's code. Replacing it is harmless while
+/// The in-app updater restarts the app without going through quit, and a quit
+/// that stops the agents is the only thing that shuts the daemon down (a quit
+/// that leaves them running keeps it), so the daemon survives into the new
+/// release still running the old one's code. Replacing it is harmless while
 /// it hosts nothing and ends every agent while it hosts anything, so only the
 /// first happens here. A count that could not be read is not permission to end
 /// sessions, and exited sessions count too, to stay on the side of losing
@@ -142,7 +143,7 @@ impl TermClient {
                 log::warn!(
                     "termd on {sock} is from {old}, the app is {BUILD}; keeping it because it \
                      hosts sessions. It is replaced at the first launch that finds it idle, or \
-                     when Agency quits"
+                     when Agency quits and stops its agents"
                 );
                 return Ok(client);
             }

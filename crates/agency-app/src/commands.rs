@@ -348,11 +348,12 @@ pub fn request_quit(app: tauri::AppHandle) {
     crate::lifecycle::request_quit(&app);
 }
 
-/// Quit for real: invoked by the frontend once the user confirms the styled
-/// in-app quit dialog (see lifecycle::request_quit).
+/// Quit for real, once the user has answered the styled in-app quit dialog
+/// (see lifecycle::request_quit). `agents` is the answer's, from the prompt
+/// the dialog was sent, so the frontend never decides what a button means.
 #[tauri::command]
-pub fn confirm_quit(app: tauri::AppHandle) {
-    crate::lifecycle::confirm_quit(&app);
+pub fn quit(app: tauri::AppHandle, agents: crate::lifecycle::Agents) {
+    crate::lifecycle::quit(&app, agents);
 }
 
 /// Derive a short title for a run from its first prompt, and when the branch is
@@ -2751,12 +2752,13 @@ pub struct UpdateProgress {
     total: Option<u64>,
 }
 
-/// How many sessions the terminal daemon is running right now. The restart
-/// prompt shows it for the same reason the quit confirmation does: "restart"
-/// means something different with four agents mid-turn than with none.
+/// How many sessions the terminal daemon is running right now, `None` when it
+/// could not be asked. The restart prompt shows it for the same reason the
+/// quit confirmation does: "restart" means something different with four
+/// agents mid-turn than with none.
 #[tauri::command]
-pub fn running_sessions(state: State<'_, AppState>) -> usize {
-    state.session_count()
+pub fn running_sessions(state: State<'_, AppState>) -> Option<usize> {
+    state.running_session_count()
 }
 
 /// Relaunch Agency, after the user has said the running agents can take it.
@@ -2767,10 +2769,16 @@ pub fn running_sessions(state: State<'_, AppState>) -> usize {
 /// replaces the old daemon and loses its sessions. The UI says so before
 /// calling this whenever anything is running. Without a bump the old release's
 /// daemon is replaced only if it hosts nothing, and otherwise kept until a
-/// launch finds it idle or the user quits.
+/// launch finds it idle or the user picks "Stop and quit". A "Leave running"
+/// quit keeps it too (AGE-210), so someone who always leaves agents running can
+/// go several releases on an old daemon build: a fix under `term/` that does not
+/// bump the protocol reaches them only once their sessions are all gone.
+///
+/// It goes through `lifecycle::restart`, the same leave-them-running quit the
+/// quit dialog offers, so an update never takes the path that kills them.
 #[tauri::command]
 pub fn restart_app(app: tauri::AppHandle) {
-    app.restart();
+    crate::lifecycle::restart(&app);
 }
 
 #[tauri::command]

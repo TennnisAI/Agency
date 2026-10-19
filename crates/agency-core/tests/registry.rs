@@ -114,6 +114,7 @@ fn runs_persist_list_and_delete() {
         primary_closed_at: None,
         branch_cut: None,
         own_branch: None,
+        pr_merged_head: None,
         pin_rank: None,
     };
     {
@@ -124,6 +125,10 @@ fn runs_persist_list_and_delete() {
     assert_eq!(reg.get_run("task-1").unwrap().unwrap(), run);
     assert_eq!(reg.list_runs("proj-1").unwrap(), vec![run.clone()]);
     assert_eq!(reg.list_runs("other").unwrap().len(), 0);
+
+    reg.set_pr_merged_head("task-1", "abc123").unwrap();
+    let merged = reg.get_run("task-1").unwrap().unwrap();
+    assert_eq!(merged.pr_merged_head.as_deref(), Some("abc123"));
 
     reg.delete_run("task-1").unwrap();
     assert!(reg.get_run("task-1").unwrap().is_none());
@@ -157,6 +162,7 @@ fn list_runs_newest_first() {
             primary_closed_at: None,
             branch_cut: None,
             own_branch: None,
+            pr_merged_head: None,
             pin_rank: None,
         })
         .unwrap();

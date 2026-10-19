@@ -43,6 +43,27 @@ pub struct PrInfo {
     pub head_ref_name: String,
 }
 
+/// Where GitHub has a PR right now: the commit it takes as the head, and
+/// whether it has worked out yet if that head can merge.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrHead {
+    #[serde(default)]
+    pub head_ref_oid: String,
+    /// MERGEABLE | CONFLICTING | UNKNOWN. UNKNOWN until GitHub has finished
+    /// computing it, which it starts over after every push.
+    #[serde(default)]
+    pub mergeable: String,
+}
+
+impl PrHead {
+    /// GitHub has moved the PR's head to `tip` and decided about it, so a
+    /// merge pinned to `tip` is judged on the commit rather than on timing.
+    pub fn caught_up_with(&self, tip: &str) -> bool {
+        self.head_ref_oid == tip && self.mergeable != "UNKNOWN"
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckItem {
@@ -343,6 +364,13 @@ impl GhCli {
         Ok(Some(serde_json::from_slice(&out.stdout)?))
     }
 
+    /// PR `number`'s head commit and mergeability, as GitHub has them now.
+    pub fn pr_head(&self, repo: &Path, number: u64) -> Result<PrHead> {
+        let num = number.to_string();
+        let out = self.run_ok(repo, &["pr", "view", &num, "--json", "headRefOid,mergeable"])?;
+        Ok(serde_json::from_str(&out)?)
+    }
+
     /// Like `view_pr`, addressed by PR number instead of branch.
     pub fn view_pr_by_number(&self, repo: &Path, number: u64) -> Result<Option<PrInfo>> {
         let num = number.to_string();
@@ -501,12 +529,19 @@ impl GhCli {
     /// show a merged PR as a failed merge. Branch cleanup runs separately here and
     /// downgrades to a warning; the local branch stays put and is removed with the
     /// worktree when the task is archived or discarded.
+    ///
+    /// `match_head` pins the merge to a commit: GitHub refuses it unless the
+    /// PR's head is exactly that one. The Approve window passes the agent
+    /// branch's local tip, so a commit the agent made after the last push, or
+    /// one pushed from elsewhere that this checkout has never seen, stops the
+    /// merge instead of being quietly left out of it or quietly let into it.
     pub fn merge_pr(
         &self,
         repo: &Path,
         number: u64,
         method: &str,
         delete_branch: bool,
+        match_head: Option<&str>,
     ) -> Result<PrMergeResult> {
         let num = number.to_string();
         let flag = match method {
@@ -514,7 +549,11 @@ impl GhCli {
             "rebase" => "--rebase",
             _ => "--merge",
         };
-        self.run_ok(repo, &["pr", "merge", num.as_str(), flag])?;
+        let mut args = vec!["pr", "merge", num.as_str(), flag];
+        if let Some(sha) = match_head {
+            args.extend(["--match-head-commit", sha]);
+        }
+        self.run_ok(repo, &args)?;
         if !delete_branch {
             return Ok(PrMergeResult::default());
         }
@@ -1287,7 +1326,7 @@ esac"#,
                 cap.display()
             ),
         );
-        let res = GhCli::with_bin(bin).merge_pr(dir.path(), 3, "squash", true).unwrap();
+        let res = GhCli::with_bin(bin).merge_pr(dir.path(), 3, "squash", true, None).unwrap();
         assert_eq!(res.branch_deleted.as_deref(), Some("agent/agent-zek6"));
         assert_eq!(res.warning, None);
         let args = std::fs::read_to_string(&cap).unwrap();
@@ -1306,9 +1345,44 @@ esac"#,
         let dir = tempfile::tempdir().unwrap();
         let cap = dir.path().join("args.txt");
         let bin = fake_gh(dir.path(), &format!(r#"echo "$@" >> "{}""#, cap.display()));
-        let res = GhCli::with_bin(bin).merge_pr(dir.path(), 3, "merge", false).unwrap();
+        let res = GhCli::with_bin(bin).merge_pr(dir.path(), 3, "merge", false, None).unwrap();
         assert_eq!(res, PrMergeResult::default());
         assert_eq!(std::fs::read_to_string(&cap).unwrap().trim(), "pr merge 3 --merge");
+    }
+
+    #[test]
+    fn merge_pr_pins_the_head_when_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let cap = dir.path().join("args.txt");
+        let bin = fake_gh(dir.path(), &format!(r#"echo "$@" >> "{}""#, cap.display()));
+        GhCli::with_bin(bin).merge_pr(dir.path(), 3, "merge", false, Some("abc123")).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&cap).unwrap().trim(),
+            "pr merge 3 --merge --match-head-commit abc123"
+        );
+    }
+
+    #[test]
+    fn pr_head_reads_the_head_and_mergeability() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = fake_gh(dir.path(), r#"echo '{"headRefOid":"abc123","mergeable":"UNKNOWN"}'"#);
+        let head = GhCli::with_bin(bin).pr_head(dir.path(), 3).unwrap();
+        assert_eq!(head.head_ref_oid, "abc123");
+        // On the tip, but GitHub has not decided about it yet.
+        assert!(!head.caught_up_with("abc123"));
+    }
+
+    #[test]
+    fn pr_head_is_caught_up_only_on_the_tip_once_decided() {
+        let head = |oid: &str, mergeable: &str| PrHead {
+            head_ref_oid: oid.into(),
+            mergeable: mergeable.into(),
+        };
+        assert!(head("abc123", "MERGEABLE").caught_up_with("abc123"));
+        // A conflict is a decision too: the merge should go and be refused for it.
+        assert!(head("abc123", "CONFLICTING").caught_up_with("abc123"));
+        // Still on the commit before the push.
+        assert!(!head("old999", "MERGEABLE").caught_up_with("abc123"));
     }
 
     #[test]
@@ -1321,7 +1395,7 @@ esac"#,
             r#"if [ "$1 $2" = "pr merge" ]; then exit 0; fi
 echo "boom" >&2; exit 1"#,
         );
-        let res = GhCli::with_bin(bin).merge_pr(dir.path(), 3, "merge", true).unwrap();
+        let res = GhCli::with_bin(bin).merge_pr(dir.path(), 3, "merge", true, None).unwrap();
         assert_eq!(res.branch_deleted, None);
         assert!(res.warning.unwrap().contains("could not be deleted"));
     }
@@ -1336,7 +1410,7 @@ echo "boom" >&2; exit 1"#,
   "api -X") echo "should not delete a fork ref" >&2; exit 1 ;;
 esac"#,
         );
-        let res = GhCli::with_bin(bin).merge_pr(dir.path(), 3, "merge", true).unwrap();
+        let res = GhCli::with_bin(bin).merge_pr(dir.path(), 3, "merge", true, None).unwrap();
         assert_eq!(res.branch_deleted, None);
         assert!(res.warning.unwrap().contains("fork"));
     }
@@ -1345,7 +1419,7 @@ esac"#,
     fn merge_pr_surfaces_merge_failure() {
         let dir = tempfile::tempdir().unwrap();
         let bin = fake_gh(dir.path(), r#"echo "Pull request is not mergeable" >&2; exit 1"#);
-        let err = GhCli::with_bin(bin).merge_pr(dir.path(), 3, "merge", true).unwrap_err();
+        let err = GhCli::with_bin(bin).merge_pr(dir.path(), 3, "merge", true, None).unwrap_err();
         assert!(err.to_string().contains("not mergeable"));
     }
 

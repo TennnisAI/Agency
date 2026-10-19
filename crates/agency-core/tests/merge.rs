@@ -556,6 +556,20 @@ fn deletes_a_published_branch_whose_work_is_on_the_base() {
     assert!(merge::branch_exists(dir.path(), "agent/x"));
 }
 
+#[test]
+fn commits_unpushed_counts_only_what_no_remote_has() {
+    let (dir, _origin) = repo_with_origin();
+    run(dir.path(), &["checkout", "-q", "-b", "agent/x"]);
+    commit_file(dir.path(), "a.txt");
+    // Never pushed: the branch's own commit is the only one missing.
+    assert_eq!(merge::commits_unpushed(dir.path(), "agent/x").unwrap(), 1);
+    run(dir.path(), &["push", "-q", "origin", "agent/x"]);
+    assert_eq!(merge::commits_unpushed(dir.path(), "agent/x").unwrap(), 0);
+    commit_file(dir.path(), "b.txt");
+    commit_file(dir.path(), "c.txt");
+    assert_eq!(merge::commits_unpushed(dir.path(), "agent/x").unwrap(), 2);
+}
+
 /// Names the refs a checkout has, and a bare repo's branch listing, for the
 /// two-remote tests below.
 fn branches_in(bare: &Path) -> String {

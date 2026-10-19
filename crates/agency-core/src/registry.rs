@@ -116,9 +116,23 @@ pub struct Run {
     /// onto `try-other`, and with only the one name recorded, `agent/<id>`
     /// was forgotten and outlived every teardown.
     pub own_branch: Option<String>,
+    /// The branch tip the run's pull request was merged at, when the Approve
+    /// window merged it on GitHub. That merge never touches the local base,
+    /// and a squash or rebase lands commits the branch does not have, so git
+    /// alone reads the branch as unmerged; the teardown then kept it as the
+    /// only copy of work that was already on the base. Only vouches for the
+    /// branch while its tip is still this commit.
+    pub pr_merged_head: Option<String>,
 }
 
 impl Run {
+    /// Whether the branch, with its tip at `tip`, is the head a pull request
+    /// merge landed (see [`pr_merged_head`](Self::pr_merged_head)). A commit
+    /// made after the merge is on no base, so a moved tip is not vouched for.
+    pub fn pr_merged_at(&self, tip: Option<&str>) -> bool {
+        tip.is_some() && self.pr_merged_head.as_deref() == tip
+    }
+
     /// The branch Agency cut for this run, under its current name, whether or
     /// not the worktree is still on it. `renamed_from` answers, from git,
     /// whether `branch` was once called the name it is given; it is asked only
@@ -480,6 +494,9 @@ impl Registry {
         }
         if !column_exists(&conn, "runs", "own_branch")? {
             conn.execute("ALTER TABLE runs ADD COLUMN own_branch TEXT", [])?;
+        }
+        if !column_exists(&conn, "runs", "pr_merged_head")? {
+            conn.execute("ALTER TABLE runs ADD COLUMN pr_merged_head TEXT", [])?;
         }
         if !column_exists(&conn, "projects", "issue_key")? {
             conn.execute("ALTER TABLE projects ADD COLUMN issue_key TEXT", [])?;
@@ -949,14 +966,14 @@ impl Registry {
             None => None,
         };
         self.conn.execute(
-            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch, pr_merged_head)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
             rusqlite::params![
                 run.id, run.project_id, run.agent, run.prompt, run.base, run.branch,
                 run.created_at, run.port_base.map(|p| p as i64), run.archived_at, run.title, run.kind,
                 run.merge_target, run.race_id, loop_config, loop_state, run.issue_id, run.worktree as i64,
                 run.model, run.base_commit, run.pin_rank, run.primary_closed_at,
-                run.branch_cut.map(i64::from), run.own_branch
+                run.branch_cut.map(i64::from), run.own_branch, run.pr_merged_head
             ],
         )?;
         Ok(())
@@ -975,7 +992,7 @@ impl Registry {
 
     pub fn get_run(&self, id: &str) -> Result<Option<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch FROM runs WHERE id = ?1",
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch, pr_merged_head FROM runs WHERE id = ?1",
         )?;
         let mut rows = stmt.query([id])?;
         match rows.next()? {
@@ -986,7 +1003,7 @@ impl Registry {
 
     pub fn list_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch, pr_merged_head
              FROM runs WHERE project_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -999,7 +1016,7 @@ impl Registry {
 
     pub fn list_archived_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch, pr_merged_head
              FROM runs WHERE project_id = ?1 AND archived_at IS NOT NULL ORDER BY archived_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -1078,6 +1095,16 @@ impl Registry {
         self.conn.execute(
             "UPDATE runs SET branch = ?2, branch_cut = ?3, own_branch = ?4 WHERE id = ?1",
             rusqlite::params![id, branch, own.is_some() as i64, own.filter(|o| *o != branch)],
+        )?;
+        Ok(())
+    }
+
+    /// Record that the run's pull request was merged on GitHub with the branch
+    /// at `head` (see [`Run::pr_merged_head`]).
+    pub fn set_pr_merged_head(&self, id: &str, head: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE runs SET pr_merged_head = ?2 WHERE id = ?1",
+            rusqlite::params![id, head],
         )?;
         Ok(())
     }
@@ -1549,7 +1576,7 @@ impl Registry {
     /// runs" list; also drives the last-run-abandoned rollback check).
     pub fn runs_for_issue(&self, issue_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch, pr_merged_head
              FROM runs WHERE issue_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([issue_id], |row| Ok(row_to_run(row)))?;
@@ -1824,6 +1851,7 @@ fn row_to_run(row: &rusqlite::Row) -> Result<Run> {
         primary_closed_at: row.get(20)?,
         branch_cut: row.get::<_, Option<i64>>(21)?.map(|v| v != 0),
         own_branch: row.get(22)?,
+        pr_merged_head: row.get(23)?,
     })
 }
 
@@ -1980,6 +2008,7 @@ mod tests {
             primary_closed_at: None,
             branch_cut: None,
             own_branch: None,
+            pr_merged_head: None,
             pin_rank: None,
         }
     }
@@ -2142,6 +2171,17 @@ mod tests {
         assert_eq!(terminal.own_branch(no_rename), None);
     }
 
+    #[test]
+    fn pr_merged_at_vouches_only_for_the_merged_tip() {
+        let merged = Run { pr_merged_head: Some("abc123".into()), ..sample_run("a-q3w7", None) };
+        assert!(merged.pr_merged_at(Some("abc123")));
+        // The agent committed again after the merge: that commit is on no base.
+        assert!(!merged.pr_merged_at(Some("def456")));
+        // An unreadable tip proves nothing.
+        assert!(!merged.pr_merged_at(None));
+        assert!(!sample_run("b-q3w7", None).pr_merged_at(Some("abc123")));
+    }
+
     /// A worktree switched onto another branch: that branch is not the run's,
     /// and the one Agency cut still is, so neither is forgotten.
     #[test]
@@ -2150,6 +2190,7 @@ mod tests {
             branch: "feature/x".into(),
             branch_cut: Some(true),
             own_branch: Some("agent/agent-6fgy".into()),
+            pr_merged_head: None,
             ..sample_run("agent-6fgy", None)
         };
         assert_eq!(switched.own_branch(no_rename), Some("agent/agent-6fgy"));
@@ -2547,6 +2588,7 @@ mod tests {
             primary_closed_at: None,
             branch_cut: None,
             own_branch: None,
+            pr_merged_head: None,
             pin_rank: None,
         };
         reg.insert_run(&run).unwrap();

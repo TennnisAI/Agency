@@ -150,12 +150,18 @@ export default function PrDiffFile({
         <span className="prdiff-caret">{collapsed ? "▸" : "▾"}</span>
         <span className="prdiff-path">{file.path}</span>
         {file.oldPath && <span className="prdiff-renamed">← {file.oldPath}</span>}
-        {file.binary && <span className="prdiff-binary">binary</span>}
+        {file.binary && <span className="prdiff-tag">binary</span>}
+        {file.omittedLines > 0 && <span className="prdiff-tag">not shown</span>}
       </div>
 
       {!collapsed && file.binary && <div className="prdiff-emptyline">Binary file, not shown.</div>}
+      {!collapsed && !file.binary && file.omittedLines > 0 && (
+        <div className="prdiff-emptyline">
+          Diff not shown ({file.omittedLines.toLocaleString()} changed {file.omittedLines === 1 ? "line" : "lines"}): too large to render here. Open it on GitHub to read it.
+        </div>
+      )}
 
-      {!collapsed && !file.binary && (
+      {!collapsed && !file.binary && file.omittedLines === 0 && (
         <div className="prdiff-body">
           {rows.map((r, i) => {
             const selected = i >= selLo && i <= selHi;
@@ -212,7 +218,10 @@ export default function PrDiffFile({
 
       {!collapsed && outdated.length > 0 && (
         <div className="prdiff-outdated">
-          <div className="prdiff-outdated-head">Outdated / unanchored ({outdated.length})</div>
+          {/* With the hunks omitted no thread can anchor, so they are not outdated. */}
+          <div className="prdiff-outdated-head">
+            {file.omittedLines > 0 ? "Comments on this file" : "Outdated / unanchored"} ({outdated.length})
+          </div>
           {outdated.map((t) => (
             <PrThread
               key={t.id}

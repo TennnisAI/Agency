@@ -19,7 +19,6 @@ import {
   projectAgentsLabel,
   runAgents,
   runStatus,
-  workspaceStatus,
 } from "./runstate";
 
 /** A live agent, quiet after a turn the user drove. */
@@ -354,55 +353,5 @@ describe("parseRunFilter", () => {
     expect(parseRunFilter("waiting")).toBe("waiting");
     expect(parseRunFilter(null)).toBe("all");
     expect(parseRunFilter("exited")).toBe("all");
-  });
-});
-
-// A worktree whose first agent had finished read "waiting" on its tile, rail
-// row and tree row while a second agent in it was still working.
-describe("workspaceStatus", () => {
-  const live = (n: number, state: RunActivity["state"] | null) => tab(n, state);
-
-  it("reads working when any agent is working, whatever the first one says", () => {
-    const st = workspaceStatus(waitingRun({ sessions: [live(2, "idle"), live(3, "working")] }), 0);
-    expect(st.cls).toBe("running");
-    expect(st.text).toBe("working · 0s");
-  });
-
-  it("counts a freshly spawned tab with no activity yet as working", () => {
-    expect(workspaceStatus(waitingRun({ sessions: [live(2, null)] }), 0).cls).toBe("running");
-  });
-
-  it("reads blocked over working: that agent cannot go on without you", () => {
-    const r = waitingRun({ activity: { state: "working", since: 0, reported: false }, sessions: [live(2, "blocked")] });
-    expect(workspaceStatus(r, 0).cls).toBe("blocked");
-  });
-
-  it("reads waiting only when no agent is working or blocked", () => {
-    const r = waitingRun({ activity: { state: "idle", since: 0, reported: false }, sessions: [live(2, "done")] });
-    expect(workspaceStatus(r, 0).cls).toBe("awaiting");
-  });
-
-  it("takes the earliest tab on a tie, for its timer", () => {
-    const r = waitingRun({ activity: { state: "done", since: 5_000, reported: true }, sessions: [live(2, "done")] });
-    expect(workspaceStatus(r, 60_000).text).toBe("done · 55s");
-  });
-
-  it("ignores a closed first agent, and a terminal tab", () => {
-    const r = waitingRun({
-      primaryClosed: true,
-      activity: { state: "working", since: 0, reported: false },
-      sessions: [tab(2, "done"), tab(3, "working", "shell")],
-    });
-    expect(workspaceStatus(r, 0).cls).toBe("awaiting");
-  });
-
-  it("reads a live extra agent over a first agent that exited", () => {
-    const r = waitingRun({ status: { state: "exited", code: 0 }, sessions: [live(2, "working")] });
-    expect(workspaceStatus(r, 0).cls).toBe("running");
-  });
-
-  it("keeps a terminal run's own status", () => {
-    const r = waitingRun({ kind: "terminal", activity: null });
-    expect(workspaceStatus(r, 0)).toEqual(runStatus(r, 0));
   });
 });

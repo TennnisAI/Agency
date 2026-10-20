@@ -13,10 +13,9 @@ import {
   parseRunFilter,
   pinnedFirst,
   projectAgentsLabel,
-  workspaceStatus,
 } from "../lib/runstate";
 import AgentNote from "./AgentNote";
-import { runTabs, showsTabs } from "../lib/runTabs";
+import { runTabs, showsTabs, workspaceStatus } from "../lib/runTabs";
 import TabCount from "./TabCount";
 import WaitingTabs from "./WaitingTabs";
 import { useRunMenu } from "../hooks/useRunMenu";

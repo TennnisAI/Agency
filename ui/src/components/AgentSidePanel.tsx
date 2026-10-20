@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Project, RunInfo } from "../api";
 import { useRuns } from "../store/runs";
-import { workspaceStatus } from "../lib/runstate";
 import { loadFocusTab, saveFocusTab, PRIMARY_TAB } from "../lib/focusTab";
-import { RunTab, runTabs, showsTabs, sidePanelTab } from "../lib/runTabs";
+import { RunTab, runTabs, showsTabs, sidePanelTab, workspaceStatus } from "../lib/runTabs";
 import { runListLabel } from "../agents";
 import { useDismissOnResize } from "../hooks/useDismissOnResize";
 import { useRepoReadiness, isGitless } from "../hooks/useRepoReadiness";

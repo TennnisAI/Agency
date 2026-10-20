@@ -151,7 +151,21 @@ fn snapshot_once(dir: &Path, force: &[String], cache: &mut HashCache) -> Result<
     let env = index.env();
     let real = index.path.with_file_name("index");
     match std::fs::copy(&real, &index.path) {
-        Ok(_) => {}
+        // With the real index's mtime, which git's racy-clean check measures
+        // every entry against: an entry stamped in the index's own tick is
+        // rehashed, not trusted. Linux's copy is a new file stamped now, so a
+        // same-size rewrite of a tracked file within a tick of git writing the
+        // index kept the old blob, and the checkpoint lost the edit (seen in
+        // CI on `paths_with_spaces_and_unicode_round_trip`). macOS clones the
+        // file, mtime and all, which is why it never showed there.
+        Ok(_) => {
+            let stamped = std::fs::metadata(&real).and_then(|m| m.modified());
+            std::fs::File::options()
+                .write(true)
+                .open(&index.path)
+                .and_then(|f| f.set_modified(stamped?))
+                .context("could not date the index copy")?;
+        }
         // A repository nothing has been added to yet has no index file.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             if head(dir).is_some() {
@@ -973,6 +987,33 @@ mod tests {
         assert!(diff(dir, &start.commit, &end.commit, "a.txt").unwrap().contains("+edit"));
         rest(dir, "r", start.seq).unwrap();
         assert!(!dir.join("héllo wörld.txt").exists());
+    }
+
+    #[test]
+    fn a_same_size_edit_in_the_index_s_own_tick_is_still_seen() {
+        // Linux stamps files from a coarse clock, so a rewrite within a few ms
+        // of the index being written can leave every stat field as it was.
+        // Pinning the timestamps here makes that collision certain; ctime
+        // cannot be pinned, so the repo is told not to compare it. Only Linux
+        // can fail this: macOS's copy keeps the mtime without being asked.
+        let d = tempdir().unwrap();
+        let dir = d.path();
+        init(dir);
+        git(dir, &["config", "core.trustctime", "false"]);
+        let tick = std::time::SystemTime::now() - std::time::Duration::from_secs(100);
+        let pin = |p: &Path| {
+            fs::File::options().write(true).open(p).unwrap().set_modified(tick).unwrap();
+        };
+        pin(&dir.join("a.txt"));
+        git(dir, &["update-index", "--refresh"]);
+        pin(&dir.join(".git/index"));
+        let start = cap(dir, "r", Kind::RunStart).unwrap().unwrap();
+        fs::write(dir.join("a.txt"), "edit").unwrap();
+        pin(&dir.join("a.txt"));
+        let end = cap(dir, "r", Kind::TurnEnded).unwrap().unwrap();
+        let got: Vec<String> =
+            changes(dir, &start.commit, &end.commit).unwrap().into_iter().map(|c| c.path).collect();
+        assert_eq!(got, vec!["a.txt"]);
     }
 
     #[test]

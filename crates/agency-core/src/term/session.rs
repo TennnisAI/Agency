@@ -40,6 +40,13 @@ struct SpawnCtx {
 
 pub struct Session {
     ctx: Arc<SpawnCtx>,
+    /// Made here, for this `Session` and no other, and handed back only in
+    /// the reply to the `StartSession` that made it. A fallback respawn is the
+    /// same `Session` and keeps it; a second `StartSession` under the same id
+    /// is a new `Session` with a new one. That is what lets a client tell the
+    /// session it started from one another client put in its place: see
+    /// `TermClient::spawned_pid`.
+    nonce: String,
 }
 
 /// Spawn `command` into the session. If `fallback` is set and the process exits
@@ -115,7 +122,8 @@ impl Session {
             input_seen: AtomicBool::new(false),
         });
         spawn_into(&ctx, command.to_string(), args.to_vec(), fallback)?;
-        Ok(Arc::new(Session { ctx }))
+        let nonce = uuid::Uuid::new_v4().simple().to_string();
+        Ok(Arc::new(Session { ctx, nonce }))
     }
 
     pub fn input(&self, bytes: &[u8]) {
@@ -140,6 +148,15 @@ impl Session {
 
     pub fn capture_styled(&self, lines: usize) -> (String, String) {
         self.ctx.emu.lock().unwrap().capture_styled(lines)
+    }
+
+    pub fn nonce(&self) -> &str {
+        &self.nonce
+    }
+
+    /// The session's own process: the current one, after a fallback respawn.
+    pub fn pid(&self) -> Option<u32> {
+        self.ctx.pty.lock().unwrap().as_ref().and_then(|p| p.pid())
     }
 
     pub fn status(&self) -> SessionStatus {

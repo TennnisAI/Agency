@@ -27,6 +27,16 @@ struct Shared {
 
 pub struct TermClient {
     shared: Arc<Shared>,
+    /// The sessions this client started, by id, with the nonce the daemon
+    /// made for each (`Session::nonce`). See [`TermClient::spawned_pid`].
+    ///
+    /// In this process's memory and nowhere else. It was kept in a file
+    /// beside the socket so that sessions outliving the app stayed trusted,
+    /// but anything a file holds, any process of the user's can have written:
+    /// start a session of its own, put its nonce in the file under a run's
+    /// name, and wait for a restart. So a client trusts only what it started
+    /// itself, and a session from before it connected is never its own.
+    spawned: Mutex<HashMap<String, String>>,
 }
 
 pub struct Subscription {
@@ -212,7 +222,7 @@ impl TermClient {
         });
 
         spawn_reader(read_half, shared.clone(), reply_tx);
-        Ok(TermClient { shared })
+        Ok(TermClient { shared, spawned: Mutex::new(HashMap::new()) })
     }
 
     pub fn is_alive(&self) -> bool {
@@ -269,7 +279,11 @@ impl TermClient {
             fallback,
             seq,
         })
-        .map(|_| ())
+        .map(|reply| {
+            if let ServerMsg::Started { nonce: Some(nonce), .. } = reply {
+                self.spawned.lock().unwrap().insert(id.to_string(), nonce);
+            }
+        })
     }
 
     pub fn subscribe<F>(&self, id: &str, cols: u16, rows: u16, on_output: F) -> Result<Subscription>
@@ -337,7 +351,44 @@ impl TermClient {
         }
     }
 
+    /// The process of session `id`, if the session under that id is still the
+    /// one this client started; `None` otherwise.
+    ///
+    /// A session's id is only a name, and any client of the daemon can start
+    /// a session under any name, replacing whatever had it. So a name is not
+    /// evidence that a process is Agency's: the daemon makes a nonce for each
+    /// session it starts and tells it only to the client that asked, and a
+    /// session counts as this client's while its nonce is the one recorded
+    /// then. A fallback respawn keeps it. `None` too from a daemon too old to
+    /// report either field, and for any session started before this client
+    /// connected (see `spawned`).
+    pub fn spawned_pid(&self, id: &str) -> Result<Option<u32>> {
+        let ServerMsg::Status { pid, nonce, .. } =
+            self.request(|seq| ClientMsg::Status { id: id.into(), seq })?
+        else {
+            return Err(anyhow!("unexpected reply to a status request"));
+        };
+        let ours = self.spawned.lock().unwrap().get(id).cloned();
+        Ok(pid.filter(|_| nonce.is_some() && nonce == ours))
+    }
+
+    /// Take over what `from` recorded starting, for a client that replaces it
+    /// in the same process: the app reconnecting to a daemon that dropped its
+    /// connection. Starting the new client empty made every session the app
+    /// had started a stranger to it, and every live agent lost the run tools
+    /// mid-run, `run_wait` included, until it was relaunched.
+    ///
+    /// Still memory to memory, nothing read from outside the process. And a
+    /// record vouches for nothing on its own: [`TermClient::spawned_pid`]
+    /// counts it only while the daemon reports the same nonce, so a daemon
+    /// that was replaced rather than reconnected matches none of them.
+    pub fn adopt_spawned(&self, from: &TermClient) {
+        let theirs = from.spawned.lock().unwrap().clone();
+        self.spawned.lock().unwrap().extend(theirs);
+    }
+
     pub fn kill(&self, id: &str) -> Result<()> {
+        self.spawned.lock().unwrap().remove(id);
         send_msg(&self.shared, &ClientMsg::Kill { id: id.into() })
     }
 

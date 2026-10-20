@@ -129,6 +129,11 @@ pub enum ServerMsg {
         id: String,
         #[serde(default)]
         seq: u64,
+        /// The new session's `Session::nonce`. Optional like `Status::pid`:
+        /// an older daemon omits it, and nothing it starts is ever trusted as
+        /// a run's own process.
+        #[serde(default)]
+        nonce: Option<String>,
     },
     Captured {
         id: String,
@@ -148,6 +153,17 @@ pub enum ServerMsg {
         status: SessionStatus,
         #[serde(default)]
         seq: u64,
+        /// The session's own process (`Session::pid`), which the run tools
+        /// check a caller's ancestry against (`crate::peer`). Optional so it
+        /// rides along with the next daemon start, like `Hello::build`: an
+        /// older daemon omits it, the client reads None, and the check that
+        /// needs it fails closed until that daemon is replaced.
+        #[serde(default)]
+        pid: Option<u32>,
+        /// The session's `Session::nonce`, so a client can tell whether the
+        /// session under this id is still the one it started.
+        #[serde(default)]
+        nonce: Option<String>,
     },
     List {
         sessions: Vec<(String, SessionStatus)>,
@@ -305,6 +321,25 @@ pub fn decode_server(payload: &[u8]) -> io::Result<ServerFrame> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A daemon from before `Status::pid` answers without it, and the app it
+    /// is talking to has to read that as "cannot say", not fail the decode.
+    #[test]
+    fn a_status_without_a_pid_reads_as_none() {
+        let old: ServerMsg =
+            serde_json::from_str(r#"{"Status":{"id":"a","status":{"state":"running"},"seq":3}}"#)
+                .unwrap();
+        assert!(matches!(old, ServerMsg::Status { pid: None, seq: 3, .. }), "{old:?}");
+        let new = ServerMsg::Status {
+            id: "a".into(),
+            status: SessionStatus::Running,
+            seq: 3,
+            pid: Some(42),
+            nonce: Some("n".into()),
+        };
+        let back: ServerMsg = serde_json::from_slice(&encode_json(&new)[1..]).unwrap();
+        assert!(matches!(back, ServerMsg::Status { pid: Some(42), .. }), "{back:?}");
+    }
 
     #[test]
     fn json_client_msg_round_trips() {

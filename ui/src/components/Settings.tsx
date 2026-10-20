@@ -28,6 +28,7 @@ import {
   defaultWorkspaceLocation,
   deleteProfile,
   enableAgentProfiles,
+  getDispatchTools,
   getFilesConfig,
   getIssueSyncConfig,
   getKnowledgeConfig,
@@ -43,6 +44,7 @@ import {
   moveWorkspace,
   relocateProject,
   saveFilesConfig,
+  setDispatchTools,
   saveIssueSyncConfig,
   previewIssueKey,
   setProjectIssueKey,
@@ -302,6 +304,9 @@ export default function Settings({
   // newline-separated text of the explicit copy list.
   const [files, setFiles] = useState<FilesConfig | null>(null);
   const [filesDraft, setFilesDraft] = useState("");
+  // Whether this project's agents may start runs of their own (AGE-209). null
+  // until loaded, so the toggle never shows the wrong project's answer.
+  const [dispatchTools, setDispatchToolsState] = useState<boolean | null>(null);
   // App version for the About section; empty until the Tauri call lands.
   const [version, setVersion] = useState("");
   // Per-agent CLI facts (path, version, install method) for the About
@@ -792,6 +797,32 @@ export default function Settings({
     if (projectId) loadFiles(projectId);
   }, [projectId]);
 
+  async function loadDispatchTools(id: string) {
+    try {
+      const on = await getDispatchTools(id);
+      if (stillShowing(id)) setDispatchToolsState(on);
+    } catch (e) {
+      if (stillShowing(id)) setError(String(e));
+    }
+  }
+
+  useLayoutEffect(() => {
+    setDispatchToolsState(null);
+    if (projectId) loadDispatchTools(projectId);
+  }, [projectId]);
+
+  async function persistDispatchTools(on: boolean) {
+    const id = projectId;
+    if (!id) return;
+    setDispatchToolsState(on);
+    try {
+      await setDispatchTools(id, on);
+    } catch (e) {
+      toastError(e, "Couldn't save agent dispatch");
+    }
+    if (stillShowing(id)) await loadDispatchTools(id);
+  }
+
   async function persistFiles() {
     const id = projectId;
     if (!id) return;
@@ -1204,6 +1235,7 @@ export default function Settings({
       // static (this is whatever is installed on this machine).
       about: cliInfo.map((c) => agentLabel(c.agent)).join(" "),
       files: projectName ?? "",
+      dispatch: projectName ?? "",
     }),
     [profiles, mcpServers, projectName, cliInfo],
   );
@@ -2059,6 +2091,37 @@ export default function Settings({
                   <div className="settings-card-foot">
                     <button className="settings-save" onClick={persistFiles}>Save file list</button>
                   </div>
+                </div>
+              ) : null}
+            </section>
+          )}
+
+          {visible("dispatch") && (
+            <section className="settings-section">
+              <SectionHead id="dispatch" projectName={projectName} />
+              <p className="settings-section-hint">
+                Lets an agent in this project start runs of its own, wait until each one finishes or
+                needs you, and read what it did. Every run it starts gets its own worktree, uses the
+                same agent and permission settings as the run that started it, and shows on your
+                board. Any permission it needs, it asks you for, never the agent that started it.
+                A run started this way can't start more.
+              </p>
+              {!projectId ? (
+                <div className="settings-group-card">
+                  <span className="settings-notif-label">Select a project first.</span>
+                </div>
+              ) : dispatchTools !== null ? (
+                <div className="settings-group-card">
+                  <div className="settings-notif-row">
+                    <span className="settings-notif-label">
+                      Let agents start runs{projectName ? ` in ${projectName}` : ""}
+                    </span>
+                    <Toggle checked={dispatchTools} onChange={(on) => void persistDispatchTools(on)} />
+                  </div>
+                  <p className="settings-section-hint">
+                    Saved on this machine only, and never read from the repo. Runs you start from
+                    now on get the tools.
+                  </p>
                 </div>
               ) : null}
             </section>

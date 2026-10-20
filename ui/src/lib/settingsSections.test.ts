@@ -35,11 +35,11 @@ describe("the section index", () => {
     for (const g of GROUPS) expect(SECTIONS.some((s) => s.group === g.id)).toBe(true);
   });
 
-  // The point of the whole grouping: these three write .agency/agency.local.toml
+  // The point of the whole grouping: these four write .agency/agency.local.toml
   // in one checkout, and everything else is a preference for the app.
   it("scopes exactly the per-project sections to a project", () => {
     const project = SECTIONS.filter((s) => scopeOf(s.id) === "project").map((s) => s.id);
-    expect(project.sort()).toEqual(["backlog", "files", "knowledge"]);
+    expect(project.sort()).toEqual(["backlog", "dispatch", "files", "knowledge"]);
   });
 });
 
@@ -63,7 +63,7 @@ describe("matchSections", () => {
   });
 
   it("matches a group label, so 'project' lists the project-scoped sections", () => {
-    expect(matchSections("project")).toEqual(new Set(["backlog", "knowledge", "files"]));
+    expect(matchSections("project")).toEqual(new Set(["backlog", "knowledge", "files", "dispatch"]));
   });
 
   it("requires every word, so a second word narrows rather than widens", () => {

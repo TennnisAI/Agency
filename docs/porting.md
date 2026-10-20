@@ -257,6 +257,13 @@ Everything Agency spawns goes through a Unix login shell today:
   a return from the background opens the run notified while the app was away.
   `foreground.rs` is the other half of that: it answers whether Agency is
   frontmost, which the webview's focus bit only approximates.
+- **`peer.rs`** — names the process on the far end of a loopback TCP
+  connection and walks its parents, which is how the run tools (AGE-209) know
+  a caller is a run's own agent. macOS runs `/usr/sbin/lsof` and `/bin/ps` by
+  absolute path; Linux reads `/proc/net/tcp` and `/proc/<pid>/stat`, and is
+  covered by parser tests only. Anywhere else it answers "cannot tell", which
+  keeps the run tools off rather than open. Windows would want
+  `GetExtendedTcpTable` and a process snapshot.
 - **`command_on_path`** (`state.rs`) — checks executability Unix-style;
   Windows needs PATHEXT-aware lookup (`gh` → `gh.exe`).
 

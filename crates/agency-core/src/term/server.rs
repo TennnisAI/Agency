@@ -138,7 +138,7 @@ fn dispatch(frame: ClientFrame, client_id: u64, registry: &Arc<Registry>, out: &
             });
             match registry.start(id.clone(), Path::new(&cwd), &command, &args, &env, cols, rows, fb)
             {
-                Ok(()) => reply(ServerMsg::Started { id, seq }),
+                Ok(nonce) => reply(ServerMsg::Started { id, seq, nonce: Some(nonce) }),
                 Err(e) => reply(ServerMsg::Error { id: Some(id), message: e.to_string(), seq }),
             }
         }
@@ -175,8 +175,11 @@ fn dispatch(frame: ClientFrame, client_id: u64, registry: &Arc<Registry>, out: &
             }
         }
         ClientFrame::Msg(ClientMsg::Status { id, seq }) => {
-            let status = registry.get(&id).map(|s| s.status()).unwrap_or(SessionStatus::Gone);
-            reply(ServerMsg::Status { id, status, seq });
+            let session = registry.get(&id);
+            let status = session.as_ref().map_or(SessionStatus::Gone, |s| s.status());
+            let pid = session.as_ref().and_then(|s| s.pid());
+            let nonce = session.map(|s| s.nonce().to_string());
+            reply(ServerMsg::Status { id, status, seq, pid, nonce });
         }
         ClientFrame::Msg(ClientMsg::Kill { id }) => registry.kill(&id),
         ClientFrame::Msg(ClientMsg::List { seq }) => {

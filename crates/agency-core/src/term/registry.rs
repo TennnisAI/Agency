@@ -26,10 +26,11 @@ impl Registry {
         cols: u16,
         rows: u16,
         fallback: Option<Fallback>,
-    ) -> Result<()> {
+    ) -> Result<String> {
         let session = Session::start(id.clone(), cwd, command, args, env, cols, rows, fallback)?;
+        let nonce = session.nonce().to_string();
         self.sessions.lock().unwrap().insert(id, session);
-        Ok(())
+        Ok(nonce)
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<Session>> {

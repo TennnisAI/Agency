@@ -16,6 +16,7 @@ pub mod issuesync;
 pub mod loops;
 pub mod mcp;
 pub mod merge;
+pub mod peer;
 pub mod preview;
 pub(crate) mod procutil;
 pub mod profile;

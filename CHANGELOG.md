@@ -4,6 +4,113 @@ Notable changes in each release. The GitHub release for a version carries the
 same notes alongside the downloads; this file is so the history is readable without
 leaving the repository.
 
+## 0.2.4 (2026-10-20)
+
+An agent can now hand work to agents of its own: it starts runs, waits on
+them and reads what they did, each in its own worktree on your board, and
+only when you have switched that on for the project. Codex now reports its
+state through its own hooks, as Claude Code did in 0.2.3. Quitting can leave
+the agents running, and a run with an open pull request is merged on GitHub
+rather than behind it.
+
+macOS 11 or later, Apple Silicon. Linux with glibc 2.34 or later, x86_64 or
+arm64.
+
+**Coming from 0.2.3:** install from inside the app. Running agents survive the
+restart; this release does not change the terminal protocol. Two things wait
+for a fresh start. Agent dispatch needs the new terminal daemon, so it stays
+off until the daemon from 0.2.3 is replaced: choose "Stop and quit" once, or
+let a launch find it idle. And a Codex agent reports its state through hooks
+from its next launch, so one that survives the restart keeps the
+screen-reading guess until then.
+
+### Agent dispatch
+
+- Turn on "Let agents start runs" under Settings › Agent dispatch, per
+  project, and an agent in that project gets three tools: start a run from an
+  issue key or a prompt, wait until it finishes or needs you, and read its
+  transcript, diff or screen.
+- It is off by default. The switch is saved on this machine only and never
+  read from the repo, so a tracked `agency.toml` cannot turn it on.
+- A run started this way uses the same agent, model and permission settings as
+  the tab that started it, is cut from its parent's branch and merges back
+  into the parent's target. It asks you for any permission it needs, never the
+  agent that started it, and cannot start runs of its own. An agent may have
+  four on the board at once.
+- Only the agent the app itself launched for a run can use its tools. A copied
+  token, a script on a page in the preview, or another run's agent is turned
+  away. An agent that survived a restart of the app gets the tools back from
+  its next launch.
+
+### Quitting
+
+- With agents running, the quit dialog offers "Leave running" beside "Stop and
+  quit". Leaving closes the app alone; the agents carry on, and the next
+  launch picks them up. Notifications, queued messages, loops and Agency's own
+  tools wait until you reopen the app.
+- When Agency cannot reach the terminal daemon, the dialog says it cannot tell
+  how many sessions are running and offers both choices. It used to count that
+  as idle, and its one button stopped every session.
+- A plain Quit with nothing running leaves the daemon alone, so a scheduled run
+  that starts while the dialog is up is not killed. Finished sessions no
+  longer count as running.
+- Any quit, and an update's restart, stops a running loop check. One used to
+  be orphaned, and the next launch started a second in the same worktree.
+
+### Agent state
+
+- Codex reports working, blocked on a question, done and idle through its own
+  hooks. Codex asks you once to trust them, and Settings › Agents has "Let
+  Codex report its state" for when you would rather it did not. Pressing Esc
+  in Codex reads as done without a "finished" notification.
+- Each permission dialog ends with its own tool call. A sibling call finishing
+  used to release a dialog still on screen, and a subagent's answered question
+  held the send queue until the main agent next reported.
+- Turning Codex's state off under a Codex that was still reporting no longer
+  leaves it stuck at its last report.
+- A worktree reads as working when any of its agents is, not only its first.
+  Where a row lists its tabs, the status names the tab it is about, and a run
+  whose agent tabs are all closed reads its terminals as "live".
+
+### Pull requests
+
+- With an open pull request on the branch, the merge window merges that pull
+  request on GitHub, pushing any unpushed commits first. It used to merge
+  locally and delete the remote branch, and GitHub then showed the pull
+  request as closed rather than merged. Pick merge commit, squash or rebase
+  where the repository allows more than one; the choice is kept per project.
+- A draft pull request, or one aimed at another base than the agent's, is
+  named in the window before you merge. A pull request merged this way marks
+  its issue done.
+- A merge sent just after a push waits up to 15 seconds for GitHub to catch
+  up. GitHub used to refuse it as if the branch had diverged. A protected
+  branch or an out-of-date head shows GitHub's own reason, where it used to
+  read as a conflict.
+- A pull request with very large files no longer crashes the review pane. A
+  file past 10,000 changed lines, or one that would take the pull request past
+  40,000, shows its line count and a link to GitHub instead.
+
+### Files and settings
+
+- Markdown files open on the rendered preview. A jump to a line still opens
+  the code, and an open tab keeps the view you last chose.
+- Settings is shorter: Diagnostics is folded into About, most explanatory
+  paragraphs are gone, and "Let agents see the file you have open" is now
+  "Share the open file's path with agents".
+- The interface sits on one scale of corner radii, type sizes and control
+  heights. Pane headers line up across panes, list rows are a consistent
+  height, and empty and loading states are centred, with a spinner on every
+  "Loading…".
+
+### Fixes
+
+- A Gemini run whose worktree path goes through a symlink resumes its
+  conversation. It used to start fresh on every relaunch. Gemini is now
+  reopened by its session id, and Agency decides whether there is a
+  conversation to resume by Gemini's own rule.
+- A saved `agency.local.toml` that does not parse is left alone with an error.
+  It used to be treated as empty and overwritten.
+
 ## 0.2.3 (2026-10-06)
 
 Agency can now tell a Claude Code agent stopped on a permission prompt from one

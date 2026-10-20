@@ -30,17 +30,23 @@ pub enum ResumeProbe {
 ///   so a sibling session's conversation in the shared directory is not
 ///   something it can continue, and reading it as "Has" would resume an empty
 ///   store with the run's prompt nowhere;
-/// - an agent that names conversations (claude, copilot, cursor, kimi) is
-///   about to ask for that one conversation, so the question is whether that
-///   one transcript exists and nothing else. A sibling's conversation next to
-///   it is no answer, and for claude a wrong "Has" does not even start:
-///   `--resume <id>` refuses outright when the id is not there. Cursor's does
-///   not refuse, which is worse: it reopens the directory's latest chat under
-///   the missing id, so a wrong "Has" there is AGE-188's crossed run;
+/// - an agent that names conversations (claude, copilot, cursor, kimi,
+///   gemini) is about to ask for that one conversation, so the question is
+///   whether that one transcript exists and nothing else. A sibling's
+///   conversation next to it is no answer, and for claude a wrong "Has" does
+///   not even start: `--resume <id>` refuses outright when the id is not
+///   there. Cursor's does not refuse, which is worse: it reopens the
+///   directory's latest chat under the missing id, so a wrong "Has" there is
+///   AGE-188's crossed run;
 /// - whether the transcript existing is the answer is per agent
 ///   ([`sessionstore::turn_marker`]): cursor writes its `meta.json` at launch
 ///   and only the first turn sets `hasConversation` in it, so that file is
 ///   read, not stat'ed;
+/// - gemini's transcript has no path computable from the id: its directory
+///   is looked up in gemini's project registry and the file found by the
+///   id's first 8 characters, then read for the full id and a turn
+///   ([`sessionstore::gemini_chats_dir`]). It writes the file at launch with
+///   a preamble message in it, so a line count is no answer either;
 /// - a run with no conversation on record — every run that predates Agency
 ///   minting them — falls back to the directory question it always asked.
 ///   Cursor and kimi key that directory by cwd too ([`sessionstore::store_dir`]),
@@ -54,6 +60,9 @@ pub fn resume_probe(
 ) -> ResumeProbe {
     if let Some(dir) = agency_core::sessionstore::dir(home, command, worktree, session) {
         return dir_probe(&dir);
+    }
+    if let Some(registry) = sessionstore::gemini_registry(home, command) {
+        return gemini_probe(home, &registry, worktree, conversation);
     }
     if let Some(file) =
         conversation.and_then(|c| sessionstore::conversation_path(home, command, worktree, c))
@@ -73,6 +82,55 @@ pub fn resume_probe(
         "claude" => dir_probe(&home.join(".claude").join("projects").join(claude_enc(worktree))),
         "pi" => dir_probe(&home.join(".pi").join("agent").join("sessions").join(pi_enc(worktree))),
         _ => ResumeProbe::Unknown,
+    }
+}
+
+/// `conversation` with a turn in it, or with `None` any conversation with one,
+/// which is what `--resume latest` reopens.
+fn gemini_probe(
+    home: &Path,
+    registry: &Path,
+    worktree: &Path,
+    conversation: Option<&str>,
+) -> ResumeProbe {
+    // Gemini registers `process.cwd()`, which has its symlinks resolved: run
+    // from `/tmp/x`, 0.64.0 filed it under `/private/tmp/x`. A worktree whose
+    // path goes through one, a symlinked `~/Dev` say, matched no entry as
+    // given, and every relaunch came up fresh with the prompt replayed.
+    let worktree = std::fs::canonicalize(worktree).unwrap_or_else(|_| worktree.to_path_buf());
+    let worktree = worktree.as_path();
+    let Some(chats) = std::fs::read_to_string(registry)
+        .ok()
+        .and_then(|r| sessionstore::gemini_chats_dir(home, &r, worktree))
+    else {
+        return ResumeProbe::None;
+    };
+    // Gemini checks the registry against an ownership marker beside the
+    // chats and reassigns the slug when the two disagree, so a stale entry
+    // points at another project's sessions. Absent is fine: gemini writes it.
+    if let Some(Ok(owner)) =
+        chats.parent().map(|p| std::fs::read_to_string(p.join(".project_root")))
+    {
+        if Path::new(owner.trim()) != worktree {
+            return ResumeProbe::None;
+        }
+    }
+    let Ok(entries) = std::fs::read_dir(&chats) else {
+        return ResumeProbe::None;
+    };
+    let has = entries
+        .flatten()
+        .filter(|e| {
+            e.file_name().to_str().is_some_and(|n| sessionstore::gemini_chat_file(n, conversation))
+        })
+        .any(|e| {
+            std::fs::read_to_string(e.path())
+                .is_ok_and(|c| sessionstore::gemini_chat_records_turn(&c, conversation))
+        });
+    if has {
+        ResumeProbe::Has
+    } else {
+        ResumeProbe::None
     }
 }
 
@@ -284,11 +342,139 @@ mod tests {
         );
     }
 
+    /// The layout 0.64.0 left after two conversations in one directory, under
+    /// ids sharing their first 8 characters, and a third launched and quit
+    /// with no turn. Each id comes back as itself; the third does not come
+    /// back at all, since `--resume` on it exits 42.
+    #[test]
+    fn gemini_probe_finds_the_conversation_through_the_registry() {
+        let home = tempfile::tempdir().unwrap();
+        let wt = Path::new("/Users/x/agency/.agency/worktrees/wt");
+        let first = "0b6f1a52-9c1e-4f6e-a1d2-3c4b5a697801";
+        let second = "0b6f1a52-9c1e-4f6e-a1d2-3c4b5a697802";
+        let empty = "7d1e2c3b-4a59-4687-9a0b-1c2d3e4f5a6b";
+        let gemini = home.path().join(".gemini");
+        let chats = gemini.join("tmp").join("wt").join("chats");
+        let meta = |id: &str| {
+            format!(
+                "{{\"sessionId\":\"{id}\",\"projectHash\":\"h\",\"kind\":\"main\"}}\n\
+                 {{\"id\":\"c\",\"type\":\"user\",\"content\":[{{\"text\":\"<session_context>\\nx\"}}]}}\n"
+            )
+        };
+        let turn = "{\"id\":\"p\",\"type\":\"user\",\"content\":[{\"text\":\"Please remember the word kiwi\"}]}\n";
+
+        // Never launched here: nothing in the registry, nothing to resume.
+        assert_eq!(
+            resume_probe(home.path(), "gemini", wt, "agent-abcd", Some(first)),
+            ResumeProbe::None
+        );
+        assert_eq!(resume_probe(home.path(), "gemini", wt, "agent-abcd", None), ResumeProbe::None);
+
+        fs::create_dir_all(&chats).unwrap();
+        fs::write(
+            gemini.join("projects.json"),
+            format!("{{\"projects\":{{\"{}\":\"wt\"}}}}", wt.display()),
+        )
+        .unwrap();
+        fs::write(gemini.join("tmp").join("wt").join(".project_root"), wt.to_str().unwrap())
+            .unwrap();
+        fs::write(chats.join("session-2026-10-19T14-03-7d1e2c3b.jsonl"), meta(empty)).unwrap();
+        assert_eq!(
+            resume_probe(home.path(), "gemini", wt, "agent-abcd", Some(empty)),
+            ResumeProbe::None,
+            "launched, never answered"
+        );
+        assert_eq!(resume_probe(home.path(), "gemini", wt, "agent-abcd", None), ResumeProbe::None);
+
+        fs::write(
+            chats.join("session-2026-10-19T14-03-1-0b6f1a52.jsonl"),
+            format!("{}{turn}", meta(second)),
+        )
+        .unwrap();
+        assert_eq!(
+            resume_probe(home.path(), "gemini", wt, "agent-abcd", Some(first)),
+            ResumeProbe::None,
+            "the same short id is a sibling's conversation, not ours"
+        );
+        assert_eq!(
+            resume_probe(home.path(), "gemini", wt, "agent-abcd", Some(second)),
+            ResumeProbe::Has
+        );
+        fs::write(
+            chats.join("session-2026-10-19T14-03-0b6f1a52.jsonl"),
+            format!("{}{turn}", meta(first)),
+        )
+        .unwrap();
+        assert_eq!(
+            resume_probe(home.path(), "gemini", wt, "agent-abcd", Some(first)),
+            ResumeProbe::Has
+        );
+        // With nothing on record, `--resume latest` has something here.
+        assert_eq!(resume_probe(home.path(), "gemini", wt, "agent-abcd", None), ResumeProbe::Has);
+        // And nowhere else.
+        assert_eq!(
+            resume_probe(
+                home.path(),
+                "gemini",
+                Path::new("/Users/x/elsewhere"),
+                "agent-abcd",
+                None
+            ),
+            ResumeProbe::None
+        );
+
+        // A registry entry whose marker names another project is stale:
+        // gemini would move this directory to a fresh slug.
+        fs::write(gemini.join("tmp").join("wt").join(".project_root"), "/Users/y/wt").unwrap();
+        assert_eq!(
+            resume_probe(home.path(), "gemini", wt, "agent-abcd", Some(first)),
+            ResumeProbe::None
+        );
+    }
+
+    /// Gemini keys the registry by the resolved directory, so a worktree
+    /// reached through a symlink is looked up by where it really is. (The
+    /// tempdir is one already on macOS, under `/var` for `/private/var`.)
+    #[cfg(unix)]
+    #[test]
+    fn gemini_probe_resolves_the_worktree_as_gemini_does() {
+        use std::os::unix::fs::symlink;
+        let home = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("real").join("wt")).unwrap();
+        symlink(root.path().join("real"), root.path().join("link")).unwrap();
+        let resolved = fs::canonicalize(root.path().join("real").join("wt")).unwrap();
+        let id = "0b6f1a52-9c1e-4f6e-a1d2-3c4b5a697801";
+        let gemini = home.path().join(".gemini");
+        let chats = gemini.join("tmp").join("wt").join("chats");
+        fs::create_dir_all(&chats).unwrap();
+        let registry = serde_json::json!({"projects": {resolved.to_str().unwrap(): "wt"}});
+        fs::write(gemini.join("projects.json"), registry.to_string()).unwrap();
+        fs::write(gemini.join("tmp").join("wt").join(".project_root"), resolved.to_str().unwrap())
+            .unwrap();
+        fs::write(
+            chats.join("session-2026-10-19T14-03-0b6f1a52.jsonl"),
+            format!(
+                "{{\"sessionId\":\"{id}\",\"projectHash\":\"h\",\"kind\":\"main\"}}\n\
+                 {{\"id\":\"p\",\"type\":\"user\",\"content\":[{{\"text\":\"kiwi\"}}]}}\n"
+            ),
+        )
+        .unwrap();
+        for wt in [root.path().join("link").join("wt"), root.path().join("real").join("wt")] {
+            assert_eq!(
+                resume_probe(home.path(), "gemini", &wt, "agent-abcd", Some(id)),
+                ResumeProbe::Has,
+                "{}",
+                wt.display()
+            );
+        }
+    }
+
     #[test]
     fn unknown_agents_are_unknown() {
         let home = tempfile::tempdir().unwrap();
         let wt = Path::new("/x");
-        for command in ["opencode", "codex", "hermes", "gemini"] {
+        for command in ["opencode", "codex", "hermes"] {
             assert_eq!(
                 resume_probe(home.path(), command, wt, "agent-abcd", None),
                 ResumeProbe::Unknown,

@@ -337,6 +337,16 @@ impl TermClient {
         }
     }
 
+    /// The process the daemon spawned for session `id`, or `None` from a
+    /// daemon too old to say (see `ServerMsg::Status::pid`) or for a session
+    /// with no process.
+    pub fn session_pid(&self, id: &str) -> Result<Option<u32>> {
+        match self.request(|seq| ClientMsg::Status { id: id.into(), seq })? {
+            ServerMsg::Status { pid, .. } => Ok(pid),
+            other => Err(anyhow!("unexpected reply: {other:?}")),
+        }
+    }
+
     pub fn kill(&self, id: &str) -> Result<()> {
         send_msg(&self.shared, &ClientMsg::Kill { id: id.into() })
     }

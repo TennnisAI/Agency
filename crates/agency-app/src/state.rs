@@ -324,6 +324,12 @@ pub type PreviewShotFn =
 /// whose agent made it. Installed by the app shell, which holds the handle the
 /// call needs to reach `AppState` from a preview server's connection thread:
 /// see [`AppState::run_tool`]. Absent in tests.
+/// Whether the process on the client end of a connection to a run's server,
+/// given as (run id, the server's port, the client's port), is that run's own.
+/// Installed beside [`RunToolFn`], for the same reason; see
+/// [`AppState::is_run_caller`]. Absent, nobody is.
+pub type RunCallerFn = std::sync::Arc<dyn Fn(&str, u16, u16) -> bool + Send + Sync>;
+
 pub type RunToolFn = std::sync::Arc<
     dyn Fn(&str, agency_core::preview::runs::Call) -> std::result::Result<String, String>
         + Send
@@ -3079,6 +3085,8 @@ pub struct AppState {
     /// The run tools' executor, installed by the app shell; see [`RunToolFn`].
     /// A cell the servers capture, for the same reason `preview_shot` is one.
     run_tool: std::sync::Arc<std::sync::OnceLock<RunToolFn>>,
+    /// See [`RunCallerFn`].
+    run_caller: std::sync::Arc<std::sync::OnceLock<RunCallerFn>>,
     /// Which run's agent dispatched which (AGE-209), child to parent: the
     /// registry's `run_parents`, held here because every request to a run's
     /// server asks whether that run is a child.
@@ -3429,6 +3437,7 @@ impl AppState {
             preview_rects: Mutex::new(HashMap::new()),
             preview_shot: std::sync::Arc::new(std::sync::OnceLock::new()),
             run_tool: std::sync::Arc::new(std::sync::OnceLock::new()),
+            run_caller: std::sync::Arc::new(std::sync::OnceLock::new()),
             run_parents: Arc::new(Mutex::new(run_parents)),
             open_file: Arc::new(Mutex::new(None)),
             share_open_file: Arc::new(std::sync::atomic::AtomicBool::new(share_open_file)),
@@ -5069,6 +5078,53 @@ impl AppState {
                 self.read_child(&run_id, what).map_err(|e| format!("{e:#}"))
             }
         }
+    }
+
+    /// Whether the process holding the client end of the loopback connection
+    /// from `peer_port` to `server_port` belongs to run `run_id`: descends
+    /// from the process the terminal daemon spawned for one of its sessions,
+    /// the run's own or one of its extra tabs. See `agency_core::peer`.
+    ///
+    /// Every "cannot tell" is no. That includes a daemon from before it
+    /// reported its sessions' processes, which keeps running across an app
+    /// update while it hosts agents; the run tools stay off until it is
+    /// replaced, which the log says once per launch.
+    pub fn is_run_caller(&self, run_id: &str, server_port: u16, peer_port: u16) -> bool {
+        let Some(pid) = agency_core::peer::tcp_peer_pid(server_port, peer_port) else {
+            log::info!("run tools: no single process holds port {peer_port}; refused");
+            return false;
+        };
+        let (sessions, roots) = {
+            let term = self.term.read().unwrap();
+            let Ok(live) = term.list() else { return false };
+            let sessions = running_agent_sessions(run_id, &live);
+            let roots: Vec<u32> =
+                sessions.iter().filter_map(|name| term.session_pid(name).ok().flatten()).collect();
+            (sessions, roots)
+        };
+        // No agent running in the run: nothing can be its agent.
+        if sessions.is_empty() {
+            return false;
+        }
+        if roots.is_empty() {
+            static SAID: std::sync::Once = std::sync::Once::new();
+            SAID.call_once(|| {
+                log::warn!(
+                    "run tools: the terminal daemon did not name {run_id}'s session process. \
+                     A daemon from before this release does not; the run tools stay off until \
+                     it is replaced, when it is next idle or Agency quits"
+                )
+            });
+            return false;
+        }
+        let Some(parents) = agency_core::peer::process_parents() else { return false };
+        let own = agency_core::peer::descends_from(pid, &roots, &parents);
+        if !own {
+            log::warn!(
+                "run tools: process {pid} sent {run_id}'s token from outside its sessions; refused"
+            );
+        }
+        own
     }
 
     fn reach_child(&self, asker: &str, run_id: &str) -> std::result::Result<(), String> {
@@ -6922,6 +6978,7 @@ impl AppState {
         let shot_cell = self.preview_shot.clone();
         let run_token = std::sync::Arc::from(self.run_token(run_id));
         let run_id = run_id.to_string();
+        let caller_run = run_id.clone();
         let shot_run = run_id.clone();
         let screenshot = std::sync::Arc::new(move || match shot_cell.get() {
             Some(shot) => shot(&shot_run),
@@ -6998,6 +7055,10 @@ impl AppState {
                 map.insert(session.to_string(), next);
             });
         let state_token = self.state_token.clone();
+        let caller_cell = self.run_caller.clone();
+        let caller = std::sync::Arc::new(move |server: u16, peer: u16| {
+            caller_cell.get().is_some_and(|is_caller| is_caller(&caller_run, server, peer))
+        });
         agency_core::preview::Hooks {
             facts,
             screenshot,
@@ -7007,6 +7068,7 @@ impl AppState {
             report,
             runs,
             run_token,
+            caller,
             state_token,
         }
     }
@@ -7299,6 +7361,11 @@ impl AppState {
     /// Installed once by the app shell; see [`RunToolFn`].
     pub fn set_run_tool(&self, run_tool: RunToolFn) {
         let _ = self.run_tool.set(run_tool);
+    }
+
+    /// Installed once by the app shell; see [`RunCallerFn`].
+    pub fn set_run_caller(&self, run_caller: RunCallerFn) {
+        let _ = self.run_caller.set(run_caller);
     }
 
     /// The issue key prefix a project's tracker uses, for the workspace

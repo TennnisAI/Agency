@@ -77,10 +77,12 @@ fn stale_reply_with_old_seq_is_discarded() {
                         id: id.clone(),
                         status: SessionStatus::Gone,
                         seq: seq.wrapping_sub(1),
+                        pid: None,
                     };
                     write_frame(&mut write, &encode_json(&stale)).unwrap();
                     // …then the real reply for this request.
-                    let real = ServerMsg::Status { id, status: SessionStatus::Running, seq };
+                    let real =
+                        ServerMsg::Status { id, status: SessionStatus::Running, seq, pid: None };
                     write_frame(&mut write, &encode_json(&real)).unwrap();
                 }
                 _ => {}
@@ -240,6 +242,12 @@ fn start_subscribe_input_capture_kill() {
     assert!(client.capture("r1", 5).unwrap().contains("echo-me"));
 
     assert_eq!(client.list().unwrap().len(), 1);
+    // The session's own process, which the run tools' caller check walks up
+    // to: here `cat` itself, a child of this test process's daemon thread.
+    let pid = client.session_pid("r1").unwrap().expect("a running session has a process");
+    let parents = agency_core::peer::process_parents().unwrap();
+    assert_eq!(parents.get(&pid), Some(&std::process::id()), "spawned by the daemon");
+    assert_eq!(client.session_pid("nope").unwrap(), None);
     drop(sub);
     client.kill("r1").unwrap();
     assert_eq!(client.list().unwrap().len(), 0);

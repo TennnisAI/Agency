@@ -227,6 +227,14 @@ pub struct Hooks {
     /// child that posted to its parent's port would otherwise have dispatched
     /// as its parent, past the rule that children never do.
     pub run_token: Arc<str>,
+    /// Whether the process holding the client end of a connection, given as
+    /// (this server's port, the client's port), is one of this run's own: a
+    /// descendant of one of its sessions' processes (see [`crate::peer`]).
+    /// The token is in a file, and anything that can read the file can send
+    /// it; this is the check a copied token does not pass. Asked only of a
+    /// request that has already passed every cheaper check, since answering
+    /// means reading the process table.
+    pub caller: Arc<dyn Fn(u16, u16) -> bool + Send + Sync>,
     /// What a `report` post has to carry in [`crate::state_hooks::TOKEN_HEADER`]
     /// (see [`crate::state_hooks::token`]).
     pub state_token: Arc<str>,
@@ -703,7 +711,7 @@ fn control(stream: &mut TcpStream, req: &http::Request, ctx: &Ctx) {
     let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
     let str_at = |k: &str| body.get(k).and_then(Value::as_str).map(str::to_string);
     match (req.method.as_str(), req.path()) {
-        ("POST", MCP_PATH) => match rpc::handle(&req.body, request_caps(req, ctx)) {
+        ("POST", MCP_PATH) => match rpc::handle(&req.body, request_caps(req, stream, ctx)) {
             rpc::Handled::Response(v) => http::respond_json(stream, 200, &v),
             rpc::Handled::Notification => http::respond_status(stream, 202, "Accepted"),
             rpc::Handled::Call { id, name, args } => {
@@ -774,20 +782,31 @@ fn control(stream: &mut TcpStream, req: &http::Request, ctx: &Ctx) {
 /// What this one request may be served: the run's switches, less the run
 /// tools unless the request is this run's own agent speaking.
 ///
-/// Two checks, for two different callers. A page on the preview's own origin
-/// passes `handle_conn`'s origin check, since it is loopback, and a script on
-/// it (the app under development, any dependency of it) could otherwise have
-/// started an agent run with the user's credentials. Browsers put `Origin` on
-/// every POST and `Sec-Fetch-Site` on every fetch, and an agent's MCP client
-/// sends neither; the same test guards `state_report`. Any other local
-/// process is stopped by the token, which only this run's MCP config holds.
-fn request_caps(req: &http::Request, ctx: &Ctx) -> Caps {
+/// Three checks, cheapest first. A page on the preview's own origin passes
+/// `handle_conn`'s origin check, since it is loopback, and a script on it (the
+/// app under development, any dependency of it) could otherwise have started
+/// an agent run with the user's credentials. Browsers put `Origin` on every
+/// POST and `Sec-Fetch-Site` on every fetch, and an agent's MCP client sends
+/// neither; the same test guards `state_report`. The token stops a process
+/// that only found the port. And [`Hooks::caller`] stops one that also read
+/// the token out of this run's MCP config, a dispatched child above all, which
+/// could otherwise have dispatched as its parent: it is not in the parent's
+/// process tree, and no file it can read puts it there.
+fn request_caps(req: &http::Request, stream: &TcpStream, ctx: &Ctx) -> Caps {
     let mut caps = (ctx.hooks.caps)();
+    if !caps.dispatch {
+        return caps;
+    }
     let from_browser = req.header("origin").is_some() || req.header("sec-fetch-site").is_some();
     let token = req.header(RUN_TOKEN_HEADER).unwrap_or("").trim();
-    let own_agent = !ctx.hooks.run_token.is_empty()
+    let has_token = !ctx.hooks.run_token.is_empty()
         && crate::state_hooks::token_matches(token, &ctx.hooks.run_token);
-    caps.dispatch &= own_agent && !from_browser;
+    caps.dispatch = !from_browser
+        && has_token
+        && match (stream.local_addr(), stream.peer_addr()) {
+            (Ok(local), Ok(peer)) => (ctx.hooks.caller)(local.port(), peer.port()),
+            _ => false,
+        };
     caps
 }
 
@@ -986,6 +1005,7 @@ mod tests {
             report: Arc::new(|_, _| {}),
             runs: Arc::new(|call| Ok(format!("{call:?}"))),
             run_token: Arc::from(RUN_TOKEN),
+            caller: Arc::new(|_, _| true),
             state_token: Arc::from(TOKEN),
         }
     }
@@ -1333,6 +1353,48 @@ mod tests {
             &[(RUN_TOKEN_HEADER, RUN_TOKEN)],
         );
         assert_eq!(r["result"]["content"][0]["text"], "started");
+    }
+
+    /// The right token from the wrong process: what a dispatched child that
+    /// read its parent's MCP config would send. The server asks about the
+    /// connection it is actually holding, by both its ports.
+    #[test]
+    fn a_copied_token_from_outside_the_runs_processes_is_refused() {
+        let mut hooks = with_open_file(
+            None,
+            Err("n/a"),
+            Caps { preview: false, editor: false, dispatch: true },
+            OpenFocus::Nothing,
+        );
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let log = asked.clone();
+        hooks.caller = Arc::new(move |server, peer| {
+            log.lock().unwrap().push((server, peer));
+            false
+        });
+        hooks.runs = Arc::new(|_| panic!("a refused caller reached the app"));
+        let srv = start(hooks);
+        let own = [(RUN_TOKEN_HEADER, RUN_TOKEN)];
+        let r = run_call(srv.port(), "run_dispatch", json!({ "prompt": "x" }), &own);
+        assert!(r["error"]["message"].is_string(), "{r}");
+        let asked = asked.lock().unwrap();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].0, srv.port(), "asked about this server's end");
+        assert_ne!(asked[0].1, srv.port(), "and the client's own port");
+    }
+
+    #[test]
+    fn the_process_table_is_not_read_for_a_request_that_failed_cheaper_checks() {
+        let mut hooks = with_open_file(
+            None,
+            Err("n/a"),
+            Caps { preview: false, editor: false, dispatch: true },
+            OpenFocus::Nothing,
+        );
+        hooks.caller = Arc::new(|_, _| panic!("asked about a request with no token"));
+        let srv = start(hooks);
+        let r = run_call(srv.port(), "run_wait", json!({ "run_id": "c" }), &[]);
+        assert!(r["error"]["message"].is_string(), "{r}");
     }
 
     #[test]

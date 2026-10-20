@@ -510,6 +510,12 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 None => Err("Agency is shutting down.".to_string()),
             }
         }));
+        let caller_handle = app.handle().clone();
+        state.set_run_caller(std::sync::Arc::new(move |run_id, server, peer| {
+            caller_handle
+                .try_state::<AppState>()
+                .is_some_and(|state| state.is_run_caller(run_id, server, peer))
+        }));
         state.sync_preview_servers();
     }
     let handle = app.handle().clone();

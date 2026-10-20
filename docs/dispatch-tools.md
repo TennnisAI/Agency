@@ -87,26 +87,43 @@ may have at most four children not yet archived or discarded
 (`dispatch::MAX_LIVE_CHILDREN`).
 
 **Only the run's own agent is the caller.** The port says nothing about who
-is calling: any local process can reach it. Two callers had to be shut out, and
-`preview::request_caps` drops the run tools from any request that fails either
-check, so they are neither listed nor answered:
+is calling: any local process can reach it. `preview::request_caps` drops the
+run tools from any request that fails one of three checks, cheapest first, so
+they are neither listed nor answered:
 
-- A script on the previewed page. It shares the server's loopback origin, so
-  it passes the origin check every request gets, and without this it could
-  have started an agent run with the user's credentials. Browsers put `Origin`
-  on every POST and `Sec-Fetch-Site` on every fetch; an agent's MCP client
-  sends neither. `state_report` already refused browsers the same way.
-- Another process that found the port, a child posting to its parent's server
-  above all, which would have dispatched as the parent. Each run has a random
-  token (`Registry::run_token`, kept across restarts because the agent read it
-  at launch), written only into that run's emitted MCP config as the
-  `x-agency-run-token` header, and every run tool call must carry it. An empty
-  token, from a registry that failed to give one, admits nobody.
+1. **Not a browser.** A script on the previewed page shares the server's
+   loopback origin, so it passes the origin check every request gets, and
+   could otherwise have started an agent run with the user's credentials.
+   Browsers put `Origin` on every POST and `Sec-Fetch-Site` on every fetch; an
+   agent's MCP client sends neither. `state_report` refuses browsers the same
+   way.
+2. **The run's token.** Each run has a random token (`Registry::run_token`,
+   kept across restarts because the agent read it at launch), written only
+   into that run's emitted MCP config as the `x-agency-run-token` header. This
+   stops a process that only found the port, and keeps the expensive check
+   below off every request that has no business with the run tools.
+3. **The run's own process tree.** A token in a file proves only that the
+   caller read the file, and a dispatched child can read its parent's MCP
+   config. So the server names the process on the client end of the
+   connection (`agency_core::peer::tcp_peer_pid`) and admits it only if it
+   descends from the process the terminal daemon spawned for one of the run's
+   own sessions (`AppState::is_run_caller`). A process cannot choose its
+   parent, and a child's processes descend from the child's session, so a
+   copied token gets the child nowhere.
 
-What the token does not stop is a child that reads its parent's MCP config off
-disk and posts with it. That needs both a file read outside its worktree and a
-shell command, each behind the child's own permission gate, and a child that
-already has a shell can start any agent it likes without Agency.
+The daemon reports a session's process as an optional `pid` on its `Status`
+reply, which needs no protocol bump: a bump kills every live session. A
+daemon from before this release omits it, and the check then fails closed.
+Such a daemon survives an app update for as long as it hosts agents, so the
+run tools stay off until it is replaced, when it is next idle or Agency quits.
+The log says so once per launch.
+
+What none of this can stop is a process of the user's that sets out to act
+through Agency's own machinery: one that types into the parent's terminal
+through the daemon's socket, or edits Agency's database or
+`agency.local.toml`. Any process the user runs can do that to any run today,
+with or without these tools, so it is not a hole this feature opens. Closing it
+is a sandbox's job, the agent CLI's own, not a check on a loopback port.
 
 **Default-deny on reach.** `run_wait` and `run_read` reach only the runs the
 asker dispatched (`dispatch::may_reach`). Every other run is another agent's

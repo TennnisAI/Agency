@@ -142,6 +142,11 @@ impl Session {
         self.ctx.emu.lock().unwrap().capture_styled(lines)
     }
 
+    /// The session's own process: the current one, after a fallback respawn.
+    pub fn pid(&self) -> Option<u32> {
+        self.ctx.pty.lock().unwrap().as_ref().and_then(|p| p.pid())
+    }
+
     pub fn status(&self) -> SessionStatus {
         match self.ctx.pty.lock().unwrap().as_ref().map(|p| p.status()) {
             Some(ProcStatus::Running) | None => SessionStatus::Running,

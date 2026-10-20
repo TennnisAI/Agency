@@ -98,6 +98,9 @@ pub struct PtyProcess {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     status: Arc<Mutex<ProcStatus>>,
     killer: Box<dyn ChildKiller + Send + Sync>,
+    /// The process spawned into the pty, which every process the session
+    /// runs descends from. See `crate::peer`.
+    pid: Option<u32>,
     // Wrapped in Mutex so PtyProcess is Sync (needed for Arc<Session>: Send).
     master: Mutex<Box<dyn MasterPty + Send>>,
 }
@@ -128,6 +131,10 @@ impl PtyProcess {
 
     pub fn status(&self) -> ProcStatus {
         self.status.lock().unwrap().clone()
+    }
+
+    pub fn pid(&self) -> Option<u32> {
+        self.pid
     }
 }
 
@@ -166,6 +173,7 @@ where
     drop(pair.slave);
 
     let killer = child.clone_killer();
+    let pid = child.process_id();
     let mut reader = pair.master.try_clone_reader()?;
     let writer = pair.master.take_writer()?;
     let status = Arc::new(Mutex::new(ProcStatus::Running));
@@ -209,6 +217,7 @@ where
         writer: Arc::new(Mutex::new(writer)),
         status,
         killer,
+        pid,
         master: Mutex::new(pair.master),
     })
 }

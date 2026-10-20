@@ -175,8 +175,10 @@ fn dispatch(frame: ClientFrame, client_id: u64, registry: &Arc<Registry>, out: &
             }
         }
         ClientFrame::Msg(ClientMsg::Status { id, seq }) => {
-            let status = registry.get(&id).map(|s| s.status()).unwrap_or(SessionStatus::Gone);
-            reply(ServerMsg::Status { id, status, seq });
+            let session = registry.get(&id);
+            let status = session.as_ref().map_or(SessionStatus::Gone, |s| s.status());
+            let pid = session.and_then(|s| s.pid());
+            reply(ServerMsg::Status { id, status, seq, pid });
         }
         ClientFrame::Msg(ClientMsg::Kill { id }) => registry.kill(&id),
         ClientFrame::Msg(ClientMsg::List { seq }) => {

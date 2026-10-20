@@ -29,23 +29,14 @@ pub struct TermClient {
     shared: Arc<Shared>,
     /// The sessions this client started, by id, with the nonce the daemon
     /// made for each (`Session::nonce`). See [`TermClient::spawned_pid`].
+    ///
+    /// In this process's memory and nowhere else. It was kept in a file
+    /// beside the socket so that sessions outliving the app stayed trusted,
+    /// but anything a file holds, any process of the user's can have written:
+    /// start a session of its own, put its nonce in the file under a run's
+    /// name, and wait for a restart. So a client trusts only what it started
+    /// itself, and a session from before it connected is never its own.
     spawned: Mutex<HashMap<String, String>>,
-    /// Where `spawned` is kept, beside the socket, so that it outlives the
-    /// app: the sessions do, and a run whose agent survived a restart is still
-    /// the one this app started.
-    record: PathBuf,
-}
-
-/// Where a client keeps its record of the sessions it started.
-fn spawn_record_path(socket_path: &Path) -> PathBuf {
-    socket_path.with_file_name("termd-spawns.json")
-}
-
-fn read_spawn_record(path: &Path) -> HashMap<String, String> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default()
 }
 
 pub struct Subscription {
@@ -157,17 +148,13 @@ impl TermClient {
         };
         let old = build.unwrap_or("an unknown build");
         match (reuse_daemon(protocol, build, sessions), &handshake) {
-            (Reuse::Keep, _) => {
-                client.prune_spawn_record();
-                return Ok(client);
-            }
+            (Reuse::Keep, _) => return Ok(client),
             (Reuse::KeepStale, _) => {
                 log::warn!(
                     "termd on {sock} is from {old}, the app is {BUILD}; keeping it because it \
                      hosts sessions. It is replaced at the first launch that finds it idle, or \
                      when Agency quits and stops its agents"
                 );
-                client.prune_spawn_record();
                 return Ok(client);
             }
             (Reuse::ReplaceIdle, _) => log::info!(
@@ -235,9 +222,7 @@ impl TermClient {
         });
 
         spawn_reader(read_half, shared.clone(), reply_tx);
-        let record = spawn_record_path(socket_path);
-        let spawned = Mutex::new(read_spawn_record(&record));
-        Ok(TermClient { shared, spawned, record })
+        Ok(TermClient { shared, spawned: Mutex::new(HashMap::new()) })
     }
 
     pub fn is_alive(&self) -> bool {
@@ -297,33 +282,8 @@ impl TermClient {
         .map(|reply| {
             if let ServerMsg::Started { nonce: Some(nonce), .. } = reply {
                 self.spawned.lock().unwrap().insert(id.to_string(), nonce);
-                self.write_spawn_record();
             }
         })
-    }
-
-    /// Drop the record's entries for sessions the daemon no longer hosts. A
-    /// fresh daemon hosts none, so a record left by the one it replaced goes
-    /// whole.
-    fn prune_spawn_record(&self) {
-        let Ok(live) = self.list() else { return };
-        let before = self.spawned.lock().unwrap().len();
-        self.spawned.lock().unwrap().retain(|id, _| live.iter().any(|(l, _)| l == id));
-        if self.spawned.lock().unwrap().len() != before {
-            self.write_spawn_record();
-        }
-    }
-
-    /// Best-effort: unwritten, the record is lost only at the next restart,
-    /// and a session missing from it is merely not trusted.
-    fn write_spawn_record(&self) {
-        let text = serde_json::to_string(&*self.spawned.lock().unwrap()).unwrap_or_default();
-        let tmp = self.record.with_extension("json.tmp");
-        if let Err(e) =
-            std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, &self.record))
-        {
-            log::warn!("termd: recording started sessions in {}: {e}", self.record.display());
-        }
     }
 
     pub fn subscribe<F>(&self, id: &str, cols: u16, rows: u16, on_output: F) -> Result<Subscription>
@@ -400,7 +360,8 @@ impl TermClient {
     /// session it starts and tells it only to the client that asked, and a
     /// session counts as this client's while its nonce is the one recorded
     /// then. A fallback respawn keeps it. `None` too from a daemon too old to
-    /// report either field.
+    /// report either field, and for any session started before this client
+    /// connected (see `spawned`).
     pub fn spawned_pid(&self, id: &str) -> Result<Option<u32>> {
         let ServerMsg::Status { pid, nonce, .. } =
             self.request(|seq| ClientMsg::Status { id: id.into(), seq })?
@@ -412,9 +373,7 @@ impl TermClient {
     }
 
     pub fn kill(&self, id: &str) -> Result<()> {
-        if self.spawned.lock().unwrap().remove(id).is_some() {
-            self.write_spawn_record();
-        }
+        self.spawned.lock().unwrap().remove(id);
         send_msg(&self.shared, &ClientMsg::Kill { id: id.into() })
     }
 

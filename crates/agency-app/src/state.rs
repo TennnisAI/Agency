@@ -5085,10 +5085,12 @@ impl AppState {
     /// from the process the terminal daemon spawned for one of its sessions,
     /// the run's own or one of its extra tabs. See `agency_core::peer`.
     ///
-    /// Every "cannot tell" is no. That includes a daemon from before it
-    /// reported its sessions' processes, which keeps running across an app
-    /// update while it hosts agents; the run tools stay off until it is
-    /// replaced, which the log says once per launch.
+    /// Every "cannot tell" is no. That includes a session this launch of the
+    /// app did not start, an agent that outlived a restart among them, since
+    /// only this process's memory can say what it started (see
+    /// `TermClient::spawned_pid`). And a daemon from before it reported its
+    /// sessions' processes, which keeps running across an app update while it
+    /// hosts agents. The log says so once per launch.
     pub fn is_run_caller(&self, run_id: &str, server_port: u16, peer_port: u16) -> bool {
         let Some(pid) = agency_core::peer::tcp_peer_pid(server_port, peer_port) else {
             log::info!("run tools: no single process holds port {peer_port}; refused");
@@ -5110,9 +5112,11 @@ impl AppState {
             static SAID: std::sync::Once = std::sync::Once::new();
             SAID.call_once(|| {
                 log::warn!(
-                    "run tools: the terminal daemon did not name {run_id}'s session process. \
-                     A daemon from before this release does not; the run tools stay off until \
-                     it is replaced, when it is next idle or Agency quits"
+                    "run tools: none of {run_id}'s sessions is one this launch of Agency \
+                     started. An agent that outlived an app restart gets the run tools back \
+                     when it is next launched; a terminal daemon from before this release \
+                     never names its sessions' processes, and keeps them off until it is \
+                     replaced, when it is next idle or Agency quits"
                 )
             });
             return false;

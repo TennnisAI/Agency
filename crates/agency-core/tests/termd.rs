@@ -282,19 +282,22 @@ fn a_session_another_client_started_or_replaced_is_not_ours() {
     assert_ne!(other.spawned_pid("agency-run").unwrap(), Some(ours));
 }
 
-/// The record outlives the client, as the sessions outlive the app.
+/// What a client started is known to that client and to nothing else, so a
+/// new client, which is what an app restart makes, trusts none of the
+/// sessions an earlier one started. Kept on disk, the record could have been
+/// written by anything.
 #[test]
-fn a_new_client_still_knows_the_sessions_an_earlier_one_started() {
+fn a_new_client_does_not_inherit_the_sessions_an_earlier_one_started() {
     let (dir, client) = server_and_client();
     let tmp = std::env::temp_dir();
     client.start_session("agency-kept", tmp.as_path(), "/bin/cat", &[], &[], 80, 24).unwrap();
-    let pid = client.spawned_pid("agency-kept").unwrap();
-    assert!(pid.is_some());
+    assert!(client.spawned_pid("agency-kept").unwrap().is_some());
     drop(client);
     let sock = dir.path().join("termd.sock");
     let again =
         TermClient::connect_or_spawn(sock, std::path::PathBuf::from("/nonexistent")).unwrap();
-    assert_eq!(again.spawned_pid("agency-kept").unwrap(), pid);
+    assert_eq!(again.spawned_pid("agency-kept").unwrap(), None);
+    assert!(!dir.path().join("termd-spawns.json").exists(), "and nothing was written to disk");
 }
 
 /// The cell styles have to survive the daemon round trip: they are what tells

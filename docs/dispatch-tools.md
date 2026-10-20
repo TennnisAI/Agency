@@ -86,6 +86,28 @@ agent caches already leaves them out. Trees are one level deep, and a parent
 may have at most four children not yet archived or discarded
 (`dispatch::MAX_LIVE_CHILDREN`).
 
+**Only the run's own agent is the caller.** The port says nothing about who
+is calling: any local process can reach it. Two callers had to be shut out, and
+`preview::request_caps` drops the run tools from any request that fails either
+check, so they are neither listed nor answered:
+
+- A script on the previewed page. It shares the server's loopback origin, so
+  it passes the origin check every request gets, and without this it could
+  have started an agent run with the user's credentials. Browsers put `Origin`
+  on every POST and `Sec-Fetch-Site` on every fetch; an agent's MCP client
+  sends neither. `state_report` already refused browsers the same way.
+- Another process that found the port, a child posting to its parent's server
+  above all, which would have dispatched as the parent. Each run has a random
+  token (`Registry::run_token`, kept across restarts because the agent read it
+  at launch), written only into that run's emitted MCP config as the
+  `x-agency-run-token` header, and every run tool call must carry it. An empty
+  token, from a registry that failed to give one, admits nobody.
+
+What the token does not stop is a child that reads its parent's MCP config off
+disk and posts with it. That needs both a file read outside its worktree and a
+shell command, each behind the child's own permission gate, and a child that
+already has a shell can start any agent it likes without Agency.
+
 **Default-deny on reach.** `run_wait` and `run_read` reach only the runs the
 asker dispatched (`dispatch::may_reach`). Every other run is another agent's
 work and was another decision of the user's.

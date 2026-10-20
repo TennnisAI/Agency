@@ -90,13 +90,19 @@ pub fn mcp_port(base: u16, block_size: u16) -> Option<u16> {
     base.checked_add(block_size - 1)
 }
 
+/// The header a run's agent sends its run token in (see [`Hooks::run_token`]).
+pub const RUN_TOKEN_HEADER: &str = "x-agency-run-token";
+
 /// The MCP config entry that points an agent at a run's preview server, ready
 /// to merge into the per-agent emission in [`crate::mcp::emit_for_agent`].
-pub fn server_entry(mcp_port: u16) -> crate::mcp::McpServer {
+/// `run_token` rides in a header, which is how the run tools know the caller
+/// is this run's agent and not something else that found the port.
+pub fn server_entry(mcp_port: u16, run_token: &str) -> crate::mcp::McpServer {
     crate::mcp::McpServer {
         name: SERVER_NAME.to_string(),
         url: Some(format!("http://127.0.0.1:{mcp_port}{MCP_PATH}")),
         transport: Some(crate::mcp::McpTransport::Http),
+        headers: [(RUN_TOKEN_HEADER.to_string(), run_token.to_string())].into(),
         ..Default::default()
     }
 }
@@ -214,6 +220,13 @@ pub struct Hooks {
     /// the answer and `Err` a failure, both as text addressed to the agent.
     /// May block: `run_wait` holds for as long as the call asked.
     pub runs: Arc<dyn Fn(runs::Call) -> std::result::Result<String, String> + Send + Sync>,
+    /// This run's own secret, written only into this run's MCP config
+    /// ([`server_entry`]), which a run tool call has to carry in
+    /// [`RUN_TOKEN_HEADER`]. The port alone says nothing about who is calling:
+    /// any local process can reach it, a dispatched child among them, and a
+    /// child that posted to its parent's port would otherwise have dispatched
+    /// as its parent, past the rule that children never do.
+    pub run_token: Arc<str>,
     /// What a `report` post has to carry in [`crate::state_hooks::TOKEN_HEADER`]
     /// (see [`crate::state_hooks::token`]).
     pub state_token: Arc<str>,
@@ -690,7 +703,7 @@ fn control(stream: &mut TcpStream, req: &http::Request, ctx: &Ctx) {
     let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
     let str_at = |k: &str| body.get(k).and_then(Value::as_str).map(str::to_string);
     match (req.method.as_str(), req.path()) {
-        ("POST", MCP_PATH) => match rpc::handle(&req.body, (ctx.hooks.caps)()) {
+        ("POST", MCP_PATH) => match rpc::handle(&req.body, request_caps(req, ctx)) {
             rpc::Handled::Response(v) => http::respond_json(stream, 200, &v),
             rpc::Handled::Notification => http::respond_status(stream, 202, "Accepted"),
             rpc::Handled::Call { id, name, args } => {
@@ -756,6 +769,26 @@ fn control(stream: &mut TcpStream, req: &http::Request, ctx: &Ctx) {
         }
         _ => http::respond_status(stream, 404, "Not Found"),
     }
+}
+
+/// What this one request may be served: the run's switches, less the run
+/// tools unless the request is this run's own agent speaking.
+///
+/// Two checks, for two different callers. A page on the preview's own origin
+/// passes `handle_conn`'s origin check, since it is loopback, and a script on
+/// it (the app under development, any dependency of it) could otherwise have
+/// started an agent run with the user's credentials. Browsers put `Origin` on
+/// every POST and `Sec-Fetch-Site` on every fetch, and an agent's MCP client
+/// sends neither; the same test guards `state_report`. Any other local
+/// process is stopped by the token, which only this run's MCP config holds.
+fn request_caps(req: &http::Request, ctx: &Ctx) -> Caps {
+    let mut caps = (ctx.hooks.caps)();
+    let from_browser = req.header("origin").is_some() || req.header("sec-fetch-site").is_some();
+    let token = req.header(RUN_TOKEN_HEADER).unwrap_or("").trim();
+    let own_agent = !ctx.hooks.run_token.is_empty()
+        && crate::state_hooks::token_matches(token, &ctx.hooks.run_token);
+    caps.dispatch &= own_agent && !from_browser;
+    caps
 }
 
 /// Execute one MCP tool call and shape its response. Read tools answer from
@@ -952,11 +985,13 @@ mod tests {
             set_status: Arc::new(|_| {}),
             report: Arc::new(|_, _| {}),
             runs: Arc::new(|call| Ok(format!("{call:?}"))),
+            run_token: Arc::from(RUN_TOKEN),
             state_token: Arc::from(TOKEN),
         }
     }
 
     const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+    const RUN_TOKEN: &str = "fedcba9876543210fedcba9876543210";
 
     /// Raw HTTP client good enough for our own server.
     fn post(port: u16, path: &str, body: &str) -> (u16, String) {
@@ -987,6 +1022,14 @@ mod tests {
 
     fn rpc_call(port: u16, msg: &str) -> Value {
         let (status, body) = post(port, MCP_PATH, msg);
+        assert_eq!(status, 200, "{body}");
+        serde_json::from_str(&body).unwrap()
+    }
+
+    /// A tool call carrying `headers`, as the run tools need.
+    fn run_call(port: u16, name: &str, args: Value, headers: &[(&str, &str)]) -> Value {
+        let msg = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":args}});
+        let (status, body) = request(port, "POST", MCP_PATH, &msg.to_string(), headers);
         assert_eq!(status, 200, "{body}");
         serde_json::from_str(&body).unwrap()
     }
@@ -1058,7 +1101,8 @@ mod tests {
 
     #[test]
     fn server_entry_is_a_remote_http_server() {
-        let e = server_entry(5249);
+        let e = server_entry(5249, RUN_TOKEN);
+        assert_eq!(e.headers[RUN_TOKEN_HEADER], RUN_TOKEN);
         assert_eq!(e.name, SERVER_NAME);
         assert_eq!(e.url.as_deref(), Some("http://127.0.0.1:5249/__agency__/mcp"));
         assert_eq!(e.effective_transport(), crate::mcp::McpTransport::Http);
@@ -1228,16 +1272,82 @@ mod tests {
             other => Err(format!("refused {other:?}")),
         });
         let srv = start(hooks);
-        let r = tool_call(srv.port(), "run_wait", json!({ "run_id": "child", "timeout_secs": 7 }));
+        let own = [(RUN_TOKEN_HEADER, RUN_TOKEN)];
+        let call = |name: &str, args: Value| run_call(srv.port(), name, args, &own);
+        let r = call("run_wait", json!({ "run_id": "child", "timeout_secs": 7 }));
         assert_eq!(r["result"]["content"][0]["text"], "child 7");
         assert_eq!(r["result"]["isError"], false);
         // The app's refusal is a tool error the agent reads, not a protocol one.
-        let r = tool_call(srv.port(), "run_dispatch", json!({ "prompt": "x" }));
+        let r = call("run_dispatch", json!({ "prompt": "x" }));
         assert_eq!(r["result"]["isError"], true);
         assert!(r["result"]["content"][0]["text"].as_str().unwrap().starts_with("refused"));
         // A malformed call never reaches the app at all.
-        let r = tool_call(srv.port(), "run_read", json!({}));
+        let r = call("run_read", json!({}));
         assert_eq!(r["error"]["code"], -32602);
+    }
+
+    /// Only this run's own agent reaches the run tools: not a script on the
+    /// previewed page, which shares the server's origin, and not another
+    /// local process that found the port, such as a child posting to its
+    /// parent's server.
+    #[test]
+    fn run_tools_answer_only_this_runs_own_agent() {
+        let mut hooks = with_open_file(
+            None,
+            Err("n/a"),
+            Caps { preview: false, editor: false, dispatch: true },
+            OpenFocus::Nothing,
+        );
+        let reached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = reached.clone();
+        hooks.runs = Arc::new(move |_| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            Ok("started".into())
+        });
+        let srv = start(hooks);
+        let page = format!("http://127.0.0.1:{}", srv.port());
+        let refused: [&[(&str, &str)]; 5] = [
+            &[],
+            &[(RUN_TOKEN_HEADER, "not-the-token")],
+            &[(RUN_TOKEN_HEADER, TOKEN)],
+            &[(RUN_TOKEN_HEADER, RUN_TOKEN), ("origin", &page)],
+            &[(RUN_TOKEN_HEADER, RUN_TOKEN), ("sec-fetch-site", "same-origin")],
+        ];
+        for headers in refused {
+            let r = run_call(srv.port(), "run_dispatch", json!({ "prompt": "x" }), headers);
+            assert!(r["error"]["message"].is_string(), "{headers:?}: {r}");
+            let list = request(
+                srv.port(),
+                "POST",
+                MCP_PATH,
+                r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+                headers,
+            );
+            assert!(!list.1.contains("run_dispatch"), "{headers:?} listed the run tools");
+        }
+        assert_eq!(reached.load(Ordering::SeqCst), 0, "nothing reached the app");
+        let r = run_call(
+            srv.port(),
+            "run_dispatch",
+            json!({ "prompt": "x" }),
+            &[(RUN_TOKEN_HEADER, RUN_TOKEN)],
+        );
+        assert_eq!(r["result"]["content"][0]["text"], "started");
+    }
+
+    #[test]
+    fn an_empty_run_token_admits_nobody() {
+        let mut hooks = with_open_file(
+            None,
+            Err("n/a"),
+            Caps { preview: false, editor: false, dispatch: true },
+            OpenFocus::Nothing,
+        );
+        hooks.run_token = Arc::from("");
+        let srv = start(hooks);
+        let r =
+            run_call(srv.port(), "run_wait", json!({ "run_id": "c" }), &[(RUN_TOKEN_HEADER, "")]);
+        assert!(r["error"]["message"].is_string(), "{r}");
     }
 
     #[test]

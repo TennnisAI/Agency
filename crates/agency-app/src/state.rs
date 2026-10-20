@@ -4610,6 +4610,7 @@ impl AppState {
                 self.run_parents.lock().unwrap().insert(id.clone(), parent.clone());
             }
             self.emit_mcp(
+                &id,
                 spec.agent,
                 &repo,
                 &workspace.path,
@@ -6758,6 +6759,7 @@ impl AppState {
     /// that answers on it can never disagree about the port.
     fn emit_mcp(
         &self,
+        run_id: &str,
         agent: &str,
         repo: &Path,
         worktree: &Path,
@@ -6766,8 +6768,9 @@ impl AppState {
     ) {
         let mut servers = self.merged_mcp_servers(repo, config);
         if let Some(port) = preview_port {
-            servers =
-                agency_core::mcp::merge(&[servers, vec![agency_core::preview::server_entry(port)]]);
+            let token = self.run_token(run_id);
+            let entry = agency_core::preview::server_entry(port, &token);
+            servers = agency_core::mcp::merge(&[servers, vec![entry]]);
         }
         if servers.is_empty() {
             return;
@@ -6784,6 +6787,16 @@ impl AppState {
             }
             Ok(true) => {}
         }
+    }
+
+    /// `run_id`'s preview-server secret (`Registry::run_token`). Empty if the
+    /// registry cannot give one, and an empty token admits nobody to the run
+    /// tools, so a failure here fails closed.
+    fn run_token(&self, run_id: &str) -> String {
+        self.registry.lock().unwrap().run_token(run_id).unwrap_or_else(|e| {
+            log::warn!("reading the run token for {run_id}: {e:#}");
+            String::new()
+        })
     }
 
     /// Emit the skills kit into a worktree, beside the MCP config and the
@@ -6907,6 +6920,7 @@ impl AppState {
             }
         });
         let shot_cell = self.preview_shot.clone();
+        let run_token = std::sync::Arc::from(self.run_token(run_id));
         let run_id = run_id.to_string();
         let shot_run = run_id.clone();
         let screenshot = std::sync::Arc::new(move || match shot_cell.get() {
@@ -6992,6 +7006,7 @@ impl AppState {
             set_status,
             report,
             runs,
+            run_token,
             state_token,
         }
     }
@@ -9406,6 +9421,7 @@ impl AppState {
         if run.worktree {
             let worktree = workspace_dir(&repo, &run);
             self.emit_mcp(
+                &run.id,
                 &run.agent,
                 &repo,
                 &worktree,
@@ -9924,6 +9940,7 @@ impl AppState {
         // target file would be one in the user's own checkout.
         if run.worktree {
             self.emit_mcp(
+                &run.id,
                 agent,
                 &repo,
                 &worktree,

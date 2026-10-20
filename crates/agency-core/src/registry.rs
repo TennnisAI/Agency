@@ -432,7 +432,11 @@ impl Registry {
                 run_id TEXT PRIMARY KEY,
                 parent_id TEXT NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS run_parents_by_parent ON run_parents (parent_id);",
+            CREATE INDEX IF NOT EXISTS run_parents_by_parent ON run_parents (parent_id);
+            CREATE TABLE IF NOT EXISTS run_tokens (
+                run_id TEXT PRIMARY KEY,
+                token TEXT NOT NULL
+            );",
         )?;
         // Migrate older DBs whose `runs` table predates `port_base`.
         if !column_exists(&conn, "runs", "port_base")? {
@@ -1150,7 +1154,25 @@ impl Registry {
         // board, and still runs that were dispatched, which is what keeps
         // them from dispatching (see `run_parent`).
         self.conn.execute("DELETE FROM run_parents WHERE run_id = ?1", [id])?;
+        self.conn.execute("DELETE FROM run_tokens WHERE run_id = ?1", [id])?;
         Ok(())
+    }
+
+    /// `run_id`'s own secret for its preview server (see
+    /// `preview::Hooks::run_token`), made the first time it is asked for. Kept
+    /// rather than derived so that it survives an app restart: the agent read
+    /// it from its MCP config when it started, and keeps sending that one.
+    pub fn run_token(&self, run_id: &str) -> Result<String> {
+        let fresh = uuid::Uuid::new_v4().simple().to_string();
+        self.conn.execute(
+            "INSERT OR IGNORE INTO run_tokens (run_id, token) VALUES (?1, ?2)",
+            [run_id, &fresh],
+        )?;
+        Ok(self.conn.query_row(
+            "SELECT token FROM run_tokens WHERE run_id = ?1",
+            [run_id],
+            |r| r.get(0),
+        )?)
     }
 
     /// Record that `parent_id`'s agent started `run_id` with `run_dispatch`
@@ -1642,7 +1664,8 @@ impl Registry {
     pub fn clear_runs(&self) -> Result<()> {
         self.conn.execute_batch(
             "DELETE FROM review_comments; DELETE FROM run_sessions;
-             DELETE FROM conversations; DELETE FROM run_parents; DELETE FROM runs;",
+             DELETE FROM conversations; DELETE FROM run_parents; DELETE FROM run_tokens;
+             DELETE FROM runs;",
         )?;
         Ok(())
     }
@@ -1928,6 +1951,19 @@ mod tests {
     use super::*;
     use rusqlite::Connection;
     use tempfile::tempdir;
+
+    #[test]
+    fn a_run_token_is_made_once_per_run_and_kept() {
+        let dir = tempdir().unwrap();
+        let db = dir.path().join("agency.db");
+        let first = Registry::open(&db).unwrap().run_token("r1").unwrap();
+        let reg = Registry::open(&db).unwrap();
+        assert_eq!(reg.run_token("r1").unwrap(), first, "the same across a reopen");
+        assert_eq!(first.len(), 32);
+        assert_ne!(reg.run_token("r2").unwrap(), first, "each run its own");
+        reg.delete_run("r1").unwrap();
+        assert_ne!(reg.run_token("r1").unwrap(), first, "gone with the run");
+    }
 
     #[test]
     fn run_parents_link_children_up_and_survive_a_reopen() {

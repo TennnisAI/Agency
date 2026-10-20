@@ -5099,7 +5099,7 @@ impl AppState {
             let Ok(live) = term.list() else { return false };
             let sessions = running_agent_sessions(run_id, &live);
             let roots: Vec<u32> =
-                sessions.iter().filter_map(|name| term.session_pid(name).ok().flatten()).collect();
+                sessions.iter().filter_map(|name| term.spawned_pid(name).ok().flatten()).collect();
             (sessions, roots)
         };
         // No agent running in the run: nothing can be its agent.

@@ -78,11 +78,17 @@ fn stale_reply_with_old_seq_is_discarded() {
                         status: SessionStatus::Gone,
                         seq: seq.wrapping_sub(1),
                         pid: None,
+                        nonce: None,
                     };
                     write_frame(&mut write, &encode_json(&stale)).unwrap();
                     // …then the real reply for this request.
-                    let real =
-                        ServerMsg::Status { id, status: SessionStatus::Running, seq, pid: None };
+                    let real = ServerMsg::Status {
+                        id,
+                        status: SessionStatus::Running,
+                        seq,
+                        pid: None,
+                        nonce: None,
+                    };
                     write_frame(&mut write, &encode_json(&real)).unwrap();
                 }
                 _ => {}
@@ -244,13 +250,51 @@ fn start_subscribe_input_capture_kill() {
     assert_eq!(client.list().unwrap().len(), 1);
     // The session's own process, which the run tools' caller check walks up
     // to: here `cat` itself, a child of this test process's daemon thread.
-    let pid = client.session_pid("r1").unwrap().expect("a running session has a process");
+    let pid = client.spawned_pid("r1").unwrap().expect("a session this client started");
     let parents = agency_core::peer::process_parents().unwrap();
     assert_eq!(parents.get(&pid), Some(&std::process::id()), "spawned by the daemon");
-    assert_eq!(client.session_pid("nope").unwrap(), None);
+    assert_eq!(client.spawned_pid("nope").unwrap(), None);
     drop(sub);
     client.kill("r1").unwrap();
     assert_eq!(client.list().unwrap().len(), 0);
+}
+
+/// A session started under a name by some other client of the daemon, or put
+/// in place of one this client started, is not this client's: its process is
+/// never offered as one the app started. The run tools check a caller's
+/// ancestry against exactly these processes (AGE-209).
+#[test]
+fn a_session_another_client_started_or_replaced_is_not_ours() {
+    let (dir, client) = server_and_client();
+    let sock = dir.path().join("termd.sock");
+    let other =
+        TermClient::connect_or_spawn(sock, std::path::PathBuf::from("/nonexistent")).unwrap();
+    let tmp = std::env::temp_dir();
+    client.start_session("agency-run", tmp.as_path(), "/bin/cat", &[], &[], 80, 24).unwrap();
+    let ours = client.spawned_pid("agency-run").unwrap().expect("ours");
+
+    other.start_session("agency-run--9", tmp.as_path(), "/bin/cat", &[], &[], 80, 24).unwrap();
+    assert_eq!(client.spawned_pid("agency-run--9").unwrap(), None, "named like ours, not ours");
+
+    other.start_session("agency-run", tmp.as_path(), "/bin/cat", &[], &[], 80, 24).unwrap();
+    let now = client.spawned_pid("agency-run").unwrap();
+    assert_eq!(now, None, "replaced under our name: the new process is not ours");
+    assert_ne!(other.spawned_pid("agency-run").unwrap(), Some(ours));
+}
+
+/// The record outlives the client, as the sessions outlive the app.
+#[test]
+fn a_new_client_still_knows_the_sessions_an_earlier_one_started() {
+    let (dir, client) = server_and_client();
+    let tmp = std::env::temp_dir();
+    client.start_session("agency-kept", tmp.as_path(), "/bin/cat", &[], &[], 80, 24).unwrap();
+    let pid = client.spawned_pid("agency-kept").unwrap();
+    assert!(pid.is_some());
+    drop(client);
+    let sock = dir.path().join("termd.sock");
+    let again =
+        TermClient::connect_or_spawn(sock, std::path::PathBuf::from("/nonexistent")).unwrap();
+    assert_eq!(again.spawned_pid("agency-kept").unwrap(), pid);
 }
 
 /// The cell styles have to survive the daemon round trip: they are what tells
@@ -393,4 +437,9 @@ fn start_session_with_fallback_runs_fresh_on_fast_primary_exit() {
     }
     assert!(cap.contains("FRESH"), "fallback did not run through the daemon: {cap:?}");
     assert!(matches!(client.status("fb").unwrap(), agency_core::term::SessionStatus::Running));
+    // The fallback is a new process in the same session, which is still the
+    // one this client started: a run whose resume fell back keeps its tools.
+    let pid = client.spawned_pid("fb").unwrap().expect("still ours after the fallback");
+    let parents = agency_core::peer::process_parents().unwrap();
+    assert_eq!(parents.get(&pid), Some(&std::process::id()), "and it is the live fallback");
 }

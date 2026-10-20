@@ -111,19 +111,32 @@ they are neither listed nor answered:
    parent, and a child's processes descend from the child's session, so a
    copied token gets the child nowhere.
 
-The daemon reports a session's process as an optional `pid` on its `Status`
-reply, which needs no protocol bump: a bump kills every live session. A
-daemon from before this release omits it, and the check then fails closed.
-Such a daemon survives an app update for as long as it hosts agents, so the
-run tools stay off until it is replaced, when it is next idle or Agency quits.
-The log says so once per launch.
+"The run's own sessions" cannot mean the sessions with the run's names. Any
+client of the terminal daemon can start a session under any name, and starting
+one under a name already taken replaces it, so a child could have started
+`agency-<parent>--9`, or swapped out the parent's own session, and had its
+process taken for the parent's. Instead the daemon makes a nonce for each
+session it starts and tells it only to the client that asked (`Started`), and
+the app trusts a session's process only while the daemon still reports that
+nonce for it (`TermClient::spawned_pid`). A fallback respawn is the same
+session and keeps it; a session someone else started, or put in place of one
+of Agency's, has a nonce Agency never heard. The client keeps the nonces in
+`termd-spawns.json` beside the socket, since its sessions outlive the app.
+
+The process and the nonce ride on the daemon's existing `Started` and
+`Status` replies as optional fields, which needs no protocol bump: a bump
+kills every live session. A daemon from before this release omits them, and
+the check then fails closed. Such a daemon survives an app update for as long
+as it hosts agents, so the run tools stay off until it is replaced, when it is
+next idle or Agency quits. The log says so once per launch.
 
 What none of this can stop is a process of the user's that sets out to act
 through Agency's own machinery: one that types into the parent's terminal
-through the daemon's socket, or edits Agency's database or
-`agency.local.toml`. Any process the user runs can do that to any run today,
-with or without these tools, so it is not a hole this feature opens. Closing it
-is a sandbox's job, the agent CLI's own, not a check on a loopback port.
+through the daemon's socket, or edits Agency's database, its
+`termd-spawns.json` or `agency.local.toml`. Any process the user runs can do
+that to any run today, with or without these tools, so it is not a hole this
+feature opens. Closing it is a sandbox's job, the agent CLI's own, not a check
+on a loopback port.
 
 **Default-deny on reach.** `run_wait` and `run_read` reach only the runs the
 asker dispatched (`dispatch::may_reach`). Every other run is another agent's

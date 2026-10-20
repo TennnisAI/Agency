@@ -129,6 +129,11 @@ pub enum ServerMsg {
         id: String,
         #[serde(default)]
         seq: u64,
+        /// The new session's `Session::nonce`. Optional like `Status::pid`:
+        /// an older daemon omits it, and nothing it starts is ever trusted as
+        /// a run's own process.
+        #[serde(default)]
+        nonce: Option<String>,
     },
     Captured {
         id: String,
@@ -155,6 +160,10 @@ pub enum ServerMsg {
         /// needs it fails closed until that daemon is replaced.
         #[serde(default)]
         pid: Option<u32>,
+        /// The session's `Session::nonce`, so a client can tell whether the
+        /// session under this id is still the one it started.
+        #[serde(default)]
+        nonce: Option<String>,
     },
     List {
         sessions: Vec<(String, SessionStatus)>,
@@ -326,6 +335,7 @@ mod tests {
             status: SessionStatus::Running,
             seq: 3,
             pid: Some(42),
+            nonce: Some("n".into()),
         };
         let back: ServerMsg = serde_json::from_slice(&encode_json(&new)[1..]).unwrap();
         assert!(matches!(back, ServerMsg::Status { pid: Some(42), .. }), "{back:?}");

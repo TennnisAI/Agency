@@ -90,6 +90,11 @@ pub struct Report {
     pub answered: bool,
     /// For `blocked`: the dialogs standing. See [`apply_event`].
     pub dialogs: Dialogs,
+    /// For `blocked`: when the newest dialog standing went up, which a second
+    /// dialog moves and `since_ms` does not. The notifier's edge: keyed on
+    /// `since_ms`, a subagent's dialog raised beside one already up made no
+    /// banner, and was left standing unannounced once the first was answered.
+    pub raised_ms: i64,
     /// For `done`: the user ended the turn themselves, so it is no news to
     /// them. See `Reported::Interrupted`.
     pub by_user: bool,
@@ -100,43 +105,74 @@ pub struct Report {
 /// answering the rest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Dialogs {
-    /// Dialogs tied to their tool call, each by [`call_key`] (a hash so the
-    /// entry stays `Copy`), `0` an empty slot: Codex's questions, which carry
-    /// the call, and permission dialogs, matched to it by [`Calls`].
-    calls: [u64; 4],
+    /// Dialogs tied to their tool call: Codex's questions, which carry the
+    /// call, and permission dialogs, matched to it by [`Calls`]. Room for one
+    /// per parallel call with a dialog up, across every subagent: four could
+    /// fill with a handful of subagents asking at once, and the rest went
+    /// unnamed.
+    calls: [Named; 16],
     /// Dialogs whose call is not known: a permission dialog with no
     /// `PreToolUse` to match (that post lost, or a hook rewrote the input),
     /// and one past the slots above.
     unnamed: u8,
 }
 
+/// One dialog tied to its call, in [`Dialogs`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct Named {
+    /// [`call_key`], `0` an empty slot.
+    call: u64,
+    /// [`agent_key`]: whose call, and so whose going on can end it.
+    agent: u64,
+    /// When it went up.
+    at_ms: i64,
+}
+
 impl Dialogs {
-    fn raise(&mut self, call: Option<u64>) {
+    /// Whether this is a dialog not already standing. The same call asked
+    /// about twice is one dialog.
+    fn raise(&mut self, call: Option<u64>, agent: u64, now_ms: i64) -> bool {
         if let Some(c) = call {
-            if self.calls.contains(&c) {
-                return;
+            if self.has(c) {
+                return false;
             }
-            if let Some(slot) = self.calls.iter_mut().find(|s| **s == 0) {
-                *slot = c;
-                return;
+            if let Some(slot) = self.calls.iter_mut().find(|n| n.call == 0) {
+                *slot = Named { call: c, agent, at_ms: now_ms };
+                return true;
             }
         }
         self.unnamed = self.unnamed.saturating_add(1);
+        true
+    }
+
+    fn has(&self, call: u64) -> bool {
+        self.calls.iter().any(|n| n.call == call)
     }
 
     /// Whether `call` was one of them, which it no longer is.
     fn end(&mut self, call: u64) -> bool {
-        match self.calls.iter_mut().find(|s| **s == call) {
+        match self.calls.iter_mut().find(|n| n.call == call) {
             Some(slot) => {
-                *slot = 0;
+                *slot = Named::default();
                 true
             }
             None => false,
         }
     }
 
+    /// End every dialog of `agent`'s that went up before `key_ms`, the user's
+    /// last key: that agent has begun a new call, which it cannot do with its
+    /// own dialog still on screen. See [`apply_event`].
+    fn end_gone_by(&mut self, agent: u64, key_ms: i64) {
+        for n in self.calls.iter_mut().filter(|n| n.call != 0 && n.agent == agent) {
+            if n.at_ms < key_ms {
+                *n = Named::default();
+            }
+        }
+    }
+
     fn none(&self) -> bool {
-        self.unnamed == 0 && self.calls.iter().all(|s| *s == 0)
+        self.unnamed == 0 && self.calls.iter().all(|n| n.call == 0)
     }
 }
 
@@ -151,9 +187,15 @@ impl Dialogs {
 /// the main agent's next report let a sibling call finishing release it, and
 /// a subagent's approved dialog held the queue until the main agent spoke.
 ///
+/// Room for 32: every parallel subagent's calls in flight at once, and a
+/// refused call stays until the turn ends. With eight, a few subagents with a
+/// few calls each could push out the call a dialog was about to name, and the
+/// dialog fell back to ending on the main agent, which is waiting on its
+/// subagents and says nothing until they finish.
+///
 /// [`Event::tool`]: agency_core::preview::report::Event::tool
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Calls([(u64, u64); 8]);
+pub struct Calls([(u64, u64); 32]);
 
 impl Calls {
     fn begin(&mut self, what: u64, call: u64) {
@@ -172,7 +214,7 @@ impl Calls {
     /// The newest call `what` describes that no dialog in `up` is already
     /// for: two identical commands in parallel are two calls and two dialogs.
     fn find(&self, what: u64, up: &Dialogs) -> Option<u64> {
-        self.0.iter().find(|(w, c)| *c != 0 && *w == what && !up.calls.contains(c)).map(|(_, c)| *c)
+        self.0.iter().find(|(w, c)| *c != 0 && *w == what && !up.has(*c)).map(|(_, c)| *c)
     }
 }
 
@@ -182,6 +224,11 @@ fn call_key(id: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     id.hash(&mut h);
     h.finish().max(1)
+}
+
+/// Which agent sent `ev`, as [`Named`] keeps it: `0` the main agent.
+fn agent_key(ev: &agency_core::preview::report::Event) -> u64 {
+    ev.agent.as_deref().map_or(0, call_key)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -265,14 +312,21 @@ pub fn reported(prev: Option<ActivityEntry>, state: ActivityState, now_ms: i64) 
         _ => now_ms,
     };
     // Still blocked, the dialogs already up still are.
-    let dialogs = match e.report {
+    let (dialogs, raised_ms) = match e.report {
         Some(r) if r.state == ActivityState::Blocked && state == ActivityState::Blocked => {
-            r.dialogs
+            (r.dialogs, r.raised_ms)
         }
-        _ => Dialogs::default(),
+        _ => (Dialogs::default(), now_ms),
     };
-    e.report =
-        Some(Report { state, since_ms, at_ms: now_ms, answered: false, dialogs, by_user: false });
+    e.report = Some(Report {
+        state,
+        since_ms,
+        at_ms: now_ms,
+        answered: false,
+        dialogs,
+        raised_ms,
+        by_user: false,
+    });
     e
 }
 
@@ -329,6 +383,15 @@ pub fn apply(
 /// the way every dialog once did, with the main agent's next report or a key
 /// that can answer it (see [`answered`]). The main agent's next prompt ends
 /// them all. Until every dialog has ended, the run reads `blocked`.
+///
+/// A post can be lost, though (the server at its connection cap, a hook timing
+/// out), and a dialog whose `PostToolUse` is lost would stand for the rest of
+/// the turn, holding the send queue past its timeout. So the agent that raised a
+/// dialog beginning a new call after the user pressed a key on it ends it too:
+/// an agent does not begin another call with its own dialog on screen. Only
+/// after a key, because a call begun beside the dialog in the same batch can
+/// post its `PreToolUse` a moment after the dialog's, and a key is seconds
+/// later than that.
 pub fn apply_event(
     prev: Option<ActivityEntry>,
     ev: &agency_core::preview::report::Event,
@@ -336,11 +399,17 @@ pub fn apply_event(
 ) -> ActivityEntry {
     use agency_core::preview::report::Reported;
     let mut call = ev.tool_call.as_deref().map(call_key);
-    let standing = prev.and_then(|e| e.report).filter(|r| r.state == ActivityState::Blocked);
+    let agent = agent_key(ev);
+    let mut standing = prev.and_then(|e| e.report).filter(|r| r.state == ActivityState::Blocked);
     let mut calls = prev.map(|e| e.calls).unwrap_or_default();
     match (ev.state, call, ev.tool) {
         // `PreToolUse`.
-        (Reported::Working, Some(c), Some(what)) => calls.begin(what, c),
+        (Reported::Working, Some(c), Some(what)) => {
+            calls.begin(what, c);
+            if let (Some(r), Some(key_ms)) = (standing.as_mut(), prev.and_then(|e| e.last_key_ms)) {
+                r.dialogs.end_gone_by(agent, key_ms);
+            }
+        }
         // `PostToolUse`, `PostToolUseFailure`.
         (Reported::Working, Some(c), None) => calls.end(c),
         (Reported::Blocked, None, Some(what)) => {
@@ -348,13 +417,12 @@ pub fn apply_event(
         }
         _ => {}
     }
-    let new_turn = ev.state == Reported::Working && call.is_none() && !ev.subagent;
-    let mut e = fold_event(prev, standing, ev, call, now_ms);
+    let mut e = fold_event(prev, standing, ev, call, agent, now_ms);
     // A turn over, or a new one, has nothing in flight. A refused call never
     // ends, and would otherwise be kept until eight more pushed it out.
     let over =
         e.report.is_some_and(|r| matches!(r.state, ActivityState::Done | ActivityState::Idle));
-    e.calls = if new_turn || over { Calls::default() } else { calls };
+    e.calls = if ev.starts_turn || over { Calls::default() } else { calls };
     e
 }
 
@@ -363,6 +431,7 @@ fn fold_event(
     standing: Option<Report>,
     ev: &agency_core::preview::report::Event,
     call: Option<u64>,
+    agent: u64,
     now_ms: i64,
 ) -> ActivityEntry {
     use agency_core::preview::report::Reported;
@@ -370,18 +439,18 @@ fn fold_event(
         (_, _, Reported::Blocked) => {
             let mut e = apply(prev, Reported::Blocked, now_ms);
             if let Some(r) = e.report.as_mut() {
-                r.dialogs.raise(call);
+                if r.dialogs.raise(call, agent, now_ms) {
+                    r.raised_ms = now_ms;
+                }
             }
             e
         }
         (Some(mut e), Some(mut r), Reported::Working) => {
             let its_answer = call.is_some_and(|c| r.dialogs.end(c));
-            if !its_answer && !ev.subagent {
+            if ev.starts_turn {
+                r.dialogs = Dialogs::default();
+            } else if !its_answer && !ev.subagent() {
                 r.dialogs.unnamed = 0;
-                // No tool call at all is `UserPromptSubmit`: a new turn.
-                if call.is_none() {
-                    r.dialogs = Dialogs::default();
-                }
             }
             if r.dialogs.none() {
                 return apply(prev, Reported::Working, now_ms);
@@ -840,11 +909,28 @@ mod tests {
         agency_core::preview::report::Event {
             state,
             conversation: None,
-            subagent: sub,
+            agent: sub.then(|| "sub".to_string()),
             opens: false,
+            starts_turn: false,
             tool_call: call.map(str::to_string),
             tool: None,
         }
+    }
+
+    /// The main agent's `UserPromptSubmit`.
+    fn prompt() -> agency_core::preview::report::Event {
+        agency_core::preview::report::Event {
+            starts_turn: true,
+            ..hook(Reported::Working, false, None)
+        }
+    }
+
+    /// `ev`, from the subagent `agent`.
+    fn from(
+        agent: &str,
+        ev: agency_core::preview::report::Event,
+    ) -> agency_core::preview::report::Event {
+        agency_core::preview::report::Event { agent: Some(agent.to_string()), ..ev }
     }
 
     /// A call's `PreToolUse` and the permission dialog for it: `what` stands
@@ -928,7 +1014,7 @@ mod tests {
         assert!(!awaiting_answer(&e));
         assert_eq!(e.calls, Calls::default());
         // Or the user's next prompt, sooner.
-        let e = apply_event(Some(up()), &hook(Reported::Working, false, None), 5_000);
+        let e = apply_event(Some(up()), &prompt(), 5_000);
         assert!(!awaiting_answer(&e));
         assert_eq!(e.calls, Calls::default());
     }
@@ -943,6 +1029,91 @@ mod tests {
         assert!(awaiting_answer(&e));
         let e = apply_event(Some(e), &hook(Reported::Working, false, Some("ls")), 1_300);
         assert!(!awaiting_answer(&e));
+    }
+
+    /// The dialog's `PostToolUse` lost: the agent that raised it going on to a
+    /// new call, after the user pressed a key on it, is the dialog gone.
+    #[test]
+    fn a_dialog_whose_end_was_lost_ends_when_its_agent_goes_on() {
+        let up = || {
+            let e = apply_event(None, &begins(false, "rm", 3), 1_000);
+            apply_event(Some(e), &asks(false, 3), 1_100)
+        };
+        let e = keyed(answered(up()), 2_000);
+        let e = apply_event(Some(e), &begins(false, "ls", 4), 3_000);
+        assert!(!awaiting_answer(&e));
+        assert_eq!(state(&e, false, 3_000), ActivityState::Working);
+        // With no key since it went up, a call that began beside it in the same
+        // batch and posted late is not the dialog gone.
+        let e = apply_event(Some(up()), &begins(false, "read", 5), 1_150);
+        assert!(awaiting_answer(&e), "no key yet");
+        // Nor is another agent's call, key or not.
+        let e = keyed(answered(up()), 2_000);
+        let e = apply_event(Some(e), &from("a1", begins(true, "grep", 6)), 3_000);
+        assert!(awaiting_answer(&e), "a subagent's call is not the main agent's answer");
+    }
+
+    /// A subagent's dialog, its key and its going on, beside another's.
+    #[test]
+    fn going_on_ends_only_that_agents_dialog() {
+        let mut e = None;
+        for ev in [
+            from("a1", begins(true, "rm-a", 1)),
+            from("a2", begins(true, "rm-b", 2)),
+            from("a1", asks(true, 1)),
+            from("a2", asks(true, 2)),
+        ] {
+            e = Some(apply_event(e, &ev, 1_000));
+        }
+        let e = keyed(answered(e.unwrap()), 2_000);
+        let e = apply_event(Some(e), &from("a1", begins(true, "ls-a", 3)), 3_000);
+        assert!(awaiting_answer(&e), "a2's dialog is still up");
+        let e = apply_event(Some(e), &from("a2", begins(true, "ls-b", 4)), 4_000);
+        assert!(!awaiting_answer(&e));
+    }
+
+    /// Calls in flight across a handful of subagents, then a dialog for the
+    /// oldest: it is still named, so its own call ends it while the main
+    /// agent, waiting on them all, says nothing.
+    #[test]
+    fn a_busy_turn_still_names_its_dialogs() {
+        let mut e = None;
+        for i in 0..24u64 {
+            let agent = format!("a{}", i % 6);
+            e = Some(apply_event(e, &from(&agent, begins(true, &format!("c{i}"), 100 + i)), 1_000));
+        }
+        let e = apply_event(e, &from("a0", asks(true, 100)), 1_100);
+        let e = apply_event(Some(e), &from("a0", hook(Reported::Working, true, Some("c0"))), 2_000);
+        assert!(!awaiting_answer(&e));
+    }
+
+    /// A tool event whose id did not arrive looks like nothing in particular,
+    /// and is not a new turn: the subagent's question stays.
+    #[test]
+    fn only_a_prompt_starts_a_turn() {
+        let e = apply_event(None, &hook(Reported::Blocked, true, Some("q")), 1_000);
+        let e = apply_event(Some(e), &hook(Reported::Working, false, None), 2_000);
+        assert!(awaiting_answer(&e), "a main-agent tool event with no id");
+        let e = apply_event(Some(e), &prompt(), 3_000);
+        assert!(!awaiting_answer(&e));
+    }
+
+    /// A second dialog is news for the notifier even though the run was
+    /// already blocked; the same dialog asked again is not.
+    #[test]
+    fn a_new_dialog_moves_when_one_was_raised() {
+        let e = apply_event(None, &from("a1", hook(Reported::Blocked, true, Some("qa"))), 1_000);
+        let r = e.report.unwrap();
+        assert_eq!((r.since_ms, r.raised_ms), (1_000, 1_000));
+        let e = apply_event(Some(e), &from("a1", hook(Reported::Blocked, true, Some("qa"))), 1_500);
+        assert_eq!(e.report.unwrap().raised_ms, 1_000, "the same question");
+        let e = apply_event(Some(e), &from("a2", hook(Reported::Blocked, true, Some("qb"))), 2_000);
+        let r = e.report.unwrap();
+        assert_eq!((r.since_ms, r.raised_ms), (1_000, 2_000), "blocked since the first");
+        // The newer one answered, the older stands, and is not news again.
+        let e = apply_event(Some(e), &from("a2", hook(Reported::Working, true, Some("qb"))), 3_000);
+        let r = e.report.unwrap();
+        assert_eq!((r.state, r.raised_ms), (ActivityState::Blocked, 2_000));
     }
 
     #[test]
@@ -975,7 +1146,7 @@ mod tests {
         let e = apply_event(Some(e), &hook(Reported::Working, false, Some("ls")), 5_000);
         assert!(awaiting_answer(&e));
         // Its next prompt is a new turn, and nothing is still asked.
-        let e = apply_event(Some(e), &hook(Reported::Working, false, None), 6_000);
+        let e = apply_event(Some(e), &prompt(), 6_000);
         assert!(!awaiting_answer(&e));
     }
 

@@ -53,8 +53,10 @@ pub struct Event {
     /// since the child inherits the variable the header is built from; this
     /// can, and the app pins each tab to the first one it hears from.
     pub conversation: Option<String>,
-    /// Sent by a subagent (the Task tool) rather than the main agent.
-    pub subagent: bool,
+    /// The subagent (the Task tool) that sent it, by its `agent_id`; `None`
+    /// for the main agent. Which agent a dialog is for, so that agent going
+    /// on can end it (see `activity::apply_event` in the app).
+    pub agent: Option<String>,
     /// The tool call it is about (`tool_use_id`), on Codex's `PreToolUse` and
     /// `PostToolUse`. What ties a question to its answer, where the subagent
     /// alone cannot: one agent runs tool calls in parallel, and a sibling
@@ -72,6 +74,18 @@ pub struct Event {
     /// its next prompt comes under a new `session_id`, with no `SessionEnd` for
     /// the old one to free the pin first.
     pub opens: bool,
+    /// The main agent's `UserPromptSubmit`: a new turn, which nothing in
+    /// flight before it is part of. Said outright, not read off a working
+    /// event that names no call: a tool event whose id did not arrive looked
+    /// the same, and cleared every dialog still on screen.
+    pub starts_turn: bool,
+}
+
+impl Event {
+    /// Sent by a subagent rather than the main agent.
+    pub fn subagent(&self) -> bool {
+        self.agent.is_some()
+    }
 }
 
 #[derive(Deserialize)]
@@ -96,6 +110,7 @@ pub fn parse(dialect: Dialect, body: &[u8]) -> Option<Event> {
     let b: Body = serde_json::from_slice(body).ok()?;
     let agent = b.agent_id.filter(|v| !v.is_null());
     let subagent = agent.is_some();
+    let starts_turn = !subagent && b.hook_event_name.as_deref() == Some("UserPromptSubmit");
     let mut opens = false;
     let state = match (dialect, b.hook_event_name.as_deref()?) {
         (_, "UserPromptSubmit" | "PostToolUse") => Reported::Working,
@@ -148,8 +163,9 @@ pub fn parse(dialect: Dialect, body: &[u8]) -> Option<Event> {
     Some(Event {
         state,
         conversation: b.session_id.filter(|s| !s.is_empty()),
-        subagent,
+        agent: agent.map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string)),
         opens,
+        starts_turn,
         tool_call: b.tool_use_id.filter(|s| !s.is_empty()),
         tool,
     })
@@ -162,7 +178,12 @@ pub fn parse(dialect: Dialect, body: &[u8]) -> Option<Event> {
 /// `description`, and its `PreToolUse` has none: `{"command":"touch a"}`
 /// before, `{"command":"touch a","description":"…"}` on the dialog. Claude
 /// Code 2.1.304 sends the model's own input to both, `description` in each.
-/// Keys are hashed in order, whichever order the agent wrote them in.
+///
+/// Keys are hashed in key order, whichever order the agent wrote them in, and
+/// nested ones too: serde_json's map is sorted unless its `preserve_order`
+/// feature is on, which nothing in this build turns on. Sorting here as well
+/// covered the top level alone; the test that names a dialog's call fails if
+/// either level ever comes out in the order it was written.
 fn what(agent: Option<&serde_json::Value>, tool: &str, input: Option<serde_json::Value>) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -170,10 +191,7 @@ fn what(agent: Option<&serde_json::Value>, tool: &str, input: Option<serde_json:
     tool.hash(&mut h);
     match input {
         Some(serde_json::Value::Object(fields)) => {
-            let mut fields: Vec<_> =
-                fields.into_iter().filter(|(k, _)| k != "description").collect();
-            fields.sort_by(|a, b| a.0.cmp(&b.0));
-            for (k, v) in fields {
+            for (k, v) in fields.into_iter().filter(|(k, _)| k != "description") {
                 (k, v.to_string()).hash(&mut h);
             }
         }
@@ -285,9 +303,9 @@ mod tests {
             )
         };
         let blocked = sub("PermissionRequest").unwrap();
-        assert_eq!((blocked.state, blocked.subagent), (Reported::Blocked, true));
+        assert_eq!((blocked.state, blocked.agent.as_deref()), (Reported::Blocked, Some("a1")));
         assert_eq!(sub("PostToolUse").unwrap().state, Reported::Working);
-        assert!(!parse(Dialect::Claude, br#"{"hook_event_name":"Stop"}"#).unwrap().subagent);
+        assert!(!parse(Dialect::Claude, br#"{"hook_event_name":"Stop"}"#).unwrap().subagent());
     }
 
     #[test]
@@ -304,8 +322,9 @@ mod tests {
         Event {
             state,
             conversation: Some(conversation.to_string()),
-            subagent: false,
+            agent: None,
             opens: false,
+            starts_turn: false,
             tool_call: None,
             tool: None,
         }
@@ -340,8 +359,9 @@ mod tests {
         let ev = Event {
             state: Reported::Working,
             conversation: None,
-            subagent: false,
+            agent: None,
             opens: false,
+            starts_turn: false,
             tool_call: None,
             tool: None,
         };
@@ -396,6 +416,19 @@ mod tests {
         assert_eq!((answered.state, answered.tool_call), (Reported::Working, asked.tool_call));
         let bash = json!({ "hook_event_name": "PreToolUse", "tool_name": "Bash" });
         assert_eq!(codex(bash).unwrap().state, Reported::Working);
+    }
+
+    #[test]
+    fn only_the_main_agents_prompt_starts_a_turn() {
+        for dialect in [Dialect::Claude, Dialect::Codex] {
+            let body = |v: serde_json::Value| parse(dialect, v.to_string().as_bytes()).unwrap();
+            assert!(body(json!({ "hook_event_name": "UserPromptSubmit" })).starts_turn);
+            let sub = json!({ "hook_event_name": "UserPromptSubmit", "agent_id": "a1" });
+            assert!(!body(sub).starts_turn, "{dialect:?}: a subagent's prompt is its own");
+            // A tool event whose id did not arrive is still a tool event.
+            let post = json!({ "hook_event_name": "PostToolUse", "tool_name": "Bash" });
+            assert!(!body(post).starts_turn, "{dialect:?}");
+        }
     }
 
     #[test]
@@ -454,8 +487,9 @@ mod tests {
         let opening = |id: &str| Event {
             state: Reported::Idle,
             conversation: Some(id.to_string()),
-            subagent: false,
+            agent: None,
             opens: true,
+            starts_turn: false,
             tool_call: None,
             tool: None,
         };
@@ -497,6 +531,17 @@ mod tests {
             "tool_input": { "command": "touch perm-c", "description": "make c" },
             "permission_suggestions": [] });
         assert_eq!(call(Dialect::Claude, claude).tool, call(Dialect::Claude, asked).tool);
+        // Nested input too, in whichever order each one wrote it.
+        let edit = |input: &str| {
+            let v = format!(
+                r#"{{"hook_event_name":"PreToolUse","tool_name":"MultiEdit","tool_input":{input}}}"#
+            );
+            parse(Dialect::Claude, v.as_bytes()).unwrap().tool
+        };
+        assert_eq!(
+            edit(r#"{"file_path":"a","edits":[{"old_string":"x","new_string":"y"}]}"#),
+            edit(r#"{"edits":[{"new_string":"y","old_string":"x"}],"file_path":"a"}"#),
+        );
         // Another agent's identical call is another call.
         let mut sub = pre("call_2", "touch perm-a");
         sub["agent_id"] = json!("01a15477-d8f6-7363-b4dd-41c9c57f99aa");

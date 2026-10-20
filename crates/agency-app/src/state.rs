@@ -1219,6 +1219,10 @@ fn pane_hash(pane: &str) -> u64 {
 /// session is spawned.
 const HOOKS_ARMING: Duration = Duration::from_secs(30);
 
+/// How long a PATH found to have no `curl` is taken at its word before the
+/// next Codex launch on it looks again. See [`AppState::curl_on`].
+const CURL_MISS_KEPT: Duration = Duration::from_secs(60);
+
 /// The daemon session that speaks for a run: its status dot, the notifier's
 /// busy/idle watch, and the default target for text Agency types in.
 ///
@@ -2651,6 +2655,26 @@ fn preview_port_this_sweep(
     }
 }
 
+/// The runs recorded with a hooked Codex (`AppState::codex_hooked`) that a
+/// complete listing of the registry no longer has, so whose record can go.
+///
+/// Not a run still launching (`armed`): `create_run_spec` records the run in
+/// `agent_env`, and only gives it a registry row with `insert_run` after a
+/// daemon round trip. A sweep landing between the two would take the new run
+/// for gone and drop its record, every later sweep would then read it as not
+/// reporting, and its server would be torn down under a live Codex once its
+/// grace ran out.
+fn hooked_and_gone(
+    hooked: Vec<String>,
+    listed: &HashSet<&str>,
+    armed: &HashMap<String, Instant>,
+) -> Vec<String> {
+    hooked
+        .into_iter()
+        .filter(|id| !listed.contains(id.as_str()) && !armed.contains_key(id))
+        .collect()
+}
+
 /// What the run `run_id`, in the project checked out at `repo`, should hear
 /// about the file the user has open (AGE-200).
 ///
@@ -3040,8 +3064,9 @@ pub struct AppState {
     /// `agency_core::state_hooks::token_headers`). `None` if it could not be
     /// written, and Codex is then launched without hooks.
     state_headers: Option<PathBuf>,
-    /// See [`AppState::curl_on`].
-    curl_found: Mutex<HashMap<String, bool>>,
+    /// See [`AppState::curl_on`]: per PATH, whether it had a `curl`, and when
+    /// that was looked up.
+    curl_found: Mutex<HashMap<String, (bool, Instant)>>,
     /// Runs with a Codex in them that was launched with state hooks, and so
     /// posts to the run's server for as long as it lives, whatever the
     /// setting says now. Read off the setting instead, turning it off took
@@ -6725,11 +6750,12 @@ impl AppState {
         // without ever reading dead below, and its record stayed for good.
         if complete {
             let listed: HashSet<&str> = runs.iter().map(|(id, ..)| id.as_str()).collect();
-            let gone: Vec<String> = {
-                let hooked = self.codex_hooked.lock().unwrap();
-                hooked.iter().filter(|id| !listed.contains(id.as_str())).cloned().collect()
-            };
-            for id in gone {
+            // The record before the arming: a launch arms its run and then
+            // records it, so any record read here was armed by the time the
+            // arming is read.
+            let hooked: Vec<String> = self.codex_hooked.lock().unwrap().iter().cloned().collect();
+            let armed = self.hooks_armed.lock().unwrap().clone();
+            for id in hooked_and_gone(hooked, &listed, &armed) {
                 self.record_codex_hooks(&id, false);
             }
         }
@@ -8072,17 +8098,25 @@ impl AppState {
             && self.curl_on(path)
     }
 
-    /// Whether `curl` resolves on `path`, remembered per PATH until settings
-    /// are next saved. Walked fresh, it stat'ed every PATH directory on each
-    /// launch, and for every live run on each 2s sweep, some of them inside
-    /// the registry lock; a stale network mount on PATH has held up a launch
+    /// Whether `curl` resolves on `path`, remembered per PATH until the Codex
+    /// switch is next flipped. Walked fresh, it stat'ed every PATH directory
+    /// on each launch, and a stale network mount on PATH has held up a launch
     /// before (see `agent_catalog::recipe_command`).
+    ///
+    /// A miss is kept for [`CURL_MISS_KEPT`] only. Kept for good, one failed
+    /// walk (`curl` not installed yet, that same mount timing out) would
+    /// launch every later Codex on the PATH without its hooks for the rest of
+    /// the session, and nothing on screen says that flipping the switch is
+    /// the way out.
     fn curl_on(&self, path: &str) -> bool {
-        if let Some(&found) = self.curl_found.lock().unwrap().get(path) {
-            return found;
+        let known = self.curl_found.lock().unwrap().get(path).copied();
+        match known {
+            Some((true, _)) => return true,
+            Some((false, at)) if at.elapsed() < CURL_MISS_KEPT => return false,
+            _ => {}
         }
         let found = crate::agent_diag::resolve_in("curl", path).is_some();
-        self.curl_found.lock().unwrap().insert(path.to_string(), found);
+        self.curl_found.lock().unwrap().insert(path.to_string(), (found, Instant::now()));
         found
     }
 
@@ -11898,11 +11932,12 @@ impl AppState {
     }
 
     /// What a run's agents report, for the notifier: the lead tab's own
-    /// report, and when each tab stopped on a dialog stopped, the lead's
-    /// included. A finished turn is the lead's to announce, but a dialog in
-    /// any tab holds that tab's agent until the user answers it, and reading
-    /// the lead alone meant an extra Claude tab's permission prompt never said
-    /// "Agent needs you". See `notifier::RunSnapshot::blocked`.
+    /// report, and for each tab stopped on a dialog, the lead's included, when
+    /// its newest dialog went up (`activity::Report::raised_ms`). A finished
+    /// turn is the lead's to announce, but a dialog in any tab holds that
+    /// tab's agent until the user answers it, and reading the lead alone meant
+    /// an extra Claude tab's permission prompt never said "Agent needs you".
+    /// See `notifier::RunSnapshot::blocked`.
     fn run_reported(&self, run_id: &str, lead: &str) -> (Option<notifier::Said>, Vec<i64>) {
         use crate::activity::ActivityState;
         let now_ms = crate::activity::now_ms();
@@ -11914,11 +11949,10 @@ impl AppState {
             a.reported.then_some(notifier::Said { state: a.state, since_ms: a.since, by_user })
         };
         let mut blocked: Vec<i64> = map
-            .keys()
-            .filter(|id| split_session_id(id).0 == run_id)
-            .filter_map(|id| said(id))
-            .filter(|s| s.state == ActivityState::Blocked)
-            .map(|s| s.since_ms)
+            .iter()
+            .filter(|(id, _)| split_session_id(id).0 == run_id)
+            .filter(|(id, _)| said(id).is_some_and(|s| s.state == ActivityState::Blocked))
+            .filter_map(|(_, e)| e.report.map(|r| r.raised_ms))
             .collect();
         blocked.sort_unstable();
         (said(lead), blocked)
@@ -12191,15 +12225,27 @@ fn validate_project_path(repo_path: &Path) -> Result<()> {
 mod tests {
     use super::{
         agent_argv, branch_leaf_from_first_prompt, branch_to_adopt, command_on_path,
-        graphify_server, id_source, is_auto_cut_branch, new_task_id, open_file_for, pick_port,
-        preview_mcp_port_for, preview_port_this_sweep, preview_tools_on, require_branch_exists,
-        require_gitless_known, require_own_branch, server_port_for, should_resume, slugify,
-        split_session_id, validate_race, OpenFileRef, RaceAttempt,
+        graphify_server, hooked_and_gone, id_source, is_auto_cut_branch, new_task_id,
+        open_file_for, pick_port, preview_mcp_port_for, preview_port_this_sweep, preview_tools_on,
+        require_branch_exists, require_gitless_known, require_own_branch, server_port_for,
+        should_resume, slugify, split_session_id, validate_race, OpenFileRef, RaceAttempt,
     };
     use agency_core::config::KnowledgeConfig;
     use agency_core::profile::AgentProfile;
     use std::collections::HashSet;
     use std::path::PathBuf;
+
+    #[test]
+    fn a_hooked_codex_still_launching_is_not_gone() {
+        use std::collections::HashMap;
+        use std::time::Instant;
+        let hooked = || vec!["listed".to_string(), "launching".to_string(), "gone".to_string()];
+        let listed: HashSet<&str> = ["listed"].into();
+        let armed = HashMap::from([("launching".to_string(), Instant::now())]);
+        assert_eq!(hooked_and_gone(hooked(), &listed, &armed), vec!["gone".to_string()]);
+        // Its arming over and still not listed, it is gone after all.
+        assert_eq!(hooked_and_gone(hooked(), &listed, &HashMap::new()).len(), 2);
+    }
 
     /// AGE-143: the preview MCP server exists exactly where the user has said
     /// "this project serves a web app" — a web run script — and nowhere else.

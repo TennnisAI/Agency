@@ -86,12 +86,14 @@ pub struct RunSnapshot {
     /// (AGE-206). `None` is an agent without hooks, or one whose report has
     /// lapsed, and leaves the turn-finished nudge to the pane.
     pub reported: Option<Said>,
-    /// When each of the run's tabs that is stopped on a dialog stopped, the
-    /// lead's included. Apart from `reported`, which is the lead's alone: a
-    /// dialog in any tab holds that tab's agent until the user answers it, but
-    /// a finished turn is the lead's to announce. Folded into one, the earliest
-    /// dialog stood for them all, so a second tab's dialog changed nothing and
-    /// never notified, and the lead's own `done` was hidden behind it.
+    /// For each of the run's tabs that is stopped on a dialog, the lead's
+    /// included, when its newest dialog went up: a second dialog in one tab is
+    /// as much news as a dialog in another. Apart from `reported`, which is
+    /// the lead's alone: a dialog in any tab holds that tab's agent until the
+    /// user answers it, but a finished turn is the lead's to announce. Folded
+    /// into one, the earliest dialog stood for them all, so a second tab's
+    /// dialog changed nothing and never notified, and the lead's own `done`
+    /// was hidden behind it.
     pub blocked: Vec<i64>,
 }
 
@@ -118,7 +120,8 @@ pub struct RunWatch {
     pub reported: Option<Said>,
     /// The reported `done` last acted on, by when it began.
     pub done_seen: Option<i64>,
-    /// The dialogs standing at the last tick, by when each began.
+    /// The tabs on a dialog at the last tick, by when each one's newest went
+    /// up.
     pub blocked: Vec<i64>,
 }
 

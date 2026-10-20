@@ -218,9 +218,28 @@ pub fn carries_codex_args(args: &[String]) -> bool {
     codex_args().iter().all(|a| args.contains(a))
 }
 
-/// `s` as a TOML basic string.
+/// `s` as a TOML basic string, every character the spec requires escaped.
+///
+/// By hand rather than through `toml`, which is free to pick a literal string
+/// or a different escape from one release to the next: these bytes are what
+/// Codex keys its trust to, and a dependency bump that changed them would ask
+/// every user to trust the hooks again.
 fn toml_string(s: &str) -> String {
-    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn hook_entry(port: u16) -> Value {
@@ -796,6 +815,20 @@ mod tests {
             assert_eq!(hook["command"].as_str(), Some(CODEX_COMMAND));
             assert_eq!(hook["timeout"].as_integer(), Some(3));
         }
+    }
+
+    #[test]
+    fn a_toml_string_comes_back_as_written() {
+        for s in
+            [CODEX_COMMAND, "a\\b \"c\"", "line\nbreak\ttab\r", "\u{0}\u{1f}\u{7f}\u{85}", "é ✓"]
+        {
+            let parsed: toml::Table = toml::from_str(&format!("v = {}", toml_string(s))).unwrap();
+            assert_eq!(parsed["v"].as_str(), Some(s), "{s:?}");
+        }
+        // The hook's own bytes are what the first escaper made of them, so a
+        // trust given to those still covers it.
+        let first = CODEX_COMMAND.replace('\\', "\\\\").replace('"', "\\\"");
+        assert_eq!(toml_string(CODEX_COMMAND), format!("\"{first}\""));
     }
 
     #[test]

@@ -157,7 +157,24 @@ pub struct PrFileDiff {
     pub binary: bool,
     pub header: String,
     pub hunks: Vec<crate::git::Hunk>,
+    /// The file's changed (`+`/`-`) line count when its hunks were left out for
+    /// size, by [`MAX_PR_FILE_DIFF_LINES`] or [`MAX_PR_DIFF_LINES`]; 0 when the
+    /// hunks are all there.
+    #[serde(default)]
+    pub omitted_lines: usize,
 }
+
+/// A PR diff opened in the source control tab crashed the app: it added four
+/// generated lexicon JSON files of 90k to 110k lines each, about 400k diff lines
+/// in all, and the review pane renders every line as DOM rows. Past this many
+/// lines a file is sent with no hunks, as an oversized local file already is.
+pub const MAX_PR_FILE_DIFF_LINES: usize = 10_000;
+
+/// The per-file cap alone does not bound that crash: it was the 400k-line total
+/// that took the pane down, and fifty generated files of 9,000 lines each pass
+/// the per-file cap while adding up to more. Once the files rendered so far
+/// reach this many lines, any file that would go over is sent with no hunks too.
+pub const MAX_PR_DIFF_LINES: usize = 40_000;
 
 /// A resolvable review conversation on a PR. `id` is the GraphQL node id used by
 /// the resolve/unresolve mutations.
@@ -962,27 +979,40 @@ struct GqlNodeRef {
 pub fn parse_pr_diff(diff: &str) -> Vec<PrFileDiff> {
     let mut files = Vec::new();
     let mut section: Vec<&str> = Vec::new();
+    let mut budget = MAX_PR_DIFF_LINES;
     for line in diff.lines() {
         if line.starts_with("diff --git ") && !section.is_empty() {
-            if let Some(f) = build_pr_file(&section) {
+            if let Some(f) = build_pr_file(&section, &mut budget) {
                 files.push(f);
             }
             section.clear();
         }
         section.push(line);
     }
-    if let Some(f) = build_pr_file(&section) {
+    if let Some(f) = build_pr_file(&section, &mut budget) {
         files.push(f);
     }
     files
 }
 
-fn build_pr_file(section: &[&str]) -> Option<PrFileDiff> {
+/// `budget` is the line count the PR's remaining files may still render; a file
+/// that is rendered spends its hunk lines from it, one that is omitted spends none.
+fn build_pr_file(section: &[&str], budget: &mut usize) -> Option<PrFileDiff> {
     if section.is_empty() {
         return None;
     }
-    let text = section.join("\n");
-    let fd = crate::git::parse_diff(&text);
+    // Everything before the first hunk is the header, kept even when the hunks are not.
+    let header_len = section.iter().take_while(|l| !l.starts_with("@@")).count();
+    let body = &section[header_len..];
+    let omit = body.len() > MAX_PR_FILE_DIFF_LINES || body.len() > *budget;
+    let omitted_lines = if omit {
+        body.iter().filter(|l| l.starts_with('+') || l.starts_with('-')).count()
+    } else {
+        *budget -= body.len();
+        0
+    };
+    let kept = if omit { &section[..header_len] } else { section };
+    let fd = crate::git::parse_diff(&kept.join("\n"));
 
     let mut new_path: Option<String> = None;
     let mut old_path: Option<String> = None;
@@ -1012,7 +1042,14 @@ fn build_pr_file(section: &[&str]) -> Option<PrFileDiff> {
         Some(o) if Some(&o) != new_path.as_ref() => Some(o),
         _ => None,
     };
-    Some(PrFileDiff { path, old_path: old, binary, header: fd.header, hunks: fd.hunks })
+    Some(PrFileDiff {
+        path,
+        old_path: old,
+        binary,
+        header: fd.header,
+        hunks: fd.hunks,
+        omitted_lines,
+    })
 }
 
 /// Strip a diff path's `a/`/`b/` prefix; `/dev/null` (add or delete) → None.
@@ -1177,6 +1214,68 @@ Binary files a/img.png and b/img.png differ
         assert_eq!(files[2].path, "img.png");
         assert!(files[2].binary);
         assert!(files[2].hunks.is_empty());
+        assert!(files.iter().all(|f| f.omitted_lines == 0));
+    }
+
+    #[test]
+    fn parse_pr_diff_omits_an_oversized_file_and_keeps_the_rest() {
+        let mut diff = String::from(
+            "diff --git a/big.json b/big.json\nnew file mode 100644\n--- /dev/null\n+++ b/big.json\n",
+        );
+        diff.push_str(&format!("@@ -0,0 +1,{0} @@\n", MAX_PR_FILE_DIFF_LINES));
+        for i in 0..MAX_PR_FILE_DIFF_LINES {
+            diff.push_str(&format!("+\"word{i}\": \"x\",\n"));
+        }
+        diff.push_str(
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n",
+        );
+
+        let files = parse_pr_diff(&diff);
+        assert_eq!(files.len(), 2);
+
+        assert_eq!(files[0].path, "big.json");
+        assert!(files[0].hunks.is_empty());
+        assert_eq!(files[0].omitted_lines, MAX_PR_FILE_DIFF_LINES);
+        assert!(files[0].header.contains("new file mode 100644"));
+        assert!(!files[0].header.contains("@@"));
+
+        assert_eq!(files[1].path, "a.rs");
+        assert_eq!(files[1].omitted_lines, 0);
+        assert_eq!(files[1].hunks[0].lines, vec!["-old", "+new"]);
+    }
+
+    #[test]
+    fn parse_pr_diff_omits_files_past_the_whole_pr_budget() {
+        // Each file is under the per-file cap; five of them are over the budget.
+        let lines = 9_000;
+        assert!(lines < MAX_PR_FILE_DIFF_LINES && 5 * lines > MAX_PR_DIFF_LINES);
+        let mut diff = String::new();
+        for n in 0..5 {
+            diff.push_str(&format!(
+                "diff --git a/gen{n}.json b/gen{n}.json\n--- a/gen{n}.json\n+++ b/gen{n}.json\n"
+            ));
+            diff.push_str(&format!("@@ -1,{lines} +1,{lines} @@\n"));
+            for i in 0..lines {
+                diff.push_str(if i % 2 == 0 { "-a\n" } else { "+b\n" });
+            }
+        }
+        diff.push_str(
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n",
+        );
+
+        let files = parse_pr_diff(&diff);
+        assert_eq!(files.len(), 6);
+        for f in &files[..4] {
+            assert_eq!(f.omitted_lines, 0, "{}", f.path);
+            assert_eq!(f.hunks[0].lines.len(), lines);
+        }
+        assert_eq!(files[4].path, "gen4.json");
+        assert!(files[4].hunks.is_empty());
+        assert_eq!(files[4].omitted_lines, lines);
+        // A small file after the omitted one still fits in what is left.
+        assert_eq!(files[5].path, "a.rs");
+        assert_eq!(files[5].omitted_lines, 0);
+        assert_eq!(files[5].hunks[0].lines, vec!["-old", "+new"]);
     }
 
     #[test]

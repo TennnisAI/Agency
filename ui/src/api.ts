@@ -1429,6 +1429,9 @@ export interface PrFileDiff extends FileDiff {
   path: string;
   oldPath: string | null;
   binary: boolean;
+  // The file's changed-line count when the backend left `hunks` empty for size
+  // (MAX_PR_FILE_DIFF_LINES or MAX_PR_DIFF_LINES in gh.rs); 0 otherwise.
+  omittedLines: number;
 }
 
 export interface PrReviewComment {

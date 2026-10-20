@@ -4405,7 +4405,7 @@ input, textarea, code,
 .prdiff-caret { color: var(--sub0); width: 13px; font-size: var(--chev); }
 .prdiff-path { color: var(--text); }
 .prdiff-renamed { color: var(--sub0); }
-.prdiff-binary { margin-left: auto; color: var(--sub0); font-size: var(--fs-2xs); text-transform: uppercase; }
+.prdiff-tag { margin-left: auto; color: var(--sub0); font-size: var(--fs-2xs); text-transform: uppercase; }
 .prdiff-emptyline { padding: 10px; color: var(--sub0); font-size: var(--fs-sm); }
 .prdiff-body { font-family: var(--mono); font-size: var(--fs-sm); }
 .prdiff-line { display: grid; grid-template-columns: 44px 44px 16px 1fr; align-items: stretch; cursor: pointer; white-space: pre-wrap; word-break: break-word; }

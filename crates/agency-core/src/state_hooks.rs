@@ -7,22 +7,26 @@
 //! to the run's own loopback server (`crate::preview`, route [`STATE_PATH`]).
 //! The receiving end and the parse are in `preview::report`.
 //!
-//! Claude Code only, so far. Its hooks take an `http` type, so nothing here is
-//! a script written into the user's worktree or a `jq` assumed on the PATH:
-//! the agent posts straight at the server. Every other agent stays on the pane
-//! heuristic until its hooks are verified against a live binary, one agent per
-//! change, the way `skills.rs` built its directory table.
+//! Two agents so far, each verified against a live binary, one agent per
+//! change, the way `skills.rs` built its directory table. Every other agent
+//! stays on the pane heuristic until its hooks are.
 //!
-//! The same three rules as [`crate::mcp::emit_for_agent`]: merge into the file
-//! and never replace it, leave a file the repo tracks alone, and exclude what
-//! we write. The file is `.claude/settings.local.json`, which Claude Code
-//! itself writes to (a "don't ask again" answer lands there as a permission
-//! rule), so a file that does not parse is left exactly as it is rather than
-//! started over.
+//! - **Claude Code** takes an `http` hook, so the agent posts straight at the
+//!   server: nothing here is a script in the user's worktree or a `jq` assumed
+//!   on the PATH. The hooks go into `.claude/settings.local.json`, under the
+//!   same three rules as [`crate::mcp::emit_for_agent`]: merge into the file
+//!   and never replace it, leave a file the repo tracks alone, and exclude what
+//!   we write. Claude Code itself writes to that file (a "don't ask again"
+//!   answer lands there as a permission rule), so a file that does not parse is
+//!   left exactly as it is rather than started over.
+//! - **Codex** runs only `command` hooks, and only ones the user has trusted.
+//!   Its hooks travel on the command line ([`codex_args`]), not in a file, and
+//!   run `curl`; see [`CODEX_EVENTS`] for why on both counts.
 
 use anyhow::Result;
 use serde_json::{json, Value};
 use std::path::Path;
+use std::sync::OnceLock;
 
 /// The route on a run's server that hook events are posted to.
 pub const STATE_PATH: &str = "/__agency__/state";
@@ -43,6 +47,19 @@ pub const TOKEN_ENV: &str = "AGENCY_STATE_TOKEN";
 pub const TOKEN_HEADER: &str = "x-agency-token";
 /// Where [`token`] keeps the secret, under the app's data directory.
 const TOKEN_FILE: &str = "state-token";
+/// The same secret as a header line, for `curl -H @<file>` (see
+/// [`token_headers`]), beside [`TOKEN_FILE`].
+const HEADERS_FILE: &str = "state-token.headers";
+
+/// The route a Codex hook posts to. A route of its own rather than a field in
+/// the body, because what an event means depends on which agent sent it (see
+/// `preview::report::Dialect`) and Codex's body does not say it is Codex's.
+pub const CODEX_STATE_PATH: &str = "/__agency__/state/codex";
+/// The variables a Codex hook reads: where to post, and the file holding the
+/// token header. Everything that differs between runs is in the environment,
+/// so that the hook text itself never changes (see [`CODEX_EVENTS`]).
+pub const URL_ENV: &str = "AGENCY_STATE_URL";
+pub const HEADERS_ENV: &str = "AGENCY_STATE_HEADERS";
 
 /// Where Claude Code reads workspace-local settings.
 const CLAUDE_SETTINGS: &[&str] = &[".claude", "settings.local.json"];
@@ -58,6 +75,10 @@ const CLAUDE_SETTINGS: &[&str] = &[".claude", "settings.local.json"];
 ///   nothing at all. No `Stop`, no `PostToolUseFailure`. The way out of
 ///   `blocked` without a report is the app's (see `activity::answered`).
 /// - `PostToolUseFailure` replaces `PostToolUse` when a tool fails.
+/// - `PermissionRequest` has no `tool_use_id` (nor in 2.1.304), but the same
+///   `tool_name` and `tool_input` as the `PreToolUse` before it, which has the
+///   id. Approved, that call's `PostToolUse` or `PostToolUseFailure` follows,
+///   with the id.
 /// - `Notification` with `idle_prompt` fires about sixty seconds after `Stop`,
 ///   and is the report that lands after an Esc left no other.
 /// - `SessionEnd` fires on `/clear` as well as on exit.
@@ -83,10 +104,142 @@ const CLAUDE_EVENTS: &[(&str, Option<&str>)] = &[
 /// on, and the bound is what keeps a wedged app from holding up a turn.
 const TIMEOUT_SECS: u64 = 2;
 
-/// Whether Agency writes state hooks for this agent, by the recipe command its
-/// profile runs (`claude` for any profile that launches Claude Code).
+/// Whether Agency writes state hooks into the worktree for this agent, by the
+/// recipe command its profile runs (`claude` for any profile that launches
+/// Claude Code). Codex's go on its command line instead: see [`codex_args`].
 pub fn agent_supported(recipe_command: &str) -> bool {
     recipe_command == "claude"
+}
+
+/// The hook events Agency passes Codex. Verified against Codex 0.153.4,
+/// interactive in tmux and under `codex exec`, with the model a local stub
+/// serving the Responses API: the hooks are the binary's, not the model's, and
+/// the stub is what made a dialog, a question and a subagent happen on cue.
+///
+/// - Codex runs a hook only once the user has trusted it, in its own "Hooks
+///   need review" dialog at startup, which shows the command in full. The trust
+///   is saved in the user's `~/.codex/config.toml`, keyed by where the hook
+///   came from and by a hash of it. A `.codex/hooks.json` in the worktree is
+///   keyed by its absolute path, so every new worktree would ask again. A hook
+///   passed with `-c` is keyed `/<session-flags>/config.toml:<event>:0:0`, the
+///   same for every run, so identical text is trusted once and never asked
+///   about again. Hence the command line and not a file, and every per-run fact
+///   (port, session, token) in the environment rather than the text.
+/// - A `-c` hook is added to the user's own hooks for that event, not put in
+///   their place: with one in `config.toml` and ours on the command line, the
+///   review counted two, and one prompt ran both. `-c` before the subcommand
+///   reaches `codex exec` too.
+/// - "Continue without trusting" saves nothing: the dialog comes back at the
+///   next launch. That is what the setting to stop passing them is for.
+/// - `codex exec` runs trusted hooks and skips untrusted ones without a word.
+/// - `PermissionRequest` fires the moment an approval dialog appears.
+/// - A `request_user_input` question (Plan mode only) fires `PreToolUse` with
+///   that `tool_name`, and no `PermissionRequest`. Answered, `PostToolUse`.
+/// - Esc on a dialog, or during a tool call, fires `Interrupt` and no `Stop`.
+///   Unlike Claude Code, a refused dialog does say so. Its input schema has no
+///   `agent_id`, so it reads as the main agent's whoever's dialog it was.
+/// - `PreToolUse` and `PostToolUse` carry the call's `tool_use_id`, and
+///   `PermissionRequest` does not (the binary's own input schemas). It has the
+///   call's `tool_name` and `tool_input`, with the approval's reason added as
+///   `description`, which is what ties it to its `PreToolUse` (see
+///   `preview::report::Event::tool`).
+/// - Two calls in parallel fire both `PreToolUse`, then both dialogs, in
+///   either order. One approved runs at once, but its `PostToolUse` waits for
+///   the other's answer, and then both fire.
+/// - `SessionStart` fires just before the first `UserPromptSubmit`, not at
+///   startup, with `source` `startup`, `resume` or `clear`. `/clear` fires
+///   nothing until the next prompt, which arrives under a new `session_id`.
+///   `SessionEnd` fires only on exit, once for each conversation the process
+///   had, the cleared ones included.
+/// - A subagent posts under its parent's `session_id`, with an `agent_id` of
+///   its own, and ends with `SubagentStop` rather than `Stop`. Its dialogs are
+///   the run's; `SubagentStart` and `SubagentStop` are not subscribed.
+/// - `PostToolUseFailure` and `Notification` do not exist.
+const CODEX_EVENTS: &[&str] = &[
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PermissionRequest",
+    "PostToolUse",
+    "Stop",
+    "Interrupt",
+    "SessionEnd",
+];
+
+/// What every Codex hook runs: the payload on stdin, posted to the run's
+/// server. A command hook runs through `sh -c` with the agent's environment.
+///
+/// `curl`, because a command hook needs a program to post with, and `curl`
+/// ships with macOS and nearly every Linux; the launch passes these hooks only
+/// when it is on the agent's PATH (see `agent_env` in the app), and
+/// nothing is written into the worktree. The token is read from a file named
+/// in the environment, not put on the command line, where `ps` shows it to
+/// every user on the machine. Errors are silenced and the exit is always 0:
+/// a nonzero exit from a `Stop` hook is how a hook asks Codex to keep going.
+///
+/// `Expect:` blank: past a size threshold (1 KiB on older builds, 1 MiB on
+/// current ones) curl sends `Expect: 100-continue` and holds the body until
+/// the server answers or a second passes. The run's server never answers it,
+/// so a `PostToolUse` carrying a large tool output cost Codex a second.
+const CODEX_COMMAND: &str = concat!(
+    r#"curl -s -m 2 -o /dev/null -H @"$AGENCY_STATE_HEADERS" "#,
+    r#"-H "X-Agency-Session: $AGENCY_SESSION_ID" -H "Expect:" "#,
+    r#"--data-binary @- "$AGENCY_STATE_URL" 2>/dev/null || true"#,
+);
+
+/// Seconds Codex waits on one hook. It waits on every one, and clamps this to
+/// 3 for `SessionEnd` and `Interrupt`; `curl -m 2` is the real bound.
+const CODEX_TIMEOUT_SECS: u64 = 3;
+
+/// The arguments that pass Codex its state hooks, as `-c` overrides. Byte for
+/// byte the same on every launch, so the user's one trust covers all of them.
+/// Built once: every launch asks for them, and so does [`carries_codex_args`].
+pub fn codex_args() -> &'static [String] {
+    static ARGS: OnceLock<Vec<String>> = OnceLock::new();
+    ARGS.get_or_init(|| {
+        let command = toml_string(CODEX_COMMAND);
+        CODEX_EVENTS
+            .iter()
+            .flat_map(|event| {
+                [
+                    "-c".to_string(),
+                    format!(
+                        "hooks.{event}=[{{hooks=[{{type=\"command\",command={command},\
+                         timeout={CODEX_TIMEOUT_SECS}}}]}}]"
+                    ),
+                ]
+            })
+            .collect()
+    })
+}
+
+/// Whether `args` already pass Codex our hooks.
+pub fn carries_codex_args(args: &[String]) -> bool {
+    codex_args().iter().all(|a| args.contains(a))
+}
+
+/// `s` as a TOML basic string, every character the spec requires escaped.
+///
+/// By hand rather than through `toml`, which is free to pick a literal string
+/// or a different escape from one release to the next: these bytes are what
+/// Codex keys its trust to, and a dependency bump that changed them would ask
+/// every user to trust the hooks again.
+fn toml_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn hook_entry(port: u16) -> Value {
@@ -113,18 +266,106 @@ pub fn token(data_dir: &Path) -> String {
     if let Ok(t) = std::fs::read_to_string(&path) {
         let t = t.trim();
         if !t.is_empty() {
+            // Kept, but not left readable: see `private`.
+            if !private(&path) {
+                if let Err(e) = write_secret(&path, &format!("{t}\n")) {
+                    log::warn!("narrowing the state-hook token {}: {e}", path.display());
+                }
+            }
             return t.to_string();
         }
     }
     let fresh = uuid::Uuid::new_v4().simple().to_string();
-    let kept = crate::issuefs::atomic_write(&path, &format!("{fresh}\n")).and_then(|()| {
-        use std::os::unix::fs::PermissionsExt;
-        Ok(std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?)
-    });
-    if let Err(e) = kept {
+    if let Err(e) = write_secret(&path, &format!("{fresh}\n")) {
         log::warn!("keeping the state-hook token in {}: {e}", path.display());
     }
     fresh
+}
+
+/// The file a Codex hook reads its token header from (`curl -H @<file>`),
+/// written beside the token and kept in step with it. `None` when it cannot be
+/// written, and Codex then gets no hooks to post with.
+pub fn token_headers(data_dir: &Path, token: &str) -> Option<std::path::PathBuf> {
+    let path = data_dir.join(HEADERS_FILE);
+    let want = format!("X-Agency-Token: {token}\n");
+    if std::fs::read_to_string(&path).is_ok_and(|have| have == want) && private(&path) {
+        return Some(path);
+    }
+    match write_secret(&path, &want) {
+        Ok(()) => Some(path),
+        Err(e) => {
+            log::warn!("writing the state-hook header file {}: {e}", path.display());
+            None
+        }
+    }
+}
+
+/// Whether `path` is readable by this user alone. A secret file whose contents
+/// were right was kept as it was found, so one restored from a backup or a
+/// sync at 0644 stayed readable by every account on the machine.
+fn private(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o077 == 0)
+}
+
+/// Where the app records which runs a Codex was launched into with these
+/// hooks, one empty file per run, under its data directory (see
+/// [`codex_marked`]).
+const CODEX_MARKS: &str = "codex-hooked";
+
+/// The runs recorded by [`mark_codex`]. The hooks are in the process's argv,
+/// which nothing can read back, so this is how the app knows, after it
+/// restarts, which surviving Codex posts to its run's server. Guessed from the
+/// setting instead, a user who turned it off and restarted lost the reports of
+/// a Codex still sending them.
+pub fn codex_marked(data_dir: &Path) -> std::collections::HashSet<String> {
+    let Ok(dir) = std::fs::read_dir(data_dir.join(CODEX_MARKS)) else { return Default::default() };
+    dir.filter_map(|e| e.ok()?.file_name().into_string().ok()).filter(|id| safe_mark(id)).collect()
+}
+
+/// Record (`on`) or forget that `run_id` has a Codex launched with these hooks.
+pub fn mark_codex(data_dir: &Path, run_id: &str, on: bool) -> Result<()> {
+    if !safe_mark(run_id) {
+        anyhow::bail!("not a run id: {run_id:?}");
+    }
+    let dir = data_dir.join(CODEX_MARKS);
+    let path = dir.join(run_id);
+    if on {
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(&path, b"")?;
+    } else if let Err(e) = std::fs::remove_file(&path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err(e.into());
+        }
+    }
+    Ok(())
+}
+
+/// A run id that is one plain file name.
+fn safe_mark(id: &str) -> bool {
+    !id.is_empty() && !id.starts_with('.') && !id.contains(['/', '\\'])
+}
+
+/// Write `contents` to `path`, readable by this user alone from the moment the
+/// file exists. Written and then narrowed to 0600, the token sat readable by
+/// every account on the machine for the moment in between.
+fn write_secret(path: &Path, contents: &str) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let dir = path.parent().ok_or_else(|| anyhow::anyhow!("no parent for {}", path.display()))?;
+    std::fs::create_dir_all(dir)?;
+    let tmp = dir.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(contents.as_bytes()))
+        .and_then(|()| std::fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    Ok(written?)
 }
 
 /// Whether `given` is the token, in time that does not depend on where the two
@@ -555,5 +796,113 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         assert!(!emit_for_agent("claude", dir.path(), dir.path(), None).unwrap());
         assert!(!dir.path().join(".claude").exists());
+    }
+
+    #[test]
+    fn codex_gets_every_event_as_one_override_each() {
+        let args = codex_args();
+        assert_eq!(args.len(), CODEX_EVENTS.len() * 2);
+        for (pair, event) in args.chunks(2).zip(CODEX_EVENTS) {
+            assert_eq!(pair[0], "-c");
+            // What Codex parses the override as: the hook has to come back out
+            // as exactly the command, or it is not the command the user trusted.
+            let parsed: toml::Table = toml::from_str(&pair[1]).unwrap();
+            let groups = parsed["hooks"][*event].as_array().unwrap();
+            assert_eq!(groups.len(), 1, "{event}");
+            assert!(groups[0].get("matcher").is_none(), "{event}: every tool, unmatched");
+            let hook = &groups[0]["hooks"][0];
+            assert_eq!(hook["type"].as_str(), Some("command"));
+            assert_eq!(hook["command"].as_str(), Some(CODEX_COMMAND));
+            assert_eq!(hook["timeout"].as_integer(), Some(3));
+        }
+    }
+
+    #[test]
+    fn a_toml_string_comes_back_as_written() {
+        for s in
+            [CODEX_COMMAND, "a\\b \"c\"", "line\nbreak\ttab\r", "\u{0}\u{1f}\u{7f}\u{85}", "é ✓"]
+        {
+            let parsed: toml::Table = toml::from_str(&format!("v = {}", toml_string(s))).unwrap();
+            assert_eq!(parsed["v"].as_str(), Some(s), "{s:?}");
+        }
+        // The hook's own bytes are what the first escaper made of them, so a
+        // trust given to those still covers it.
+        let first = CODEX_COMMAND.replace('\\', "\\\\").replace('"', "\\\"");
+        assert_eq!(toml_string(CODEX_COMMAND), format!("\"{first}\""));
+    }
+
+    #[test]
+    fn the_codex_hook_never_changes_between_runs() {
+        // Trust is keyed by a hash of the text: anything per-run in it would
+        // ask the user again at every launch. It reads all of that from the
+        // environment, under the names the launch sets.
+        assert_eq!(codex_args(), codex_args());
+        for var in [URL_ENV, HEADERS_ENV, SESSION_ENV] {
+            assert!(CODEX_COMMAND.contains(&format!("${var}\"")), "{var}");
+        }
+        assert!(!CODEX_COMMAND.contains(TOKEN_ENV), "the token stays off the command line");
+        assert!(CODEX_COMMAND.ends_with("|| true"), "a nonzero Stop hook keeps Codex going");
+        assert!(CODEX_COMMAND.contains(r#"-H "Expect:""#), "the server never sends 100 Continue");
+    }
+
+    #[test]
+    fn carried_codex_args_are_recognised_wherever_they_sit() {
+        let mut args = vec!["--model".to_string(), "gpt-5.5".to_string()];
+        assert!(!carries_codex_args(&args));
+        args.extend(codex_args().iter().cloned());
+        args.push("the prompt".to_string());
+        assert!(carries_codex_args(&args));
+        args.remove(3);
+        assert!(!carries_codex_args(&args), "one missing is not ours");
+    }
+
+    #[test]
+    fn the_header_file_holds_the_token_for_this_user_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = token(dir.path());
+        let path = token_headers(dir.path(), &t).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), format!("X-Agency-Token: {t}\n"));
+        for file in [&path, &dir.path().join(TOKEN_FILE)] {
+            let mode = std::fs::metadata(file).unwrap().permissions();
+            assert_eq!(std::os::unix::fs::PermissionsExt::mode(&mode) & 0o777, 0o600);
+        }
+        assert_eq!(token_headers(dir.path(), "other").unwrap(), path);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "X-Agency-Token: other\n");
+    }
+
+    #[test]
+    fn a_secret_found_readable_is_kept_and_narrowed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let t = token(dir.path());
+        let path = token_headers(dir.path(), &t).unwrap();
+        let loosen =
+            |p: &Path| std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let token_file = dir.path().join(TOKEN_FILE);
+        loosen(&token_file);
+        loosen(&path);
+        assert_eq!(token(dir.path()), t, "the same token, not a new one");
+        assert_eq!(token_headers(dir.path(), &t).unwrap(), path);
+        for file in [&path, &token_file] {
+            let mode = std::fs::metadata(file).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "{}", file.display());
+        }
+    }
+
+    #[test]
+    fn codex_marks_outlive_the_app_and_go_when_forgotten() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(codex_marked(dir.path()).is_empty());
+        mark_codex(dir.path(), "fix-a1", true).unwrap();
+        mark_codex(dir.path(), "fix-b2", true).unwrap();
+        mark_codex(dir.path(), "fix-b2", true).unwrap();
+        let marked = codex_marked(dir.path());
+        assert_eq!(marked.len(), 2);
+        assert!(marked.contains("fix-a1") && marked.contains("fix-b2"));
+        mark_codex(dir.path(), "fix-a1", false).unwrap();
+        mark_codex(dir.path(), "fix-a1", false).unwrap();
+        assert_eq!(codex_marked(dir.path()).into_iter().collect::<Vec<_>>(), vec!["fix-b2"]);
+        assert!(mark_codex(dir.path(), "../x", true).is_err());
+        assert!(mark_codex(dir.path(), ".", true).is_err());
     }
 }

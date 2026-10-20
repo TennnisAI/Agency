@@ -35,6 +35,16 @@ const SETTING_UPDATE_CHECK: &str = "update_check_enabled";
 /// Unset means off: an agent seeing the user's screen is a thing to opt into,
 /// once, knowingly.
 const SETTING_SHARE_OPEN_FILE: &str = "share_open_file";
+/// "0" stops passing Codex its state hooks (AGE-251). Unset = on: Codex asks
+/// the user to trust them once, in its own dialog, and the choice is theirs
+/// there. This is the way out for a user who said no to it, since saying no
+/// is not remembered and the dialog would come back at every launch.
+const SETTING_CODEX_STATE_HOOKS: &str = "codex_state_hooks";
+
+/// The `codex_state_hooks` setting as stored: on unless it is "0".
+fn codex_state_hooks_setting(stored: Option<&str>) -> bool {
+    stored != Some("0")
+}
 /// "0" makes the add-agent menu default to working in the project checkout
 /// instead of cutting a worktree. Unset = worktrees on, the isolated default.
 const SETTING_DEFAULT_WORKTREE: &str = "default_worktree";
@@ -80,6 +90,9 @@ pub struct ProviderSettings {
     /// the `editor_open_file` MCP tool. Off by default, and off is a real off:
     /// the tool is not listed, and nothing about the open file is recorded.
     pub share_open_file: bool,
+    /// Whether Codex is launched with the hooks that report its state (see
+    /// [`SETTING_CODEX_STATE_HOOKS`]).
+    pub codex_state_hooks: bool,
 }
 
 /// How a sync pass ended. "Needs seeding" is an outcome rather than an error
@@ -1206,6 +1219,10 @@ fn pane_hash(pane: &str) -> u64 {
 /// session is spawned.
 const HOOKS_ARMING: Duration = Duration::from_secs(30);
 
+/// How long a PATH found to have no `curl` is taken at its word before the
+/// next Codex launch on it looks again. See [`AppState::curl_on`].
+const CURL_MISS_KEPT: Duration = Duration::from_secs(60);
+
 /// The daemon session that speaks for a run: its status dot, the notifier's
 /// busy/idle watch, and the default target for text Agency types in.
 ///
@@ -1273,6 +1290,35 @@ fn with_model(profile: &AgentProfile, model: Option<&str>) -> AgentProfile {
     AgentProfile {
         args: with_extra(&profile.args),
         loop_args: profile.loop_args.as_deref().map(with_extra),
+        ..profile.clone()
+    }
+}
+
+/// A copy of a Codex `profile` whose every launch passes it the hooks that
+/// report its state (AGE-251). Folded into the profile, by `agent_env`, for
+/// the reason [`with_model`] is: fresh, resume, rerun, extra tab and loop
+/// attempt all launch from it, so none can be the one that goes without.
+///
+/// At the front of each recipe: `-c` is Codex's own flag, read before its
+/// subcommand as well as after. Appended, they landed behind the prompt, and a
+/// recipe like `exec -- {{prompt}}` would have read sixteen of them as more
+/// prompt. In front of a resume recipe too, since a resume launches `args`
+/// first.
+///
+/// Never twice, and each recipe on its own: a profile whose `args` already
+/// carried them once returned here as it was, and its `codex exec` loop
+/// attempts ran without them.
+fn with_state_hooks(profile: &AgentProfile) -> AgentProfile {
+    use agency_core::state_hooks::{carries_codex_args, codex_args};
+    let with_ours = |recipe: &[String]| -> Vec<String> {
+        if carries_codex_args(recipe) {
+            return recipe.to_vec();
+        }
+        codex_args().iter().chain(recipe).cloned().collect()
+    };
+    AgentProfile {
+        args: with_ours(&profile.args),
+        loop_args: profile.loop_args.as_deref().map(with_ours),
         ..profile.clone()
     }
 }
@@ -2609,6 +2655,26 @@ fn preview_port_this_sweep(
     }
 }
 
+/// The runs recorded with a hooked Codex (`AppState::codex_hooked`) that a
+/// complete listing of the registry no longer has, so whose record can go.
+///
+/// Not a run still launching (`armed`): `create_run_spec` records the run in
+/// `agent_env`, and only gives it a registry row with `insert_run` after a
+/// daemon round trip. A sweep landing between the two would take the new run
+/// for gone and drop its record, every later sweep would then read it as not
+/// reporting, and its server would be torn down under a live Codex once its
+/// grace ran out.
+fn hooked_and_gone(
+    hooked: Vec<String>,
+    listed: &HashSet<&str>,
+    armed: &HashMap<String, Instant>,
+) -> Vec<String> {
+    hooked
+        .into_iter()
+        .filter(|id| !listed.contains(id.as_str()) && !armed.contains_key(id))
+        .collect()
+}
+
 /// What the run `run_id`, in the project checked out at `repo`, should hear
 /// about the file the user has open (AGE-200).
 ///
@@ -2991,6 +3057,25 @@ pub struct AppState {
     /// read is an atomic load rather than a database round trip on a mutex the
     /// notifier tick also wants.
     share_open_file: Arc<std::sync::atomic::AtomicBool>,
+    /// Mirror of the `codex_state_hooks` setting, read while a launch already
+    /// holds the registry.
+    codex_state_hooks: std::sync::atomic::AtomicBool,
+    /// The file a Codex hook reads the token header from (see
+    /// `agency_core::state_hooks::token_headers`). `None` if it could not be
+    /// written, and Codex is then launched without hooks.
+    state_headers: Option<PathBuf>,
+    /// See [`AppState::curl_on`]: per PATH, whether it had a `curl`, and when
+    /// that was looked up.
+    curl_found: Mutex<HashMap<String, (bool, Instant)>>,
+    /// Runs with a Codex in them that was launched with state hooks, and so
+    /// posts to the run's server for as long as it lives, whatever the
+    /// setting says now. Read off the setting instead, turning it off took
+    /// the server down under a Codex still reporting: its last report (a
+    /// `blocked`, say) stood for good, and held the send queue with it.
+    /// Mirrored on disk (`state_hooks::mark_codex`) for a Codex that outlives
+    /// this start of the app, and dropped by the sweep once the run has no
+    /// agent alive or is gone. See [`AppState::record_codex_hooks`].
+    codex_hooked: Mutex<HashSet<String>>,
     /// Run id → the line its agent last wrote about itself with `set_status`
     /// (AGE-208). An `Arc` because each run's preview server captures it, like
     /// `open_file` above. In-memory only, and dropped when an agent that could
@@ -3250,6 +3335,10 @@ impl AppState {
         unprefill_local_model_url(&registry)?;
         let share_open_file =
             registry.get_setting(SETTING_SHARE_OPEN_FILE)?.as_deref() == Some("1");
+        let codex_state_hooks =
+            codex_state_hooks_setting(registry.get_setting(SETTING_CODEX_STATE_HOOKS)?.as_deref());
+        let state_token = agency_core::state_hooks::token(data_dir);
+        let state_headers = agency_core::state_hooks::token_headers(data_dir, &state_token);
         let repo_gates = Arc::new(crate::gates::KeyedGates::new());
         let state = AppState {
             registry: Mutex::new(registry),
@@ -3266,7 +3355,10 @@ impl AppState {
             report_pins: Arc::new(Mutex::new(HashMap::new())),
             hooks_armed: Mutex::new(HashMap::new()),
             hooks_seen: Mutex::new(HashMap::new()),
-            state_token: Arc::from(agency_core::state_hooks::token(data_dir)),
+            state_token: Arc::from(state_token),
+            state_headers,
+            curl_found: Mutex::new(HashMap::new()),
+            codex_hooked: Mutex::new(agency_core::state_hooks::codex_marked(data_dir)),
             mcp_named: Mutex::new(HashSet::new()),
             usage: Mutex::new(HashMap::new()),
             prompted: Mutex::new(HashSet::new()),
@@ -3295,6 +3387,7 @@ impl AppState {
             preview_shot: std::sync::Arc::new(std::sync::OnceLock::new()),
             open_file: Arc::new(Mutex::new(None)),
             share_open_file: Arc::new(std::sync::atomic::AtomicBool::new(share_open_file)),
+            codex_state_hooks: std::sync::atomic::AtomicBool::new(codex_state_hooks),
             agent_status: Arc::new(Mutex::new(HashMap::new())),
             last_update_check: Mutex::new(None),
             update_install: Mutex::new(crate::update::Install::default()),
@@ -3561,6 +3654,10 @@ impl AppState {
             // Unset = off, unlike every other flag here: this one lets an agent
             // see something about the user rather than about the project.
             share_open_file: reg.get_setting(SETTING_SHARE_OPEN_FILE)?.as_deref() == Some("1"),
+            // Unset = on, like every flag here but the one above.
+            codex_state_hooks: codex_state_hooks_setting(
+                reg.get_setting(SETTING_CODEX_STATE_HOOKS)?.as_deref(),
+            ),
         })
     }
 
@@ -3571,7 +3668,16 @@ impl AppState {
         reg.set_setting(SETTING_DEFAULT_AGENT, s.default_agent.as_deref().unwrap_or(""))?;
         reg.set_setting(SETTING_DEFAULT_WORKTREE, if s.default_worktree { "1" } else { "0" })?;
         reg.set_setting(SETTING_SHARE_OPEN_FILE, if s.share_open_file { "1" } else { "0" })?;
+        reg.set_setting(SETTING_CODEX_STATE_HOOKS, if s.codex_state_hooks { "1" } else { "0" })?;
         drop(reg);
+        let was =
+            self.codex_state_hooks.swap(s.codex_state_hooks, std::sync::atomic::Ordering::SeqCst);
+        // Flipping the switch is the one moment a user who has just installed
+        // `curl` can be expected to look for it to work. Not on every save:
+        // the local-model URL saves as it is typed, and each one emptied this.
+        if was != s.codex_state_hooks {
+            self.curl_found.lock().unwrap().clear();
+        }
         // The switch and what it guards move together: turning it off has to
         // drop the path already recorded, or the last file the user had open
         // stays answerable until they open another one.
@@ -4380,7 +4486,7 @@ impl AppState {
                 spec.agent
             );
         }
-        let (profile, issue_key) = {
+        let (mut profile, issue_key) = {
             let reg = self.registry.lock().unwrap();
             let profile = reg
                 .get_profile(spec.agent)?
@@ -4508,7 +4614,7 @@ impl AppState {
         // place that builds a headless attempt.
         if spec.loop_config.is_none() {
             let env = self
-                .agent_env(&profile, &workspace.path, &repo, &id, &id, Some(port))
+                .agent_env(&mut profile, &workspace.path, &repo, &id, &id, Some(port))
                 .inspect_err(|_| self.prune_checkpoints(&repo, &id))?;
             let conversation = self.open_conversation(&profile.command, &id, &id);
             // The default flow passes "" and behaves exactly as before: the user
@@ -6549,6 +6655,25 @@ impl AppState {
         }
     }
 
+    /// Record (`on`) or forget that `run_id` has a Codex launched with state
+    /// hooks (see `codex_hooked`), on disk too. Only a change touches the
+    /// disk, since the sweep asks of every run every 2s.
+    fn record_codex_hooks(&self, run_id: &str, on: bool) {
+        let changed = {
+            let mut hooked = self.codex_hooked.lock().unwrap();
+            if on {
+                hooked.insert(run_id.to_string())
+            } else {
+                hooked.remove(run_id)
+            }
+        };
+        if changed {
+            if let Err(e) = agency_core::state_hooks::mark_codex(&self.data_dir, run_id, on) {
+                log::warn!("recording Codex's state hooks for {run_id}: {e}");
+            }
+        }
+    }
+
     /// `state_hooks::emitted`, re-read only when the settings file changes.
     /// The sweep asks for every worktree run every 2s, and the answer only
     /// moves when a launch or this sweep writes the file.
@@ -6582,12 +6707,21 @@ impl AppState {
     /// `sync_preview_servers` against a listing the caller already has (the
     /// notifier tick's).
     pub fn sync_preview_servers_in(&self, live: Option<&[(String, SessionStatus)]>) {
+        // Whether every project's runs were listed, so that a run missing
+        // from `runs` is gone rather than unread.
+        let mut complete = true;
         let runs: Vec<(String, PathBuf, Option<u16>, PathBuf)> = {
             let reg = self.registry.lock().unwrap();
             let Ok(projects) = reg.list_projects() else { return };
             projects
                 .iter()
-                .filter_map(|p| reg.list_runs(&p.id).ok().map(|runs| (p.repo_path.clone(), runs)))
+                .filter_map(|p| match reg.list_runs(&p.id) {
+                    Ok(runs) => Some((p.repo_path.clone(), runs)),
+                    Err(_) => {
+                        complete = false;
+                        None
+                    }
+                })
                 .flat_map(|(repo, runs)| {
                     runs.into_iter().filter(|r| r.worktree && r.kind == "agent").map(move |r| {
                         let worktree = workspace_dir(&repo, &r);
@@ -6612,6 +6746,19 @@ impl AppState {
         self.hooks_armed.lock().unwrap().retain(|_, at| at.elapsed() < HOOKS_ARMING);
         let worktrees: HashSet<PathBuf> = runs.iter().map(|(_, _, _, w)| w.clone()).collect();
         self.hooks_seen.lock().unwrap().retain(|w, _| worktrees.contains(w));
+        // A run archived or discarded with its Codex alive drops out of `runs`
+        // without ever reading dead below, and its record stayed for good.
+        if complete {
+            let listed: HashSet<&str> = runs.iter().map(|(id, ..)| id.as_str()).collect();
+            // The record before the arming: a launch arms its run and then
+            // records it, so any record read here was armed by the time the
+            // arming is read.
+            let hooked: Vec<String> = self.codex_hooked.lock().unwrap().iter().cloned().collect();
+            let armed = self.hooks_armed.lock().unwrap().clone();
+            for id in hooked_and_gone(hooked, &listed, &armed) {
+                self.record_codex_hooks(&id, false);
+            }
+        }
         for (id, repo, port_base, worktree) in runs {
             let config = agency_core::config::load(&repo);
             let has_server = serving.contains(&id);
@@ -6641,7 +6788,15 @@ impl AppState {
                     }
                 }
             }
-            let reports = hooked && (alive || arming);
+            // Codex's hooks are in its argv, so there is no file to read: the
+            // launch recorded it, on disk for a Codex that outlives the app.
+            let codex = if alive || arming {
+                self.codex_hooked.lock().unwrap().contains(&id)
+            } else {
+                self.record_codex_hooks(&id, false);
+                false
+            };
+            let reports = (alive || arming) && (hooked || codex);
             if let Some(bind) =
                 preview_port_this_sweep(&config, port_base, shares, reports, has_server)
             {
@@ -7814,45 +7969,54 @@ impl AppState {
     /// `run_id` and `session` differ only for an extra agent tab: the scripts
     /// belong to the run whose workspace they operate in, the conversation to
     /// the tab that is having it.
+    ///
+    /// A Codex `profile` comes back carrying its state hooks when they have
+    /// somewhere to post (see [`with_state_hooks`]): the launch builds its
+    /// argv from the profile afterwards.
     fn agent_env(
         &self,
-        profile: &AgentProfile,
+        profile: &mut AgentProfile,
         worktree: &Path,
         repo: &Path,
         run_id: &str,
         session: &str,
         port: Option<u16>,
     ) -> Result<Vec<(String, String)>> {
+        let command = recipe_command(profile);
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
         env.extend(agency_core::scripts::script_env(worktree, repo, run_id, port));
-        // Here rather than at each launch site for the reason the pin below is:
-        // every launch passes through, so none can start an agent whose hooks
-        // point nowhere, or whose reports cannot say which tab they are from.
-        //
-        // Only an agent whose hooks we write is told its session. A `claude`
-        // that a Codex tab ran through its shell inherited the variable, posted
-        // under the Codex tab's id, pinned that tab's conversation and left it
-        // reading done.
-        if self.prepare_state_hooks(profile, worktree, repo, run_id, session, port) {
-            use agency_core::state_hooks::{SESSION_ENV, TOKEN_ENV};
-            env.push((SESSION_ENV.to_string(), session.to_string()));
-            env.push((TOKEN_ENV.to_string(), self.state_token.to_string()));
-        }
         // The daemon inherited this process's PATH when it was spawned at
         // startup; an agent installed since then may live in a directory
         // adopted after that (pathenv::adopt_new_dirs), so the session gets
         // the current answer rather than the daemon's copy.
         // A profile that sets its own PATH keeps it.
-        if !env.iter().any(|(k, _)| k == "PATH") {
-            env.push(("PATH".to_string(), crate::pathenv::effective_path()));
+        let own_path = env.iter().rev().find(|(k, _)| k == "PATH").map(|(_, v)| v.clone());
+        let path = own_path.clone().unwrap_or_else(crate::pathenv::effective_path);
+        // Here rather than at each launch site for the reason the pin below is:
+        // every launch passes through, so none can start an agent whose hooks
+        // point nowhere, or whose reports cannot say which tab they are from.
+        //
+        // Only an agent whose hooks we write is told its session. A `claude`
+        // that a pane-only tab ran through its shell inherited the variable,
+        // posted under that tab's id, pinned that tab's conversation and left
+        // it reading done.
+        //
+        // Codex's hooks go on its command line, and only once the environment
+        // they read is in hand. Folded in at the launch sites, before anything
+        // knew whether there would be a server, a Codex in the project
+        // checkout was asked to trust hooks that could only post nowhere.
+        let codex = command == "codex" && self.codex_hooks_on(&path);
+        let hooks =
+            self.prepare_state_hooks(&command, codex, worktree, repo, run_id, session, port);
+        if codex && !hooks.is_empty() {
+            *profile = with_state_hooks(profile);
         }
-        env.extend(session_store_env(
-            self.agent_home().as_deref(),
-            &recipe_command(profile),
-            worktree,
-            session,
-        ));
+        env.extend(hooks);
+        if own_path.is_none() {
+            env.push(("PATH".to_string(), path));
+        }
+        env.extend(session_store_env(self.agent_home().as_deref(), &command, worktree, session));
         Ok(env)
     }
 
@@ -7865,17 +8029,25 @@ impl AppState {
     /// when it cannot be: Claude Code prints a hook error into the transcript
     /// on every tool call whose post is refused.
     ///
-    /// Whether the agent is one Agency writes hooks for, in a worktree, and
-    /// so one that should be told its session.
+    /// Codex's hooks go on its command line (see [`with_state_hooks`]) when
+    /// `codex` is set, and need only the server and the environment they read.
+    /// Without the environment they would post nowhere, quietly, so the caller
+    /// passes them only when this returns some.
+    ///
+    /// The variables the agent is to be launched with: none for an agent that
+    /// reports nothing, which is then not told its session.
+    #[allow(clippy::too_many_arguments)]
     fn prepare_state_hooks(
         &self,
-        profile: &AgentProfile,
+        command: &str,
+        codex: bool,
         worktree: &Path,
         repo: &Path,
         run_id: &str,
         session: &str,
         port: Option<u16>,
-    ) -> bool {
+    ) -> Vec<(String, String)> {
+        use agency_core::state_hooks::{HEADERS_ENV, SESSION_ENV, TOKEN_ENV, URL_ENV};
         // A new process. What the last one reported is not about this one, and
         // nothing would replace it before the first prompt: `SessionStart` does
         // not fire an `http` hook.
@@ -7885,20 +8057,67 @@ impl AppState {
         self.report_pins.lock().unwrap().remove(session);
         // The project's own checkout is the user's, and nothing is written into
         // it at launch; see `emit_mcp`'s caller.
-        let command = recipe_command(profile);
-        if worktree == repo || !agency_core::state_hooks::agent_supported(&command) {
-            return false;
+        if worktree == repo || !(codex || agency_core::state_hooks::agent_supported(command)) {
+            return Vec::new();
         }
         let config = agency_core::config::load(repo);
         self.hooks_armed.lock().unwrap().insert(run_id.to_string(), Instant::now());
         self.ensure_preview_server(run_id, repo, port, &config, true);
         let listening = self.preview.lock().unwrap().get(run_id).map(|s| s.port());
-        if let Err(e) =
-            agency_core::state_hooks::emit_for_agent(&command, worktree, repo, listening)
+        let session_var = (SESSION_ENV.to_string(), session.to_string());
+        if codex {
+            let (Some(port), Some(headers)) = (listening, &self.state_headers) else {
+                return Vec::new();
+            };
+            let path = agency_core::state_hooks::CODEX_STATE_PATH;
+            self.record_codex_hooks(run_id, true);
+            return vec![
+                session_var,
+                (URL_ENV.to_string(), format!("http://127.0.0.1:{port}{path}")),
+                (HEADERS_ENV.to_string(), headers.to_string_lossy().into_owned()),
+            ];
+        }
+        if let Err(e) = agency_core::state_hooks::emit_for_agent(command, worktree, repo, listening)
         {
             log::warn!("writing state hooks into {}: {e}", worktree.display());
         }
-        true
+        vec![session_var, (TOKEN_ENV.to_string(), self.state_token.to_string())]
+    }
+
+    /// Whether a Codex launched on `path` now gets the hooks that report its
+    /// state: the user has not turned them off, the token header could be
+    /// written, and there is a `curl` on that PATH for them to post with.
+    /// Without one, every hook would fail and Codex would still have asked
+    /// the user to trust them.
+    ///
+    /// The PATH the agent runs with, which a profile may set for itself: the
+    /// app's own had a `curl` that a profile's narrower one did not.
+    fn codex_hooks_on(&self, path: &str) -> bool {
+        self.codex_state_hooks.load(std::sync::atomic::Ordering::SeqCst)
+            && self.state_headers.is_some()
+            && self.curl_on(path)
+    }
+
+    /// Whether `curl` resolves on `path`, remembered per PATH until the Codex
+    /// switch is next flipped. Walked fresh, it stat'ed every PATH directory
+    /// on each launch, and a stale network mount on PATH has held up a launch
+    /// before (see `agent_catalog::recipe_command`).
+    ///
+    /// A miss is kept for [`CURL_MISS_KEPT`] only. Kept for good, one failed
+    /// walk (`curl` not installed yet, that same mount timing out) would
+    /// launch every later Codex on the PATH without its hooks for the rest of
+    /// the session, and nothing on screen says that flipping the switch is
+    /// the way out.
+    fn curl_on(&self, path: &str) -> bool {
+        let known = self.curl_found.lock().unwrap().get(path).copied();
+        match known {
+            Some((true, _)) => return true,
+            Some((false, at)) if at.elapsed() < CURL_MISS_KEPT => return false,
+            _ => {}
+        }
+        let found = crate::agent_diag::resolve_in("curl", path).is_some();
+        self.curl_found.lock().unwrap().insert(path.to_string(), (found, Instant::now()));
+        found
     }
 
     /// Mint the conversation a fresh launch of `session` will open, and record
@@ -9288,7 +9507,7 @@ impl AppState {
                 50,
             );
         }
-        let profile = {
+        let mut profile = {
             let reg = self.registry.lock().unwrap();
             let profile =
                 reg.get_profile(agent)?.ok_or_else(|| anyhow!("unknown agent profile: {agent}"))?;
@@ -9332,7 +9551,7 @@ impl AppState {
         // conversation is the exception, and is the tab's own: sharing the
         // worktree is exactly how a tab used to take over the run's resume
         // (AGE-175).
-        let env = self.agent_env(&profile, &worktree, &repo, &run.id, sid, run.port_base)?;
+        let env = self.agent_env(&mut profile, &worktree, &repo, &run.id, sid, run.port_base)?;
         let setup = config.scripts.setup.as_deref();
         // Resume only what this tab can prove is its own: a conversation it
         // has on record, or a session store of its own. Without one of those,
@@ -9668,7 +9887,7 @@ impl AppState {
 
         let config = agency_core::config::load(&repo);
         let worktree = workspace_dir(&repo, &run);
-        let profile = {
+        let mut profile = {
             let reg = self.registry.lock().unwrap();
             let profile = reg
                 .get_profile(&run.agent)?
@@ -9679,7 +9898,7 @@ impl AppState {
             let profile = with_model(&profile, run.model.as_deref());
             with_web_ui(&profile, gui_port_for(&config, run.port_base, &run.agent), &self.data_dir)
         };
-        let env = self.agent_env(&profile, &worktree, &repo, &run.id, id, run.port_base)?;
+        let env = self.agent_env(&mut profile, &worktree, &repo, &run.id, id, run.port_base)?;
         let setup = config.scripts.setup.as_deref();
         // The conversation this session owns, if it has one to come back to.
         let recorded = self.conversation_of(id);
@@ -9786,7 +10005,7 @@ impl AppState {
         let repo = self.project_repo(&run.project_id)?;
         let config = agency_core::config::load(&repo);
         let worktree = workspace_dir(&repo, &run);
-        let profile = {
+        let mut profile = {
             let reg = self.registry.lock().unwrap();
             let profile = reg
                 .get_profile(&run.agent)?
@@ -9794,7 +10013,7 @@ impl AppState {
             let profile = with_model(&profile, run.model.as_deref());
             with_web_ui(&profile, gui_port_for(&config, run.port_base, &run.agent), &self.data_dir)
         };
-        let env = self.agent_env(&profile, &worktree, &repo, &run.id, id, run.port_base)?;
+        let env = self.agent_env(&mut profile, &worktree, &repo, &run.id, id, run.port_base)?;
         // A rerun is a fresh launch by definition, so it takes the fresh argv
         // (prompt and all, never the resume recipe) that `create_run` took, and
         // a new conversation with it. The one it replaces stays on disk under
@@ -9849,7 +10068,7 @@ impl AppState {
             }
             _ => {}
         }
-        let profile = {
+        let mut profile = {
             let reg = self.registry.lock().unwrap();
             let profile = reg
                 .get_profile(&run.agent)?
@@ -9875,7 +10094,8 @@ impl AppState {
                 run.port_base,
             );
         }
-        let env = self.agent_env(&profile, &worktree, &repo, &run.id, &run.id, run.port_base)?;
+        let env =
+            self.agent_env(&mut profile, &worktree, &repo, &run.id, &run.id, run.port_base)?;
         // Every attempt is a fresh session, so every attempt names its own
         // conversation. The last one's is what the run resumes into if the
         // user takes the loop's work over by hand once it ends.
@@ -11712,27 +11932,27 @@ impl AppState {
     }
 
     /// What a run's agents report, for the notifier: the lead tab's own
-    /// report, and when each tab stopped on a dialog stopped, the lead's
-    /// included. A finished turn is the lead's to announce, but a dialog in
-    /// any tab holds that tab's agent until the user answers it, and reading
-    /// the lead alone meant an extra Claude tab's permission prompt never said
-    /// "Agent needs you". See `notifier::RunSnapshot::blocked`.
+    /// report, and for each tab stopped on a dialog, the lead's included, when
+    /// its newest dialog went up (`activity::Report::raised_ms`). A finished
+    /// turn is the lead's to announce, but a dialog in any tab holds that
+    /// tab's agent until the user answers it, and reading the lead alone meant
+    /// an extra Claude tab's permission prompt never said "Agent needs you".
+    /// See `notifier::RunSnapshot::blocked`.
     fn run_reported(&self, run_id: &str, lead: &str) -> (Option<notifier::Said>, Vec<i64>) {
         use crate::activity::ActivityState;
         let now_ms = crate::activity::now_ms();
         let map = self.activity.lock().unwrap();
         let said = |id: &str| {
-            map.get(id)
-                .map(|e| crate::activity::classify(e, false, now_ms))
-                .filter(|a| a.reported)
-                .map(|a| notifier::Said { state: a.state, since_ms: a.since })
+            let e = map.get(id)?;
+            let a = crate::activity::classify(e, false, now_ms);
+            let by_user = a.state == ActivityState::Done && e.report.is_some_and(|r| r.by_user);
+            a.reported.then_some(notifier::Said { state: a.state, since_ms: a.since, by_user })
         };
         let mut blocked: Vec<i64> = map
-            .keys()
-            .filter(|id| split_session_id(id).0 == run_id)
-            .filter_map(|id| said(id))
-            .filter(|s| s.state == ActivityState::Blocked)
-            .map(|s| s.since_ms)
+            .iter()
+            .filter(|(id, _)| split_session_id(id).0 == run_id)
+            .filter(|(id, _)| said(id).is_some_and(|s| s.state == ActivityState::Blocked))
+            .filter_map(|(_, e)| e.report.map(|r| r.raised_ms))
             .collect();
         blocked.sort_unstable();
         (said(lead), blocked)
@@ -12005,15 +12225,27 @@ fn validate_project_path(repo_path: &Path) -> Result<()> {
 mod tests {
     use super::{
         agent_argv, branch_leaf_from_first_prompt, branch_to_adopt, command_on_path,
-        graphify_server, id_source, is_auto_cut_branch, new_task_id, open_file_for, pick_port,
-        preview_mcp_port_for, preview_port_this_sweep, preview_tools_on, require_branch_exists,
-        require_gitless_known, require_own_branch, server_port_for, should_resume, slugify,
-        split_session_id, validate_race, OpenFileRef, RaceAttempt,
+        graphify_server, hooked_and_gone, id_source, is_auto_cut_branch, new_task_id,
+        open_file_for, pick_port, preview_mcp_port_for, preview_port_this_sweep, preview_tools_on,
+        require_branch_exists, require_gitless_known, require_own_branch, server_port_for,
+        should_resume, slugify, split_session_id, validate_race, OpenFileRef, RaceAttempt,
     };
     use agency_core::config::KnowledgeConfig;
     use agency_core::profile::AgentProfile;
     use std::collections::HashSet;
     use std::path::PathBuf;
+
+    #[test]
+    fn a_hooked_codex_still_launching_is_not_gone() {
+        use std::collections::HashMap;
+        use std::time::Instant;
+        let hooked = || vec!["listed".to_string(), "launching".to_string(), "gone".to_string()];
+        let listed: HashSet<&str> = ["listed"].into();
+        let armed = HashMap::from([("launching".to_string(), Instant::now())]);
+        assert_eq!(hooked_and_gone(hooked(), &listed, &armed), vec!["gone".to_string()]);
+        // Its arming over and still not listed, it is gone after all.
+        assert_eq!(hooked_and_gone(hooked(), &listed, &HashMap::new()).len(), 2);
+    }
 
     /// AGE-143: the preview MCP server exists exactly where the user has said
     /// "this project serves a web app" — a web run script — and nowhere else.
@@ -13103,6 +13335,46 @@ mod tests {
         // Loop: at the end, so {{prompt}} stays where the recipe put it.
         let (_cmd, args) = super::loop_argv(&pinned, no_worktree(), "go", None, None).unwrap();
         assert_eq!(args, vec!["-p", "go", "--permission-mode", "acceptEdits", "--model", "opus"]);
+    }
+
+    #[test]
+    fn codex_gets_its_state_hooks_on_every_launch_path() {
+        let codex = AgentProfile {
+            name: "codex".into(),
+            command: "codex".into(),
+            args: vec![],
+            env: vec![],
+            resume_args: Some(vec!["resume".into(), "--last".into()]),
+            loop_args: Some(vec!["exec".into(), "{{prompt}}".into()]),
+        };
+        let hooks = agency_core::state_hooks::codex_args().to_vec();
+        let hooked = super::with_state_hooks(&codex);
+        let (_cmd, args) = super::fresh_agent_argv(&hooked, no_worktree(), "go", None, None);
+        assert_eq!(args, [hooks.clone(), vec!["go".into()]].concat());
+        // Ahead of `resume`: Codex reads `-c` before its subcommand.
+        let (_cmd, args) = agent_argv(&hooked, no_worktree(), "go", true, None, None);
+        assert_eq!(args, [hooks.clone(), vec!["resume".into(), "--last".into()]].concat());
+        let (_cmd, args) = super::loop_argv(&hooked, no_worktree(), "go", None, None).unwrap();
+        assert_eq!(args, [hooks.clone(), vec!["exec".into(), "go".into()]].concat());
+        // Once, however often it is applied.
+        assert_eq!(super::with_state_hooks(&hooked), hooked);
+    }
+
+    #[test]
+    fn each_codex_recipe_gets_the_hooks_it_lacks() {
+        let hooks = agency_core::state_hooks::codex_args().to_vec();
+        let exec = vec!["exec".to_string(), "{{prompt}}".to_string()];
+        let codex = AgentProfile {
+            name: "codex".into(),
+            command: "codex".into(),
+            args: hooks.clone(),
+            env: vec![],
+            resume_args: None,
+            loop_args: Some(exec.clone()),
+        };
+        let hooked = super::with_state_hooks(&codex);
+        assert_eq!(hooked.args, hooks, "already there, not doubled");
+        assert_eq!(hooked.loop_args, Some([hooks, exec].concat()), "the loop's own recipe");
     }
 
     #[test]

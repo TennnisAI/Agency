@@ -1038,6 +1038,9 @@ export interface ProviderSettings {
   // Whether a dispatched agent may ask which file this window has open, through
   // the editor_open_file MCP tool. Off unless the user turns it on.
   shareOpenFile: boolean;
+  // Whether Codex is launched with the hooks that report its state. Codex asks
+  // the user to trust them once; off is the way out for a user who said no.
+  codexStateHooks: boolean;
 }
 
 export type McpTransport = "stdio" | "http" | "sse";

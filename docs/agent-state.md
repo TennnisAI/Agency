@@ -1,8 +1,9 @@
 # Design: agent state from the agent's own hooks
 
-Status: **phases 1 and 2 built** (AGE-206, 2026-10-04) for Claude Code. Drafted
-2026-09-08; the sections below record what was built, and where the build
-departed from the draft, why. Phases 3 and 4 are still open.
+Status: **phases 1 and 2 built** (AGE-206, 2026-10-04) for Claude Code; **phase
+3 begun** (AGE-251, 2026-10-19) with Codex. Drafted 2026-09-08; the sections
+below record what was built, and where the build departed from the draft, why.
+The rest of phase 3, and phase 4, are still open.
 
 Scope: take a run's state from what the agent reports about itself where it
 can, keep the pane-diff heuristic in `activity.rs` as the fallback, and split
@@ -66,7 +67,7 @@ inference is still needed because the coverage is never complete.
   agent whose CLI will tell us.
 - Reported state outranks inferred state while the report is live.
 - The pane-diff heuristic survives as the fallback, so an agent with no hooks
-  (Codex, today) and a plain shell run are no worse off than before.
+  (crush, today) and a plain shell run are no worse off than before.
 - No new dependency, no new daemon, no new port, no file the user did not
   already have Agency writing into their worktree.
 - Nothing here can slow down, block, or fail an agent's turn.
@@ -96,7 +97,8 @@ assumptions did not survive.
 | `async: true` is accepted on an `http` hook but **not honoured**: a listener that slept 1.5s held the tool call for 1.5s. | The draft hoped `async` would remove the timeout concern. It does not. The server answers before it does anything else, and the 2s timeout bounds a wedged app. |
 | With nothing listening, the post costs nothing (loopback refuses at once), but the agent prints `PreToolUse:Bash hook error ... ECONNREFUSED` into its transcript on every tool call. A non-2xx answer prints the same kind of error. | The draft's reason to emit no hooks without a server (two seconds per tool call) was wrong; the real reason is the noise. The route answers 204 to everything, including a report it drops. |
 | `PostToolUseFailure` replaces `PostToolUse` when a tool fails. | Subscribed, as `working`. |
-| `Stop` is followed by `SubagentStop` from an internal subagent, carrying `agent_id`. | Not subscribed. A subagent's other events carry its `agent_id` too, and the parse keeps only its tool calls (`working`) and its dialogs (`blocked`): a subagent ending is not the run's turn ending, but its permission dialog is the run's to answer. Dropping all of them once meant a subagent's dialog never read `blocked`. |
+| `Stop` is followed by `SubagentStop` from an internal subagent, carrying `agent_id`. | Not subscribed. A subagent's other events carry its `agent_id` too, and the parse keeps only its tool calls (`working`) and its dialogs (`blocked`): a subagent ending is not the run's turn ending, but its permission dialog is the run's to answer. Dropping all of them once meant a subagent's dialog never read `blocked`. Which call a dialog is for decides what ends it: see the next row. |
+| `PermissionRequest` carries **no `tool_use_id`**, only `tool_name` and `tool_input`. The `PreToolUse` before it carries the same two, unchanged, and the id. Approved, the call fires its own `PostToolUse` (or `PostToolUseFailure`, which has the id too). Calls run in parallel: two reads ran beside each other (2.1.304, against a stub model). | The app keeps each agent's calls in flight by what they are (agent, tool, input) and ties a dialog to the call it matches (`activity::Calls`). The dialog ends with that call ending, whichever agent's it was. Ending it on the agent's next report, as it once did, let a sibling call finishing release it, and kept a subagent's approved dialog up until the main agent spoke. A dialog with no `PreToolUse` to match (that post lost) still ends that old way. One whose own `PostToolUse` was lost ends when the agent that raised it begins a new call after the user pressed a key on it: an agent does not start another call with its own dialog on screen, and the key rules out a sibling call posting late. |
 | `Notification` with `idle_prompt` fires about 60s after `Stop`. | Subscribed, as "at the prompt", which is `done` only after a turn the hooks saw (see *Authority and lapse*). It is also what lands after an Esc, or a refused dialog, that left no other report. |
 | `SessionEnd` fires on `/clear` as well as on exit. | Mapped to `idle`: after `/clear` the session is fresh. |
 | Header values interpolate `$VAR` for names in `allowedEnvVars`; an unset variable becomes an empty string. | The session id rides in a header (see *Transport*). |
@@ -167,6 +169,89 @@ Per-agent coverage beyond Claude Code is a table to be built the way
 `skills.rs` built its directory table: against live binaries with the version
 pinned in the comment, never against documentation alone. This change is the
 precedent for why: four of the draft's documented assumptions were wrong.
+
+## Codex (AGE-251)
+
+Verified against Codex **0.153.4**, interactive in tmux and under `codex exec`,
+with `CODEX_HOME` pointed at a scratch directory (so nothing reached the
+user's own config) and the model a local stub serving the Responses API. The
+hooks are fired by the binary, not the model, and the stub is what made a
+permission dialog, a question and a subagent happen on cue. The findings are in
+`state_hooks.rs::CODEX_EVENTS`; the ones that shaped the design:
+
+- **Codex only runs hooks the user has trusted**, in its own "Hooks need
+  review" dialog at startup, which shows each command in full. The trust is
+  saved in the user's `~/.codex/config.toml`, keyed by where the hook came from
+  and a hash of it. A `.codex/hooks.json` in the worktree is keyed by its
+  absolute path, so every new worktree would ask again. A hook passed with `-c`
+  is keyed `/<session-flags>/config.toml:<event>:0:0`, the same for every
+  launch. So Agency passes the hooks on the command line, byte for byte the same
+  every time, with everything per run (port, session, token file) in the
+  environment: the user reviews them once, ever, until Agency changes them.
+  They go at the front of every recipe, since `-c` is read before Codex's
+  subcommand, so none can land behind the prompt. A `-c` hook is added to the
+  user's own hooks for that event, not put in their place: verified with one in
+  a scratch `config.toml` and ours on the command line, which the review
+  counted as two and one prompt ran both.
+  Nothing is written into the worktree, and Agency never writes the trust
+  itself, which would be both a global config edit and a silent escalation.
+- **Declining is not remembered**: the dialog comes back at every launch. So
+  Settings has "Let Codex report its state" (`codex_state_hooks`, on unless
+  set). Off, Codex launches without them and is on the pane heuristic.
+- **Hooks can only run a command.** The decision AGE-206 avoided: no script in
+  the worktree, and the one thing assumed on the PATH is `curl`, which ships
+  with macOS and nearly every Linux. The flags are passed only when `curl`
+  resolves on the PATH the agent runs with (a profile's own, if it sets one),
+  looked up once per PATH rather than walked at every launch. The request
+  blanks `Expect:`: curl otherwise waits a second on a large body for a
+  `100 Continue` the run's server never sends. The token is read from a 0600
+  file named in the environment (`curl -H @file`), narrowed again if found
+  readable, not put on the command line, where `ps`
+  shows it to every account on the machine. Errors are silenced and the exit
+  is always 0: a nonzero `Stop` hook is how a hook asks Codex to keep going.
+  Flags without the environment post nowhere, silently (verified live), so
+  `agent_env` adds the flags only once it has the environment: never in the
+  project's own checkout, and not when the server could not bind. Added
+  earlier, Codex asked the user to trust hooks that could do nothing.
+- **A child cannot speak for its parent.** The hooks are in the parent's argv,
+  which a `codex` it starts does not inherit. That is what makes it safe for
+  `SessionStart` to move the tab's pin (`Event::opens`): after `/clear`, Codex's
+  next prompt comes under a new `session_id`, with no `SessionEnd` for the old
+  one.
+
+| hook event | state |
+| --- | --- |
+| `SessionStart` (`startup`, `resume`, `clear`) | `idle`, and the tab is pinned to the new conversation |
+| `UserPromptSubmit`, `PostToolUse` | `working` |
+| `PreToolUse` | `working`; **`blocked`** for `request_user_input`, Codex's question, which fires no `PermissionRequest` |
+| `PermissionRequest` | **`blocked`** |
+| `Stop` | `done` |
+| `Interrupt` | `done`: Esc on a dialog or mid-turn. Unlike Claude Code, a refusal says so. No "finished" banner: the user did it |
+| `SessionEnd` | `idle` (exit only, once per conversation the process had) |
+
+The route is `/__agency__/state/codex`, so each agent's events are parsed
+against its own allowlist (`report::Dialect`): Claude Code's posts never open a
+conversation, and an `Interrupt` on Claude Code's route means nothing. A
+subagent posts under its parent's `session_id` with its own `agent_id`, so the
+subagent rule is Claude Code's, and so is the way a dialog finds its call. A
+question carries its call's `tool_use_id` and ends with that call's
+`PostToolUse`. A `PermissionRequest` carries none, and is matched to the
+`PreToolUse` before it as Claude Code's is, with one difference: Codex adds the
+approval's reason to the dialog's input as `description` (`{"command":"touch
+a"}` before, `{"command":"touch a","description":"…"}` on the dialog), so that
+key is left out of the match for both agents. Two calls in parallel fired both
+`PreToolUse`, then both dialogs, in either order; the approved call's
+`PostToolUse` waited until the other was answered, and then both fired. Esc on
+either interrupts the turn (`Interrupt` carries no `agent_id`, so it is the
+main agent's), which ends every dialog. With more than one up, the run reads
+`blocked` until every one has ended.
+
+The server sweep cannot read a file to know a run reports, so a launch records
+it in the app's data directory (`codex-hooked/<run id>`), and the server stays
+up for as long as that run has an agent alive, whatever the setting says by
+then: read off the setting, turning it off stranded a live Codex's last
+`blocked`. On disk, so a Codex that outlives the app is still known after a
+restart. The record goes when the run has no agent alive or is gone.
 
 ## Transport
 
@@ -421,10 +506,9 @@ issue row's activity dot turns red when a linked agent is blocked.
    four states on the wire, the UI.
 2. **`notifier.rs`.** Built: `Blocked` and turn-finished as edges on reported
    state, the setting, the copy.
-3. **The rest of the catalog.** Open. Per-agent hook tables verified against
-   live binaries, one agent per change, each landing with its own test. For
-   an agent whose hooks can only run a command, that means a shell hook, and a
-   decision about writing a script into the worktree that this change avoided.
+3. **The rest of the catalog.** Codex built (AGE-251); the command-hook
+   decision is recorded under *Codex*. The others are open, one agent per
+   change, each verified against a live binary and landing with its own test.
 4. **The roll-up and the sort** (AGE-213, AGE-215). Open, and now unblocked.
 
 AGE-207 (declarative screen rules) is the tier for agents phase 3 cannot

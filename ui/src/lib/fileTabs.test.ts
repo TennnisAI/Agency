@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  MAX_TABS, TabState, activateTab, closeTab, deserializeTabs, emptyTabs, openTab,
+  MAX_TABS, TabState, activateTab, closeTab, deserializeTabs, emptyTabs, openTab, opensInPreview,
   removeTab, renameTab, serializeTabs, setDirtyTab, setPreviewTab,
 } from "./fileTabs";
 
@@ -140,6 +140,21 @@ describe("preview", () => {
     expect(setPreviewTab(emptyTabs(), "a.md", true).preview.size).toBe(0);
     const raw = JSON.stringify({ open: ["a.md"], active: "a.md", preview: ["a.md", "gone.md", 3] });
     expect(deserializeTabs(raw).preview).toEqual(new Set(["a.md"]));
+  });
+
+  it("starts a new tab on its preview when asked, but leaves an open tab's choice alone", () => {
+    let s = openTab(emptyTabs(), "a.md", true);
+    expect(s.preview).toEqual(new Set(["a.md"]));
+    s = setPreviewTab(s, "a.md", false);
+    expect(openTab(s, "a.md", true).preview.size).toBe(0);
+    expect(openTab(emptyTabs(), "a.ts").preview.size).toBe(0);
+  });
+
+  it("opens markdown on its preview and everything else on the code", () => {
+    expect(opensInPreview("docs/README.md")).toBe(true);
+    expect(opensInPreview("notes.MARKDOWN")).toBe(true);
+    expect(opensInPreview("index.html")).toBe(false);
+    expect(opensInPreview("md")).toBe(false);
   });
 
   it("reads tabs stored before preview was remembered", () => {

@@ -26,8 +26,15 @@ export const emptyTabs = (): TabState =>
 const bumpRecency = (recency: string[], path: string): string[] =>
   [...recency.filter((p) => p !== path), path];
 
-/** Open (appending + possibly evicting) or just activate an existing tab. */
-export function openTab(s: TabState, path: string): TabState {
+/** Markdown opens on its rendered preview; it is read far more often than edited. */
+export const opensInPreview = (path: string): boolean => /\.(md|markdown)$/i.test(path);
+
+/**
+ * Open (appending + possibly evicting) or just activate an existing tab.
+ * `preview` applies to a new tab only: an open tab keeps whichever view the
+ * user last chose.
+ */
+export function openTab(s: TabState, path: string, preview = false): TabState {
   if (s.open.includes(path)) return activateTab(s, path);
   let open = [...s.open, path];
   if (open.length > MAX_TABS) {
@@ -41,7 +48,7 @@ export function openTab(s: TabState, path: string): TabState {
     active: path,
     recency: bumpRecency(s.recency.filter((p) => open.includes(p)), path),
     dirty: s.dirty,
-    preview: new Set([...s.preview].filter((p) => open.includes(p))),
+    preview: new Set([...s.preview, ...(preview ? [path] : [])].filter((p) => open.includes(p))),
   };
 }
 

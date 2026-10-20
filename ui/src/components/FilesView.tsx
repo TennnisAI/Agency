@@ -11,7 +11,7 @@ import CheckoutBar from "./CheckoutBar";
 import ConfirmDialog from "./ConfirmDialog";
 import {
   TabState, closeTab, deserializeTabs, emptyTabs, openTab, removeTab, renameTab,
-  retargetPath, serializeTabs, setDirtyTab, setPreviewTab,
+  opensInPreview, retargetPath, serializeTabs, setDirtyTab, setPreviewTab,
 } from "../lib/fileTabs";
 import { bufferKey, dropBuffer, hasBuffer, stashBuffer, takeBuffer } from "../lib/editorBuffers";
 import { consumePendingOpen, onOpenFile, type OpenFileRequest } from "../lib/openFile";
@@ -115,7 +115,8 @@ export default function FilesView({ root, project, agentsOpen, onOpenCheckout }:
   }, [rootKey]);
 
   const openAtLine = (path: string, line?: number) => {
-    updateTabs((s) => openTab(s, path));
+    // A jump to a line means the code, so only a plain open starts on the preview.
+    updateTabs((s) => openTab(s, path, line === undefined && opensInPreview(path)));
     setWarm((w) => (w.has(path) ? w : new Set(w).add(path)));
     // Tab restores don't come through here, so recents stay user-driven.
     recordActivation(`file:${projectId}:${path}`, baseName(path), path);

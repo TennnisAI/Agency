@@ -1,15 +1,19 @@
+// GitHub refuses a PR that collides with its base: "Pull request is not
+// mergeable: the merge commit cannot be cleanly created." Matched on the
+// reason, not on "not mergeable": gh opens every refusal that way, a
+// protected branch's "the base branch policy prohibits the merge" and a
+// stale head's "the head branch is not up to date with the base branch"
+// included, and both were being told to fix a conflict they did not have.
+export function isConflictRefusal(raw: string): boolean {
+  return /cleanly created|merge conflict/i.test(raw);
+}
+
 // gh's refusals, as they reach us, put in terms of what to do next. The raw
 // text is kept when nothing here recognises it: it is gh's own explanation,
 // and a protected-branch rule or a required review says more than we could.
 export function prMergeError(e: unknown, base: string): string {
   const raw = String(e);
-  // GitHub refuses a PR that collides with its base: "Pull request is not
-  // mergeable: the merge commit cannot be cleanly created." Matched on the
-  // reason, not on "not mergeable": gh opens every refusal that way, a
-  // protected branch's "the base branch policy prohibits the merge" and a
-  // stale head's "the head branch is not up to date with the base branch"
-  // included, and both were being told to fix a conflict they did not have.
-  if (/cleanly created|merge conflict/i.test(raw)) {
+  if (isConflictRefusal(raw)) {
     return `GitHub can't merge this pull request cleanly: it conflicts with ${base}. Merge ${base} into the branch, push, and try again.`;
   }
   // `--match-head-commit` tripped: the PR's head is not the branch's local

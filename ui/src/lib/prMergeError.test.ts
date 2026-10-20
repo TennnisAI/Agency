@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { prMergeError } from "./prMergeError";
+import { isConflictRefusal, prMergeError } from "./prMergeError";
 
 // Errors as the backend hands them over: `run_ok` quotes gh's arguments, the
 // pin included, ahead of gh's own stderr.
@@ -30,5 +30,21 @@ describe("prMergeError", () => {
   it("does not mistake the pin's flag in the arguments for a mismatch", () => {
     const e = failed("GraphQL: Pull request is in draft state (mergePullRequest)");
     expect(prMergeError(e, "main")).toBe(e);
+  });
+});
+
+// The Source Control merge dialog offers "Fix with an agent" on this test alone.
+describe("isConflictRefusal", () => {
+  it("takes a real conflict", () => {
+    expect(isConflictRefusal(failed("X Pull request owner/repo#3 is not mergeable: the merge commit cannot be cleanly created."))).toBe(true);
+  });
+
+  it("does not take every refusal gh opens with not mergeable", () => {
+    for (const reason of [
+      "the base branch policy prohibits the merge",
+      "the head branch is not up to date with the base branch",
+    ]) {
+      expect(isConflictRefusal(failed(`X Pull request owner/repo#3 is not mergeable: ${reason}.`))).toBe(false);
+    }
   });
 });

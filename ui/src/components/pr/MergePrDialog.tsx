@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { MergeMethod, MergeMethods, PrMergeResult, mergePr, prMergeMethods } from "../../api";
 import { useModalKeys } from "../../hooks/useModalKeys";
+import { isConflictRefusal } from "../../lib/prMergeError";
 import ModalBackdrop from "../ModalBackdrop";
 
 const METHOD_LABEL: Record<MergeMethod, string> = {
@@ -8,12 +9,6 @@ const METHOD_LABEL: Record<MergeMethod, string> = {
   squash: "Squash and merge",
   rebase: "Rebase and merge",
 };
-
-// gh's refusal when the branch collides with its base, as it reaches us: "Pull
-// request is not mergeable: the merge commit cannot be cleanly created." Only
-// reachable when GitHub hadn't finished computing mergeability by the time the
-// pane loaded, since a known conflict never opens this dialog.
-const CONFLICT_REFUSAL = /not mergeable|merge conflict|cleanly created/i;
 
 // Confirm + configure a GitHub PR merge (method + delete-branch). Only offers
 // the merge methods the repo actually allows, fetched on open.
@@ -76,7 +71,12 @@ export default function MergePrDialog({
         <div className="modal-body">
           <p className="modal-note">Merge #{number} “{title}” into its base branch.</p>
           {error && <div className="git-error">{error}</div>}
-          {error && onConflict && CONFLICT_REFUSAL.test(error) && (
+          {/* A conflict refusal only reaches here when GitHub hadn't finished
+              computing mergeability by the time the pane loaded, since a known
+              conflict never opens this dialog. A protected branch or a stale
+              head is gh's own "not mergeable" too, and was offered an agent to
+              fix a conflict it did not have. */}
+          {error && onConflict && isConflictRefusal(error) && (
             <div className="pr-conflict-actions">
               <button className="settings-ghost-btn" onClick={onConflict}>Fix with an agent</button>
             </div>

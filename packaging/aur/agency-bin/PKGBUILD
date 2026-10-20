@@ -9,7 +9,7 @@
 pkgname=agency-bin
 # The published release this points at. update.sh rewrites it, pkgrel and the
 # checksums below from that release; 0.2.0 is the first to carry Linux packages.
-pkgver=0.2.3
+pkgver=0.2.4
 pkgrel=1
 pkgdesc='Run coding agents side by side, each in its own git worktree'
 arch=('x86_64' 'aarch64')
@@ -31,8 +31,8 @@ source_aarch64=("${_release}/Agency_${pkgver}_arm64.deb")
 # Written by update.sh from the release's own .deb files, never by hand. A value
 # that is not a real checksum makes makepkg fail the integrity check rather than
 # build anything.
-sha256sums_x86_64=('799194a620a5ac1df8e294a94c08586fbff36a3d75b3245ad849cffe5cc08583')
-sha256sums_aarch64=('93a21804937745cda4592466edf205f3f253d2da6887c88b492d8905f2e92e8f')
+sha256sums_x86_64=('939810bd752d23c0813a012fd9c7bf22a7d2952df3f11d4f34255f9e744f5d7d')
+sha256sums_aarch64=('3941456e3cb9c3b85cb215a5981ba1ecd3bd09124721e9dd0d641c729e864b50')
 
 package() {
   bsdtar -xf data.tar.* -C "$pkgdir"

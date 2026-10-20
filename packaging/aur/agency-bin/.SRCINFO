@@ -1,6 +1,6 @@
 pkgbase = agency-bin
 	pkgdesc = Run coding agents side by side, each in its own git worktree
-	pkgver = 0.2.3
+	pkgver = 0.2.4
 	pkgrel = 1
 	url = https://getagency.dev/
 	arch = x86_64
@@ -17,9 +17,9 @@ pkgbase = agency-bin
 	optdepends = github-cli: the GitHub import and pull request flows
 	provides = agency
 	conflicts = agency
-	source_x86_64 = https://github.com/TennnisAI/Agency/releases/download/v0.2.3/Agency_0.2.3_amd64.deb
-	sha256sums_x86_64 = 799194a620a5ac1df8e294a94c08586fbff36a3d75b3245ad849cffe5cc08583
-	source_aarch64 = https://github.com/TennnisAI/Agency/releases/download/v0.2.3/Agency_0.2.3_arm64.deb
-	sha256sums_aarch64 = 93a21804937745cda4592466edf205f3f253d2da6887c88b492d8905f2e92e8f
+	source_x86_64 = https://github.com/TennnisAI/Agency/releases/download/v0.2.4/Agency_0.2.4_amd64.deb
+	sha256sums_x86_64 = 939810bd752d23c0813a012fd9c7bf22a7d2952df3f11d4f34255f9e744f5d7d
+	source_aarch64 = https://github.com/TennnisAI/Agency/releases/download/v0.2.4/Agency_0.2.4_arm64.deb
+	sha256sums_aarch64 = 3941456e3cb9c3b85cb215a5981ba1ecd3bd09124721e9dd0d641c729e864b50
 
 pkgname = agency-bin

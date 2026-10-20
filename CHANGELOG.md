@@ -4,6 +4,25 @@ Notable changes in each release. The GitHub release for a version carries the
 same notes alongside the downloads; this file is so the history is readable without
 leaving the repository.
 
+## 0.2.5 (2026-10-20)
+
+One fix on top of 0.2.4, to the Source Control merge dialog. If you are coming
+from 0.2.3, the notes for 0.2.4 below are the ones to read.
+
+macOS 11 or later, Apple Silicon. Linux with glibc 2.34 or later, x86_64 or
+arm64.
+
+**Coming from 0.2.4:** install from inside the app. Running agents survive the
+restart; this release does not change the terminal protocol. **Coming from
+0.2.3:** the same, with the two things 0.2.4 says wait for a fresh start.
+
+### Fixes
+
+- The Source Control merge dialog offers "Fix with an agent" only when GitHub
+  refuses a pull request for a conflict. A protected branch or a head that is
+  behind its base was offered it too, and the agent was asked to fix a
+  conflict that was not there. The merge window had the same fix in 0.2.4.
+
 ## 0.2.4 (2026-10-20)
 
 An agent can now hand work to agents of its own: it starts runs, waits on

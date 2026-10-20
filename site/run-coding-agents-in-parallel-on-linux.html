@@ -125,24 +125,24 @@ git branch -d agent/fix-login</code></pre>
     <p>Agency is a free, open-source desktop app that runs the same agent CLIs in real
     terminals, each run in its own worktree. Every package comes for x86_64 and arm64;
     <code>uname -m</code> says which you have. As of 8 October 2026 the current release is
-    0.2.4. Install from a terminal, in the folder you downloaded to. The commands use the
+    0.2.5. Install from a terminal, in the folder you downloaded to. The commands use the
     x86_64 names; on arm64, use the name of the file you downloaded. The files are on the
     <a href="/download#linux">download page</a>.</p>
 
     <h3>Debian and Ubuntu</h3>
-<pre class="dl-cmd"><code>sudo apt install ./Agency_0.2.4_amd64.deb</code></pre>
+<pre class="dl-cmd"><code>sudo apt install ./Agency_0.2.5_amd64.deb</code></pre>
     <p>Use apt rather than opening the file in Ubuntu's App Center, which can stall at
     "Installing" on a downloaded package. The arm64 file is
-    <code>Agency_0.2.4_arm64.deb</code>.</p>
+    <code>Agency_0.2.5_arm64.deb</code>.</p>
 
     <h3>Fedora</h3>
-<pre class="dl-cmd"><code>sudo dnf install ./Agency-0.2.4-1.x86_64.rpm</code></pre>
-    <p>The arm64 file is <code>Agency-0.2.4-1.aarch64.rpm</code>.</p>
+<pre class="dl-cmd"><code>sudo dnf install ./Agency-0.2.5-1.x86_64.rpm</code></pre>
+    <p>The arm64 file is <code>Agency-0.2.5-1.aarch64.rpm</code>.</p>
 
     <h3>Arch, and any other distribution</h3>
-<pre class="dl-cmd"><code>chmod +x Agency_0.2.4_amd64.AppImage
-./Agency_0.2.4_amd64.AppImage</code></pre>
-    <p>The arm64 file is <code>Agency_0.2.4_aarch64.AppImage</code>. The AppImage carries its
+<pre class="dl-cmd"><code>chmod +x Agency_0.2.5_amd64.AppImage
+./Agency_0.2.5_amd64.AppImage</code></pre>
+    <p>The arm64 file is <code>Agency_0.2.5_aarch64.AppImage</code>. The AppImage carries its
     own libraries and needs only FUSE from the system. If it stops with a
     <code>libfuse</code> error, install your distribution's FUSE package, or run it with
     <code>APPIMAGE_EXTRACT_AND_RUN=1</code> set. It does not add itself to your application

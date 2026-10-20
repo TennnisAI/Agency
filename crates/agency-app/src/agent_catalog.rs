@@ -126,12 +126,12 @@ pub fn builtins() -> &'static [CatalogEntry] {
     // Resume recipes are each CLI's "most recent conversation in this
     // directory" and nothing broader: hermes keys its `--continue` globally
     // (and moves into the other session's directory), so it has none (see
-    // `sessionstore::pin`). A session's own
-    // conversation, once recorded, replaces the recipe with an exact one
-    // (`sessionstore::resume_args`). Loop recipes are the agents' headless
-    // one-shot modes; agents without a known headless mode get None and simply
-    // can't loop. claude gets acceptEdits so unattended attempts don't die on
-    // the first file-edit permission prompt.
+    // `sessionstore::pin`). A session's own conversation, once recorded,
+    // replaces the recipe with an exact one (`sessionstore::resume_args`).
+    // Loop recipes are the agents' headless one-shot modes; agents without a
+    // known headless mode get None and simply can't loop. claude gets
+    // acceptEdits so unattended attempts don't die on the first file-edit
+    // permission prompt.
     //
     // `prompt` is read off each CLI's own `--help` and, where the CLI was
     // installed to check, a live launch. Marked "unverified" where neither was

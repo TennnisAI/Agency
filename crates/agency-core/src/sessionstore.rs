@@ -77,6 +77,7 @@
 //! [`gemini_chats_dir`], because no one path will do.
 
 use md5::{Digest, Md5};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// How Agency keeps one session's conversation to itself, per agent. A
@@ -192,8 +193,12 @@ pub fn pin(command: &str) -> Pin {
 /// new session with a manually provided UUID", and an id already in this
 /// project is refused with "Session ID ... already exists. Use --resume to
 /// resume it" and exit 42. `--resume <id>` reopened the exact session; on an
-/// id it has no turn for, it says "Invalid session identifier" and exits 42
-/// within seconds, so unlike claude a wrong "Has" does not hang the pane.
+/// id it has no turn for, it says "Invalid session identifier" and exits 42.
+/// Timed in a pty, three runs each: 1.1-1.4 s with other sessions in the
+/// project and 1.2-1.8 s with none, before the folder-trust dialog it shows a
+/// fresh launch. So unlike claude a wrong "Has" does not hang the pane: it
+/// exits inside the daemon's 3 s early-exit grace with no keystroke seen,
+/// and the fresh fallback takes over.
 /// `--session-file` loads a conversation from a file of the user's, which
 /// names one too.
 fn id_flags(command: &str) -> Option<IdFlags> {
@@ -251,9 +256,9 @@ struct IdFlags {
 /// "--session-id <uuid>: Use a specific session ID for the conversation (must
 /// be a valid UUID)", copilot's "or set the UUID for a new session", cursor's
 /// "expected a UUIDv4" (a version-4 one specifically, which is what `new_v4`
-/// mints), kimi's own ids are UUIDs, and gemini's "manually provided UUID". Never reused, minted per fresh
-/// launch: a rerun is a new conversation by definition, and claude and cursor
-/// refuse an id already in use.
+/// mints), kimi's own ids are UUIDs, and gemini's "manually provided UUID".
+/// Never reused, minted per fresh launch: a rerun is a new conversation by
+/// definition, and claude and cursor refuse an id already in use.
 pub fn mint(command: &str) -> Option<String> {
     match pin(command) {
         Pin::Id => Some(uuid::Uuid::new_v4().to_string()),
@@ -395,10 +400,11 @@ pub fn gemini_registry(home: &Path, command: &str) -> Option<PathBuf> {
 /// what `projects.json` maps the launch directory to. 0.64.0 claims the
 /// directory's basename and counts up on a clash (`wt`, then `wt-1` for
 /// another directory of the same name; 0.58.0 handed out `a` in a fresh home),
-/// so it has to be looked up, never computed. The key is the directory gemini was
-/// started in, not its git root (a launch from a repo's subdirectory
-/// registered the subdirectory), and is not resolved through symlinks, which
-/// Agency's worktrees do not go through.
+/// so it has to be looked up, never computed. The key is the directory gemini
+/// was started in, not its git root (a launch from a repo's subdirectory
+/// registered the subdirectory), and with its symlinks resolved, since it is
+/// `process.cwd()`: started from `/tmp/x`, 0.64.0 registered `/private/tmp/x`.
+/// The caller passes `worktree` resolved the same way.
 ///
 /// The slug is held to gemini's own registry schema (`^[a-z0-9-]+$`), which
 /// also keeps it a single path component.
@@ -419,14 +425,19 @@ pub fn gemini_chats_dir(home: &Path, registry: &str, worktree: &Path) -> Option<
 /// were filed as `session-2026-10-19T14-03-0b6f1a52.jsonl` and
 /// `session-2026-10-19T14-03-1-0b6f1a52.jsonl`. So this narrows, and
 /// [`gemini_chat_records_turn`] decides by the id written inside, which is
-/// what gemini's own lookup does.
+/// what gemini's own lookup does. A `.json` tail too: 0.64.0 still lists the
+/// whole-file records older versions wrote.
 pub fn gemini_chat_file(file_name: &str, conversation: Option<&str>) -> bool {
     if !file_name.starts_with("session-") {
         return false;
     }
     match conversation {
-        Some(c) => file_name.ends_with(&format!("-{}.jsonl", c.get(..8).unwrap_or(c))),
-        None => file_name.ends_with(".jsonl"),
+        Some(c) => {
+            let short = c.get(..8).unwrap_or(c);
+            file_name.ends_with(&format!("-{short}.jsonl"))
+                || file_name.ends_with(&format!("-{short}.json"))
+        }
+        None => file_name.ends_with(".jsonl") || file_name.ends_with(".json"),
     }
 }
 
@@ -444,70 +455,253 @@ pub fn gemini_chat_file(file_name: &str, conversation: Option<&str>) -> bool {
 /// turn appends the prompt as a `"type":"user"` message and the reply as a
 /// `"type":"gemini"` one.
 ///
-/// So, as gemini's `isResumableMessageRecord` has it: a user message counts
-/// unless its text is empty or starts with `/`, `?`, `<session_context>` or
-/// `<hook_context>`, and a gemini message counts if it says anything, calls a
-/// tool or thinks. A `$rewindTo` drops the messages from the one it names on,
-/// or all of them if that one is not there. A `subagent` session is never
-/// reopened. Unparseable lines are skipped, as gemini skips them.
+/// This is a port of the code 0.64.0 runs for both `--resume <id>` and
+/// `--resume latest`, which list the project's sessions and drop any without
+/// resumable content or of `kind` `subagent` (`getAllSessionFiles` in
+/// `packages/cli/src/utils/sessionUtils.ts`). The listing reads each file with
+/// `createJsonlRecordAccumulator` in metadata-only mode, falling back to
+/// `parseLegacyContentFallback` for a whole-file JSON record, and counts a
+/// message with `isResumableMessageRecord` (all three in
+/// `packages/core/src/services/chatRecordingService.ts`). The first port
+/// counted only the message lines and skipped every `$patch`. Read against
+/// the 0.64.0 bundle, a patch can fill in a reply that was recorded empty,
+/// rewrite a message into a slash command, remove messages or reorder them
+/// ahead of a rewind, and a `$set` can replace the message list outright, so
+/// each was an answer that could disagree with gemini's. Run beside those
+/// three functions lifted out of the bundle, on 20,000 generated chat files,
+/// the first port disagreed on 997 (414 a wrong "Has", 583 a wrong "None")
+/// and this one on none. The comparison is only as good as the version it
+/// was read from: re-read those functions when the CLI moves past 0.64.0.
 pub fn gemini_chat_records_turn(contents: &str, conversation: Option<&str>) -> bool {
-    use serde_json::Value;
-    let mut session: Option<String> = None;
-    let mut subagent = false;
-    let mut messages: Vec<(String, bool)> = Vec::new();
+    let Some(chat) = gemini_jsonl_chat(contents).or_else(|| gemini_legacy_chat(contents)) else {
+        return false;
+    };
+    let ours = match conversation {
+        Some(c) => chat.session.as_str() == Some(c),
+        None => true,
+    };
+    ours && !chat.subagent && chat.resumable
+}
+
+/// What gemini's listing keeps of one chat file.
+struct GeminiChat {
+    session: serde_json::Value,
+    subagent: bool,
+    resumable: bool,
+}
+
+/// `createJsonlRecordAccumulator` in metadata-only mode: each record kind is
+/// tried in gemini's order, and the file is a session only once the metadata
+/// carries both a `sessionId` and a `projectHash`. Unparseable lines are
+/// skipped, as gemini skips them.
+fn gemini_jsonl_chat(contents: &str) -> Option<GeminiChat> {
+    use serde_json::{Map, Value};
+    let mut meta = Map::new();
+    // `messageIds` and `messageKinds`: the order a rewind cuts along, and
+    // whether each message is the user's and counts as a turn.
+    let mut order: Vec<String> = Vec::new();
+    let mut kinds: HashMap<String, (bool, bool)> = HashMap::new();
+    // A message list carried whole, by `$set` or the metadata line: every
+    // entry appended, repeats included, as gemini appends them.
+    let push = |order: &mut Vec<String>, kinds: &mut HashMap<String, (bool, bool)>, m: &Value| {
+        if let Some(id) = gemini_message_id(m) {
+            order.push(id.to_string());
+            kinds.insert(id.to_string(), gemini_message_kind(m));
+        }
+    };
     for line in contents.lines() {
         let Ok(record) = serde_json::from_str::<Value>(line) else { continue };
         if let Some(to) = record.get("$rewindTo").and_then(Value::as_str) {
-            match messages.iter().position(|(id, _)| id == to) {
-                Some(i) => messages.truncate(i),
-                None => messages.clear(),
+            match order.iter().position(|id| id == to) {
+                Some(i) => {
+                    for id in order.split_off(i) {
+                        kinds.remove(&id);
+                    }
+                }
+                None => {
+                    order.clear();
+                    kinds.clear();
+                }
             }
-            continue;
-        }
-        if record.get("$patch").is_some() {
-            continue;
-        }
-        if let Some(id) = record.get("id").and_then(Value::as_str) {
-            messages.push((id.to_string(), gemini_message_is_turn(&record)));
-            continue;
-        }
-        // The metadata line, or a `$set` merged over it.
-        let meta = record.get("$set").unwrap_or(&record);
-        if let Some(id) = meta.get("sessionId").and_then(Value::as_str) {
-            session = Some(id.to_string());
-        }
-        if let Some(kind) = meta.get("kind").and_then(Value::as_str) {
-            subagent = kind == "subagent";
+        } else if let Some(patch) = gemini_object(&record, "$patch") {
+            if patch.get("id").and_then(Value::as_str).is_some() {
+                gemini_patch(&mut kinds, patch);
+            }
+            for update in patch.get("updates").and_then(Value::as_array).into_iter().flatten() {
+                if update.get("id").and_then(Value::as_str).is_some() {
+                    gemini_patch(&mut kinds, update);
+                }
+            }
+            let removed = patch.get("removeIds").and_then(Value::as_array);
+            for id in removed.into_iter().flatten().filter_map(Value::as_str) {
+                if let Some(i) = order.iter().position(|o| o == id) {
+                    order.remove(i);
+                }
+                kinds.remove(id);
+            }
+            if let Some(ids) = patch.get("orderIds").and_then(Value::as_array) {
+                let ordered: Vec<String> = ids
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .filter(|id| kinds.contains_key(*id))
+                    .map(String::from)
+                    .collect();
+                order.retain(|id| !ordered.contains(id));
+                order.extend(ordered);
+            }
+        } else if let Some(id) = gemini_message_id(&record) {
+            if !kinds.contains_key(id) {
+                order.push(id.to_string());
+            }
+            kinds.insert(id.to_string(), gemini_message_kind(&record));
+        } else if let Some(set) = gemini_object(&record, "$set") {
+            if let Some(messages) = set.get("messages").and_then(Value::as_array) {
+                order.clear();
+                kinds.clear();
+                for m in messages {
+                    push(&mut order, &mut kinds, m);
+                }
+            }
+            if let Some(set) = set.as_object() {
+                meta.extend(set.clone());
+            }
+        } else if record.get("sessionId").and_then(Value::as_str).is_some()
+            && record.get("projectHash").and_then(Value::as_str).is_some()
+        {
+            if let Some(fields) = record.as_object() {
+                meta.extend(fields.clone());
+            }
+            for m in record.get("messages").and_then(Value::as_array).into_iter().flatten() {
+                push(&mut order, &mut kinds, m);
+            }
         }
     }
-    let ours = match conversation {
-        Some(c) => session.as_deref() == Some(c),
-        None => session.is_some(),
-    };
-    ours && !subagent && messages.iter().any(|(_, turn)| *turn)
+    let session = meta.get("sessionId").cloned().unwrap_or(Value::Null);
+    if !gemini_truthy(&session) || !meta.get("projectHash").is_some_and(gemini_truthy) {
+        return None;
+    }
+    Some(GeminiChat {
+        session,
+        subagent: meta.get("kind").and_then(Value::as_str) == Some("subagent"),
+        resumable: kinds.values().any(|&(_, turn)| turn),
+    })
 }
 
-fn gemini_message_is_turn(message: &serde_json::Value) -> bool {
+/// `parseLegacyContentFallback`: the whole file as one JSON record with its
+/// messages inline, for files the JSONL pass found no session in.
+fn gemini_legacy_chat(contents: &str) -> Option<GeminiChat> {
     use serde_json::Value;
-    let text: String = match message.get("content") {
-        Some(Value::String(s)) => s.clone(),
-        Some(Value::Array(parts)) => {
-            parts.iter().filter_map(|p| p.get("text").and_then(Value::as_str)).collect()
-        }
-        _ => String::new(),
+    let record: Value = serde_json::from_str(contents).ok()?;
+    let session = record.get("sessionId")?.clone();
+    if !gemini_truthy(&session) {
+        return None;
+    }
+    let resumable = match record.get("messages") {
+        None | Some(Value::Null) => false,
+        Some(Value::Array(messages)) => messages.iter().any(|m| gemini_message_kind(m).1),
+        // `messages?.some` on anything else throws, and the file is dropped.
+        Some(_) => return None,
     };
+    Some(GeminiChat {
+        session,
+        subagent: record.get("kind").and_then(Value::as_str) == Some("subagent"),
+        resumable,
+    })
+}
+
+/// `isMessageRecord`: a string `id`, and not a patch.
+fn gemini_message_id(record: &serde_json::Value) -> Option<&str> {
+    record.get("id").and_then(serde_json::Value::as_str).filter(|_| record.get("$patch").is_none())
+}
+
+/// `isObjectProperty`, which takes an array as readily as an object.
+fn gemini_object<'a>(record: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
+    record.get(key).filter(|v| v.is_object() || v.is_array())
+}
+
+/// JavaScript truthiness, for the values gemini tests with `!`.
+fn gemini_truthy(v: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    match v {
+        Value::Null => false,
+        Value::Bool(b) => *b,
+        Value::Number(n) => n.as_f64().is_some_and(|f| f != 0.0 && !f.is_nan()),
+        Value::String(s) => !s.is_empty(),
+        Value::Array(_) | Value::Object(_) => true,
+    }
+}
+
+/// `applySinglePatch` in metadata-only mode: new content re-decides a user
+/// message either way, but can only ever make a reply count.
+fn gemini_patch(kinds: &mut HashMap<String, (bool, bool)>, patch: &serde_json::Value) {
+    let (Some(id), Some(content)) =
+        (patch.get("id").and_then(serde_json::Value::as_str), patch.get("content"))
+    else {
+        return;
+    };
+    let Some((user, turn)) = kinds.get_mut(id) else { return };
+    let text = gemini_part_text(content);
+    let text = text.trim();
+    if *user {
+        *turn = !gemini_ignored_user_text(text);
+    } else if !text.is_empty() {
+        *turn = true;
+    }
+}
+
+/// Whether a message is the user's, and `isResumableMessageRecord`: a user
+/// message counts unless gemini ignores its text, and a reply counts if it
+/// says anything, calls a tool or thinks. Every other type (`info`, `error`,
+/// `warning`) never does.
+fn gemini_message_kind(message: &serde_json::Value) -> (bool, bool) {
+    use serde_json::Value;
+    let text = message.get("content").map(gemini_part_text).unwrap_or_default();
     let text = text.trim();
     let any = |key: &str| message.get(key).and_then(Value::as_array).is_some_and(|a| !a.is_empty());
     match message.get("type").and_then(Value::as_str) {
-        Some("user") => {
-            !(text.is_empty()
-                || text.starts_with('/')
-                || text.starts_with('?')
-                || text.starts_with("<session_context>")
-                || text.starts_with("<hook_context>"))
+        Some("user") => (true, !gemini_ignored_user_text(text)),
+        Some("gemini") => (false, !text.is_empty() || any("toolCalls") || any("thoughts")),
+        _ => (false, false),
+    }
+}
+
+/// `isIgnoredUserContent`, on trimmed text: slash commands, help requests and
+/// gemini's own injected context.
+fn gemini_ignored_user_text(text: &str) -> bool {
+    text.is_empty()
+        || text.starts_with('/')
+        || text.starts_with('?')
+        || text.starts_with("<session_context>")
+        || text.starts_with("<hook_context>")
+}
+
+/// `partListUnionToString`, verbose: a string, a part, or a list of either,
+/// where a part that is not text stands in as a bracketed label. Only whether
+/// the result is empty and how it starts are ever read, so the labels here
+/// keep gemini's leading `[` and not its exact wording.
+fn gemini_part_text(value: &serde_json::Value) -> String {
+    use serde_json::Value;
+    match value {
+        Value::String(s) => s.clone(),
+        Value::Array(parts) => parts.iter().map(gemini_part_text).collect(),
+        Value::Object(part) => {
+            const LABELLED: &[&str] = &[
+                "videoMetadata",
+                "thought",
+                "codeExecutionResult",
+                "executableCode",
+                "fileData",
+                "functionCall",
+                "functionResponse",
+                "inlineData",
+            ];
+            if LABELLED.iter().any(|k| part.contains_key(*k)) {
+                "[part]".into()
+            } else {
+                part.get("text").and_then(Value::as_str).unwrap_or_default().to_string()
+            }
         }
-        Some("gemini") => !text.is_empty() || any("toolCalls") || any("thoughts"),
-        _ => false,
+        _ => String::new(),
     }
 }
 
@@ -762,6 +956,10 @@ mod tests {
         assert!(!gemini_chat_file("session-2026-10-19T14-03-0b6f1a52.jsonl.tmp", Some(id)));
         assert!(gemini_chat_file("session-2026-10-19T14-03-7d1e2c3b.jsonl", None));
         assert!(!gemini_chat_file(".project_root", None));
+        // The whole-file records older versions wrote, which 0.64.0 still lists.
+        assert!(gemini_chat_file("session-2026-10-19T14-03-0b6f1a52.json", Some(id)));
+        assert!(gemini_chat_file("session-2026-10-19T14-03-7d1e2c3b.json", None));
+        assert!(!gemini_chat_file("session-2026-10-19T14-03-7d1e2c3b.json", Some(id)));
     }
 
     /// Lines as 0.64.0 wrote them: at launch, and after the first turn.
@@ -839,6 +1037,89 @@ mod tests {
         let subagent =
             format!("{GEMINI_LAUNCHED}{GEMINI_TURN}").replace("\"main\"", "\"subagent\"");
         assert!(!gemini_chat_records_turn(&subagent, Some(id)));
+    }
+
+    /// The records the first port skipped, each of which 0.64.0's accumulator
+    /// applies: a patch can make a reply count or a prompt stop counting, take
+    /// messages out, or reorder them ahead of a rewind, and a `$set` can
+    /// replace the list.
+    #[test]
+    fn gemini_chat_applies_patches_and_message_sets() {
+        let id = "0b6f1a52-9c1e-4f6e-a1d2-3c4b5a697801";
+        let turn = |lines: &[&str]| {
+            gemini_chat_records_turn(&format!("{GEMINI_LAUNCHED}{}\n", lines.join("\n")), Some(id))
+        };
+        // A reply recorded empty and filled in later, directly or in a list
+        // of updates; a later empty patch does not take it back.
+        let reply = r#"{"id":"r","type":"gemini","content":""}"#;
+        assert!(!turn(&[reply]));
+        assert!(turn(&[reply, r#"{"$patch":{"id":"r","content":"hi"}}"#]));
+        assert!(turn(&[
+            reply,
+            r#"{"$patch":{"updates":[{"id":"r","content":[{"text":"hi"}]}]}}"#,
+            r#"{"$patch":{"id":"r","content":""}}"#,
+        ]));
+        // A patch for a message not recorded yet is dropped.
+        assert!(!turn(&[r#"{"$patch":{"id":"r","content":"hi"}}"#, reply]));
+        // A prompt is re-decided either way.
+        let prompt = r#"{"id":"u","type":"user","content":[{"text":"kiwi"}]}"#;
+        assert!(!turn(&[prompt, r#"{"$patch":{"id":"u","content":"/help"}}"#]));
+        assert!(turn(&[
+            r#"{"id":"u","type":"user","content":"/help"}"#,
+            r#"{"$patch":{"id":"u","content":"kiwi"}}"#,
+        ]));
+        // So is a message recorded twice under one id.
+        assert!(!turn(&[prompt, r#"{"id":"u","type":"user","content":"/help"}"#]));
+        assert!(!turn(&[prompt, r#"{"$patch":{"removeIds":["u"]}}"#]));
+        // A rewind cuts along gemini's order, which `orderIds` rearranges by
+        // moving the listed messages to the end. Rewound to the preamble, the
+        // prompt goes with it, unless the preamble was moved behind it.
+        let preamble = "d04923d38bb0f6017037e74183378ef4";
+        let rewind = format!(r#"{{"$rewindTo":"{preamble}"}}"#);
+        assert!(!turn(&[prompt, &rewind]));
+        let reorder = format!(r#"{{"$patch":{{"orderIds":["{preamble}"]}}}}"#);
+        assert!(turn(&[prompt, &reorder, &rewind]));
+        // A `$set` of the message list replaces it outright.
+        assert!(!turn(&[prompt, r#"{"$set":{"messages":[]}}"#]));
+        assert!(turn(&[r#"{"$set":{"messages":[{"id":"u","type":"user","content":"kiwi"}]}}"#]));
+        // And a `$set` of the kind is merged like any other metadata.
+        assert!(!turn(&[prompt, r#"{"$set":{"kind":"subagent"}}"#]));
+    }
+
+    /// What counts as content, and which records are sessions at all.
+    #[test]
+    fn gemini_chat_reads_content_and_records_as_gemini_does() {
+        let id = "0b6f1a52-9c1e-4f6e-a1d2-3c4b5a697801";
+        let with = |line: &str| format!("{GEMINI_LAUNCHED}{line}\n");
+        // A part that is not text is content: gemini labels it, so an image
+        // alone is a prompt. A single part needs no list around it.
+        for content in [
+            serde_json::json!([{"inlineData": {"mimeType": "image/png", "data": "iVBO"}}]),
+            serde_json::json!([{"functionResponse": {"name": "ls"}}]),
+            serde_json::json!({"text": "kiwi"}),
+        ] {
+            let line = serde_json::json!({"id": "u", "type": "user", "content": content});
+            assert!(gemini_chat_records_turn(&with(&line.to_string()), Some(id)), "{content}");
+        }
+        // The metadata line is one only with a `projectHash` beside the id.
+        let prompt = r#"{"id":"u","type":"user","content":"kiwi"}"#;
+        let no_hash = format!("{{\"sessionId\":\"{id}\",\"kind\":\"main\"}}\n{prompt}\n");
+        assert!(!gemini_chat_records_turn(&no_hash, Some(id)));
+        // The whole-file record older versions wrote, read when no line is a
+        // session: pretty-printed, and with no `projectHash` needed.
+        let legacy = |record: serde_json::Value| serde_json::to_string_pretty(&record).unwrap();
+        let messages = serde_json::json!([{"id": "u", "type": "user", "content": "kiwi"}]);
+        let record = legacy(serde_json::json!({"sessionId": id, "messages": messages}));
+        assert!(gemini_chat_records_turn(&record, Some(id)));
+        assert!(gemini_chat_records_turn(&record, None));
+        assert!(!gemini_chat_records_turn(&record, Some("0b6f1a52-9c1e-4f6e-a1d2-3c4b5a697802")));
+        let subagent =
+            legacy(serde_json::json!({"sessionId": id, "kind": "subagent", "messages": messages}));
+        assert!(!gemini_chat_records_turn(&subagent, Some(id)));
+        let unanswered = legacy(serde_json::json!({"sessionId": id, "messages": []}));
+        assert!(!gemini_chat_records_turn(&unanswered, Some(id)));
+        let malformed = legacy(serde_json::json!({"sessionId": id, "messages": {"u": "kiwi"}}));
+        assert!(!gemini_chat_records_turn(&malformed, Some(id)));
     }
 
     /// Copilot's one flag does both, and creates the session when the id is

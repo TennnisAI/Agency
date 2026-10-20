@@ -35,9 +35,9 @@ pub enum ResumeProbe {
 ///   whether that one transcript exists and nothing else. A sibling's
 ///   conversation next to it is no answer, and for claude a wrong "Has" does
 ///   not even start: `--resume <id>` refuses outright when the id is not
-///   there. Cursor's does
-///   not refuse, which is worse: it reopens the directory's latest chat under
-///   the missing id, so a wrong "Has" there is AGE-188's crossed run;
+///   there. Cursor's does not refuse, which is worse: it reopens the
+///   directory's latest chat under the missing id, so a wrong "Has" there is
+///   AGE-188's crossed run;
 /// - whether the transcript existing is the answer is per agent
 ///   ([`sessionstore::turn_marker`]): cursor writes its `meta.json` at launch
 ///   and only the first turn sets `hasConversation` in it, so that file is
@@ -93,6 +93,12 @@ fn gemini_probe(
     worktree: &Path,
     conversation: Option<&str>,
 ) -> ResumeProbe {
+    // Gemini registers `process.cwd()`, which has its symlinks resolved: run
+    // from `/tmp/x`, 0.64.0 filed it under `/private/tmp/x`. A worktree whose
+    // path goes through one, a symlinked `~/Dev` say, matched no entry as
+    // given, and every relaunch came up fresh with the prompt replayed.
+    let worktree = std::fs::canonicalize(worktree).unwrap_or_else(|_| worktree.to_path_buf());
+    let worktree = worktree.as_path();
     let Some(chats) = std::fs::read_to_string(registry)
         .ok()
         .and_then(|r| sessionstore::gemini_chats_dir(home, &r, worktree))
@@ -424,6 +430,44 @@ mod tests {
             resume_probe(home.path(), "gemini", wt, "agent-abcd", Some(first)),
             ResumeProbe::None
         );
+    }
+
+    /// Gemini keys the registry by the resolved directory, so a worktree
+    /// reached through a symlink is looked up by where it really is. (The
+    /// tempdir is one already on macOS, under `/var` for `/private/var`.)
+    #[cfg(unix)]
+    #[test]
+    fn gemini_probe_resolves_the_worktree_as_gemini_does() {
+        use std::os::unix::fs::symlink;
+        let home = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("real").join("wt")).unwrap();
+        symlink(root.path().join("real"), root.path().join("link")).unwrap();
+        let resolved = fs::canonicalize(root.path().join("real").join("wt")).unwrap();
+        let id = "0b6f1a52-9c1e-4f6e-a1d2-3c4b5a697801";
+        let gemini = home.path().join(".gemini");
+        let chats = gemini.join("tmp").join("wt").join("chats");
+        fs::create_dir_all(&chats).unwrap();
+        let registry = serde_json::json!({"projects": {resolved.to_str().unwrap(): "wt"}});
+        fs::write(gemini.join("projects.json"), registry.to_string()).unwrap();
+        fs::write(gemini.join("tmp").join("wt").join(".project_root"), resolved.to_str().unwrap())
+            .unwrap();
+        fs::write(
+            chats.join("session-2026-10-19T14-03-0b6f1a52.jsonl"),
+            format!(
+                "{{\"sessionId\":\"{id}\",\"projectHash\":\"h\",\"kind\":\"main\"}}\n\
+                 {{\"id\":\"p\",\"type\":\"user\",\"content\":[{{\"text\":\"kiwi\"}}]}}\n"
+            ),
+        )
+        .unwrap();
+        for wt in [root.path().join("link").join("wt"), root.path().join("real").join("wt")] {
+            assert_eq!(
+                resume_probe(home.path(), "gemini", &wt, "agent-abcd", Some(id)),
+                ResumeProbe::Has,
+                "{}",
+                wt.display()
+            );
+        }
     }
 
     #[test]

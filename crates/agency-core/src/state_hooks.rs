@@ -75,6 +75,10 @@ const CLAUDE_SETTINGS: &[&str] = &[".claude", "settings.local.json"];
 ///   nothing at all. No `Stop`, no `PostToolUseFailure`. The way out of
 ///   `blocked` without a report is the app's (see `activity::answered`).
 /// - `PostToolUseFailure` replaces `PostToolUse` when a tool fails.
+/// - `PermissionRequest` has no `tool_use_id` (nor in 2.1.304), but the same
+///   `tool_name` and `tool_input` as the `PreToolUse` before it, which has the
+///   id. Approved, that call's `PostToolUse` or `PostToolUseFailure` follows,
+///   with the id.
 /// - `Notification` with `idle_prompt` fires about sixty seconds after `Stop`,
 ///   and is the report that lands after an Esc left no other.
 /// - `SessionEnd` fires on `/clear` as well as on exit.
@@ -121,6 +125,10 @@ pub fn agent_supported(recipe_command: &str) -> bool {
 ///   same for every run, so identical text is trusted once and never asked
 ///   about again. Hence the command line and not a file, and every per-run fact
 ///   (port, session, token) in the environment rather than the text.
+/// - A `-c` hook is added to the user's own hooks for that event, not put in
+///   their place: with one in `config.toml` and ours on the command line, the
+///   review counted two, and one prompt ran both. `-c` before the subcommand
+///   reaches `codex exec` too.
 /// - "Continue without trusting" saves nothing: the dialog comes back at the
 ///   next launch. That is what the setting to stop passing them is for.
 /// - `codex exec` runs trusted hooks and skips untrusted ones without a word.
@@ -128,7 +136,16 @@ pub fn agent_supported(recipe_command: &str) -> bool {
 /// - A `request_user_input` question (Plan mode only) fires `PreToolUse` with
 ///   that `tool_name`, and no `PermissionRequest`. Answered, `PostToolUse`.
 /// - Esc on a dialog, or during a tool call, fires `Interrupt` and no `Stop`.
-///   Unlike Claude Code, a refused dialog does say so.
+///   Unlike Claude Code, a refused dialog does say so. Its input schema has no
+///   `agent_id`, so it reads as the main agent's whoever's dialog it was.
+/// - `PreToolUse` and `PostToolUse` carry the call's `tool_use_id`, and
+///   `PermissionRequest` does not (the binary's own input schemas). It has the
+///   call's `tool_name` and `tool_input`, with the approval's reason added as
+///   `description`, which is what ties it to its `PreToolUse` (see
+///   `preview::report::Event::tool`).
+/// - Two calls in parallel fire both `PreToolUse`, then both dialogs, in
+///   either order. One approved runs at once, but its `PostToolUse` waits for
+///   the other's answer, and then both fire.
 /// - `SessionStart` fires just before the first `UserPromptSubmit`, not at
 ///   startup, with `source` `startup`, `resume` or `clear`. `/clear` fires
 ///   nothing until the next prompt, which arrives under a new `session_id`.
@@ -230,6 +247,12 @@ pub fn token(data_dir: &Path) -> String {
     if let Ok(t) = std::fs::read_to_string(&path) {
         let t = t.trim();
         if !t.is_empty() {
+            // Kept, but not left readable: see `private`.
+            if !private(&path) {
+                if let Err(e) = write_secret(&path, &format!("{t}\n")) {
+                    log::warn!("narrowing the state-hook token {}: {e}", path.display());
+                }
+            }
             return t.to_string();
         }
     }
@@ -246,7 +269,7 @@ pub fn token(data_dir: &Path) -> String {
 pub fn token_headers(data_dir: &Path, token: &str) -> Option<std::path::PathBuf> {
     let path = data_dir.join(HEADERS_FILE);
     let want = format!("X-Agency-Token: {token}\n");
-    if std::fs::read_to_string(&path).is_ok_and(|have| have == want) {
+    if std::fs::read_to_string(&path).is_ok_and(|have| have == want) && private(&path) {
         return Some(path);
     }
     match write_secret(&path, &want) {
@@ -256,6 +279,52 @@ pub fn token_headers(data_dir: &Path, token: &str) -> Option<std::path::PathBuf>
             None
         }
     }
+}
+
+/// Whether `path` is readable by this user alone. A secret file whose contents
+/// were right was kept as it was found, so one restored from a backup or a
+/// sync at 0644 stayed readable by every account on the machine.
+fn private(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o077 == 0)
+}
+
+/// Where the app records which runs a Codex was launched into with these
+/// hooks, one empty file per run, under its data directory (see
+/// [`codex_marked`]).
+const CODEX_MARKS: &str = "codex-hooked";
+
+/// The runs recorded by [`mark_codex`]. The hooks are in the process's argv,
+/// which nothing can read back, so this is how the app knows, after it
+/// restarts, which surviving Codex posts to its run's server. Guessed from the
+/// setting instead, a user who turned it off and restarted lost the reports of
+/// a Codex still sending them.
+pub fn codex_marked(data_dir: &Path) -> std::collections::HashSet<String> {
+    let Ok(dir) = std::fs::read_dir(data_dir.join(CODEX_MARKS)) else { return Default::default() };
+    dir.filter_map(|e| e.ok()?.file_name().into_string().ok()).filter(|id| safe_mark(id)).collect()
+}
+
+/// Record (`on`) or forget that `run_id` has a Codex launched with these hooks.
+pub fn mark_codex(data_dir: &Path, run_id: &str, on: bool) -> Result<()> {
+    if !safe_mark(run_id) {
+        anyhow::bail!("not a run id: {run_id:?}");
+    }
+    let dir = data_dir.join(CODEX_MARKS);
+    let path = dir.join(run_id);
+    if on {
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(&path, b"")?;
+    } else if let Err(e) = std::fs::remove_file(&path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err(e.into());
+        }
+    }
+    Ok(())
+}
+
+/// A run id that is one plain file name.
+fn safe_mark(id: &str) -> bool {
+    !id.is_empty() && !id.starts_with('.') && !id.contains(['/', '\\'])
 }
 
 /// Write `contents` to `path`, readable by this user alone from the moment the
@@ -766,5 +835,41 @@ mod tests {
         }
         assert_eq!(token_headers(dir.path(), "other").unwrap(), path);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "X-Agency-Token: other\n");
+    }
+
+    #[test]
+    fn a_secret_found_readable_is_kept_and_narrowed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let t = token(dir.path());
+        let path = token_headers(dir.path(), &t).unwrap();
+        let loosen =
+            |p: &Path| std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let token_file = dir.path().join(TOKEN_FILE);
+        loosen(&token_file);
+        loosen(&path);
+        assert_eq!(token(dir.path()), t, "the same token, not a new one");
+        assert_eq!(token_headers(dir.path(), &t).unwrap(), path);
+        for file in [&path, &token_file] {
+            let mode = std::fs::metadata(file).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "{}", file.display());
+        }
+    }
+
+    #[test]
+    fn codex_marks_outlive_the_app_and_go_when_forgotten() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(codex_marked(dir.path()).is_empty());
+        mark_codex(dir.path(), "fix-a1", true).unwrap();
+        mark_codex(dir.path(), "fix-b2", true).unwrap();
+        mark_codex(dir.path(), "fix-b2", true).unwrap();
+        let marked = codex_marked(dir.path());
+        assert_eq!(marked.len(), 2);
+        assert!(marked.contains("fix-a1") && marked.contains("fix-b2"));
+        mark_codex(dir.path(), "fix-a1", false).unwrap();
+        mark_codex(dir.path(), "fix-a1", false).unwrap();
+        assert_eq!(codex_marked(dir.path()).into_iter().collect::<Vec<_>>(), vec!["fix-b2"]);
+        assert!(mark_codex(dir.path(), "../x", true).is_err());
+        assert!(mark_codex(dir.path(), ".", true).is_err());
     }
 }

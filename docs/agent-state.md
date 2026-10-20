@@ -97,7 +97,8 @@ assumptions did not survive.
 | `async: true` is accepted on an `http` hook but **not honoured**: a listener that slept 1.5s held the tool call for 1.5s. | The draft hoped `async` would remove the timeout concern. It does not. The server answers before it does anything else, and the 2s timeout bounds a wedged app. |
 | With nothing listening, the post costs nothing (loopback refuses at once), but the agent prints `PreToolUse:Bash hook error ... ECONNREFUSED` into its transcript on every tool call. A non-2xx answer prints the same kind of error. | The draft's reason to emit no hooks without a server (two seconds per tool call) was wrong; the real reason is the noise. The route answers 204 to everything, including a report it drops. |
 | `PostToolUseFailure` replaces `PostToolUse` when a tool fails. | Subscribed, as `working`. |
-| `Stop` is followed by `SubagentStop` from an internal subagent, carrying `agent_id`. | Not subscribed. A subagent's other events carry its `agent_id` too, and the parse keeps only its tool calls (`working`) and its dialogs (`blocked`): a subagent ending is not the run's turn ending, but its permission dialog is the run's to answer. Dropping all of them once meant a subagent's dialog never read `blocked`. The `blocked` remembers which subagent raised it, and that subagent's next tool call ends it; a sibling's does not. |
+| `Stop` is followed by `SubagentStop` from an internal subagent, carrying `agent_id`. | Not subscribed. A subagent's other events carry its `agent_id` too, and the parse keeps only its tool calls (`working`) and its dialogs (`blocked`): a subagent ending is not the run's turn ending, but its permission dialog is the run's to answer. Dropping all of them once meant a subagent's dialog never read `blocked`. Which call a dialog is for decides what ends it: see the next row. |
+| `PermissionRequest` carries **no `tool_use_id`**, only `tool_name` and `tool_input`. The `PreToolUse` before it carries the same two, unchanged, and the id. Approved, the call fires its own `PostToolUse` (or `PostToolUseFailure`, which has the id too). Calls run in parallel: two reads ran beside each other (2.1.304, against a stub model). | The app keeps each agent's calls in flight by what they are (agent, tool, input) and ties a dialog to the call it matches (`activity::Calls`). The dialog ends with that call ending, whichever agent's it was. Ending it on the agent's next report, as it once did, let a sibling call finishing release it, and kept a subagent's approved dialog up until the main agent spoke. A dialog with no `PreToolUse` to match (that post lost) still ends that old way. |
 | `Notification` with `idle_prompt` fires about 60s after `Stop`. | Subscribed, as "at the prompt", which is `done` only after a turn the hooks saw (see *Authority and lapse*). It is also what lands after an Esc, or a refused dialog, that left no other report. |
 | `SessionEnd` fires on `/clear` as well as on exit. | Mapped to `idle`: after `/clear` the session is fresh. |
 | Header values interpolate `$VAR` for names in `allowedEnvVars`; an unset variable becomes an empty string. | The session id rides in a header (see *Transport*). |
@@ -187,6 +188,11 @@ permission dialog, a question and a subagent happen on cue. The findings are in
   launch. So Agency passes the hooks on the command line, byte for byte the same
   every time, with everything per run (port, session, token file) in the
   environment: the user reviews them once, ever, until Agency changes them.
+  They go at the front of every recipe, since `-c` is read before Codex's
+  subcommand, so none can land behind the prompt. A `-c` hook is added to the
+  user's own hooks for that event, not put in their place: verified with one in
+  a scratch `config.toml` and ours on the command line, which the review
+  counted as two and one prompt ran both.
   Nothing is written into the worktree, and Agency never writes the trust
   itself, which would be both a global config edit and a silent escalation.
 - **Declining is not remembered**: the dialog comes back at every launch. So
@@ -198,8 +204,9 @@ permission dialog, a question and a subagent happen on cue. The findings are in
   resolves on the PATH the agent runs with (a profile's own, if it sets one),
   looked up once per PATH rather than walked at every launch. The request
   blanks `Expect:`: curl otherwise waits a second on a large body for a
-  `100 Continue` the run's server never sends. The token is read from a 0600 file named in
-  the environment (`curl -H @file`), not put on the command line, where `ps`
+  `100 Continue` the run's server never sends. The token is read from a 0600
+  file named in the environment (`curl -H @file`), narrowed again if found
+  readable, not put on the command line, where `ps`
   shows it to every account on the machine. Errors are silenced and the exit
   is always 0: a nonzero `Stop` hook is how a hook asks Codex to keep going.
   Flags without the environment post nowhere, silently (verified live), so
@@ -226,13 +233,25 @@ The route is `/__agency__/state/codex`, so each agent's events are parsed
 against its own allowlist (`report::Dialect`): Claude Code's posts never open a
 conversation, and an `Interrupt` on Claude Code's route means nothing. A
 subagent posts under its parent's `session_id` with its own `agent_id`, so the
-subagent rule is Claude Code's. Codex has no `idle_prompt` to release a
-subagent's answered dialog, so it is the subagent's own next tool call that
-does. The server sweep cannot read a file to know a run reports, so a launch
-records it, and the server stays up for as long as that run has an agent
-alive, whatever the setting says by then: read off the setting, turning it off
-stranded a live Codex's last `blocked`. A Codex that outlived the last start
-of the app is guessed at once, from the setting and the run's agents.
+subagent rule is Claude Code's, and so is the way a dialog finds its call. A
+question carries its call's `tool_use_id` and ends with that call's
+`PostToolUse`. A `PermissionRequest` carries none, and is matched to the
+`PreToolUse` before it as Claude Code's is, with one difference: Codex adds the
+approval's reason to the dialog's input as `description` (`{"command":"touch
+a"}` before, `{"command":"touch a","description":"…"}` on the dialog), so that
+key is left out of the match for both agents. Two calls in parallel fired both
+`PreToolUse`, then both dialogs, in either order; the approved call's
+`PostToolUse` waited until the other was answered, and then both fired. Esc on
+either interrupts the turn (`Interrupt` carries no `agent_id`, so it is the
+main agent's), which ends every dialog. With more than one up, the run reads
+`blocked` until every one has ended.
+
+The server sweep cannot read a file to know a run reports, so a launch records
+it in the app's data directory (`codex-hooked/<run id>`), and the server stays
+up for as long as that run has an agent alive, whatever the setting says by
+then: read off the setting, turning it off stranded a live Codex's last
+`blocked`. On disk, so a Codex that outlives the app is still known after a
+restart. The record goes when the run has no agent alive or is gone.
 
 ## Transport
 

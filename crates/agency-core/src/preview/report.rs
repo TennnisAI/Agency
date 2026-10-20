@@ -5,8 +5,9 @@
 //! Pure, and default-deny: an event or a notification type not named below is
 //! ignored, never guessed at, so the first new event an agent ships cannot
 //! quietly mis-state a run. Only the fields named in [`Body`] are read. A hook
-//! payload also carries the tool's input (the agent's actual commands and file
-//! contents) and the transcript path, and none of that is needed or kept.
+//! payload also carries the transcript path, which is not, and the tool's input
+//! (the agent's actual commands and file contents), which is hashed to tie a
+//! dialog to its call (see [`Event::tool`]) and not kept.
 
 use serde::Deserialize;
 
@@ -52,10 +53,20 @@ pub struct Event {
     /// since the child inherits the variable the header is built from; this
     /// can, and the app pins each tab to the first one it hears from.
     pub conversation: Option<String>,
-    /// The subagent that sent it (its `agent_id`), or `None` for the main
-    /// agent. An id rather than a flag, so the app can tell which subagent a
-    /// dialog is waiting on (see `activity::apply_event` there).
-    pub subagent: Option<String>,
+    /// Sent by a subagent (the Task tool) rather than the main agent.
+    pub subagent: bool,
+    /// The tool call it is about (`tool_use_id`), on Codex's `PreToolUse` and
+    /// `PostToolUse`. What ties a question to its answer, where the subagent
+    /// alone cannot: one agent runs tool calls in parallel, and a sibling
+    /// call finishing is not the question answered (see `activity::apply_event`
+    /// in the app). Codex 0.153.4's `PermissionRequest` carries none, by its
+    /// own input schema, and nor does Claude Code's.
+    pub tool_call: Option<String>,
+    /// What the call is, on `PreToolUse` and `PermissionRequest`: a hash of
+    /// the agent, the tool and its input (see [`what`]). The two describe the
+    /// same call alike, so a permission dialog is tied to its call by the
+    /// `PreToolUse` before it, which has the id it lacks.
+    pub tool: Option<u64>,
     /// Opens a conversation in the tab's own agent, which the tab is pinned to
     /// from now on (see [`admit`]). Codex's `SessionStart` only: after `/clear`
     /// its next prompt comes under a new `session_id`, with no `SessionEnd` for
@@ -70,8 +81,11 @@ struct Body {
     session_id: Option<String>,
     /// Set on events from a subagent.
     agent_id: Option<serde_json::Value>,
-    /// Codex's: the tool a `PreToolUse` is for, and why a session started.
+    /// The tool a call is for, its input, and its id; and Codex's reason a
+    /// session started.
     tool_name: Option<String>,
+    tool_input: Option<serde_json::Value>,
+    tool_use_id: Option<String>,
     source: Option<String>,
 }
 
@@ -80,11 +94,8 @@ struct Body {
 /// `state_hooks::CODEX_EVENTS` for what each event was verified to mean.
 pub fn parse(dialect: Dialect, body: &[u8]) -> Option<Event> {
     let b: Body = serde_json::from_slice(body).ok()?;
-    let subagent = match b.agent_id {
-        None | Some(serde_json::Value::Null) => None,
-        Some(serde_json::Value::String(id)) => Some(id),
-        Some(other) => Some(other.to_string()),
-    };
+    let agent = b.agent_id.filter(|v| !v.is_null());
+    let subagent = agent.is_some();
     let mut opens = false;
     let state = match (dialect, b.hook_event_name.as_deref()?) {
         (_, "UserPromptSubmit" | "PostToolUse") => Reported::Working,
@@ -122,10 +133,53 @@ pub fn parse(dialect: Dialect, body: &[u8]) -> Option<Event> {
     // though. Every subagent post was dropped here once, and a permission
     // dialog a subagent raised never read blocked: the report lapsed, the
     // quiet pane read done, and a queued message's Enter approved the command.
-    if subagent.is_some() && !matches!(state, Reported::Working | Reported::Blocked) {
+    //
+    // Codex's `Interrupt` is never dropped here: its input schema has no
+    // `agent_id`, so Esc on a subagent's dialog arrives as the main agent's.
+    if subagent && !matches!(state, Reported::Working | Reported::Blocked) {
         return None;
     }
-    Some(Event { state, conversation: b.session_id.filter(|s| !s.is_empty()), subagent, opens })
+    let names_a_call =
+        matches!(b.hook_event_name.as_deref(), Some("PreToolUse" | "PermissionRequest"));
+    let tool = match b.tool_name {
+        Some(name) if names_a_call => Some(what(agent.as_ref(), &name, b.tool_input)),
+        _ => None,
+    };
+    Some(Event {
+        state,
+        conversation: b.session_id.filter(|s| !s.is_empty()),
+        subagent,
+        opens,
+        tool_call: b.tool_use_id.filter(|s| !s.is_empty()),
+        tool,
+    })
+}
+
+/// A call, as its `PreToolUse` and its `PermissionRequest` both describe it:
+/// which agent, which tool, and the input, but for a `description`.
+///
+/// Codex 0.153.4 adds the approval's reason to the dialog's input as
+/// `description`, and its `PreToolUse` has none: `{"command":"touch a"}`
+/// before, `{"command":"touch a","description":"…"}` on the dialog. Claude
+/// Code 2.1.304 sends the model's own input to both, `description` in each.
+/// Keys are hashed in order, whichever order the agent wrote them in.
+fn what(agent: Option<&serde_json::Value>, tool: &str, input: Option<serde_json::Value>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    agent.map(|a| a.to_string()).hash(&mut h);
+    tool.hash(&mut h);
+    match input {
+        Some(serde_json::Value::Object(fields)) => {
+            let mut fields: Vec<_> =
+                fields.into_iter().filter(|(k, _)| k != "description").collect();
+            fields.sort_by(|a, b| a.0.cmp(&b.0));
+            for (k, v) in fields {
+                (k, v.to_string()).hash(&mut h);
+            }
+        }
+        other => other.map(|v| v.to_string()).hash(&mut h),
+    }
+    h.finish()
 }
 
 /// Whether a report from `ev` speaks for the tab whose pinned conversation is
@@ -231,10 +285,9 @@ mod tests {
             )
         };
         let blocked = sub("PermissionRequest").unwrap();
-        assert_eq!((blocked.state, blocked.subagent.as_deref()), (Reported::Blocked, Some("a1")));
+        assert_eq!((blocked.state, blocked.subagent), (Reported::Blocked, true));
         assert_eq!(sub("PostToolUse").unwrap().state, Reported::Working);
-        let stop = parse(Dialect::Claude, br#"{"hook_event_name":"Stop"}"#).unwrap();
-        assert_eq!(stop.subagent, None);
+        assert!(!parse(Dialect::Claude, br#"{"hook_event_name":"Stop"}"#).unwrap().subagent);
     }
 
     #[test]
@@ -248,7 +301,14 @@ mod tests {
     }
 
     fn ev(state: Reported, conversation: &str) -> Event {
-        Event { state, conversation: Some(conversation.to_string()), subagent: None, opens: false }
+        Event {
+            state,
+            conversation: Some(conversation.to_string()),
+            subagent: false,
+            opens: false,
+            tool_call: None,
+            tool: None,
+        }
     }
 
     #[test]
@@ -277,8 +337,14 @@ mod tests {
     #[test]
     fn a_body_without_a_conversation_is_admitted_and_pins_nothing() {
         let mut pin = None;
-        let ev =
-            Event { state: Reported::Working, conversation: None, subagent: None, opens: false };
+        let ev = Event {
+            state: Reported::Working,
+            conversation: None,
+            subagent: false,
+            opens: false,
+            tool_call: None,
+            tool: None,
+        };
         assert!(admit(&mut pin, &ev));
         assert_eq!(pin, None);
         let blank =
@@ -322,10 +388,12 @@ mod tests {
             "tool_input": { "questions": [{ "id": "q1", "question": "Which one?" }] },
             "tool_use_id": "call_1",
         });
-        assert_eq!(codex(question.clone()).unwrap().state, Reported::Blocked);
+        let asked = codex(question.clone()).unwrap();
+        assert_eq!((asked.state, asked.tool_call.as_deref()), (Reported::Blocked, Some("call_1")));
         let mut answered = question;
         answered["hook_event_name"] = json!("PostToolUse");
-        assert_eq!(codex(answered).unwrap().state, Reported::Working);
+        let answered = codex(answered).unwrap();
+        assert_eq!((answered.state, answered.tool_call), (Reported::Working, asked.tool_call));
         let bash = json!({ "hook_event_name": "PreToolUse", "tool_name": "Bash" });
         assert_eq!(codex(bash).unwrap().state, Reported::Working);
     }
@@ -386,8 +454,10 @@ mod tests {
         let opening = |id: &str| Event {
             state: Reported::Idle,
             conversation: Some(id.to_string()),
-            subagent: None,
+            subagent: false,
             opens: true,
+            tool_call: None,
+            tool: None,
         };
         assert!(admit(&mut pin, &opening("first")));
         assert!(admit(&mut pin, &ev(Reported::Done, "first")));
@@ -399,5 +469,42 @@ mod tests {
         assert!(!admit(&mut pin, &ev(Reported::Idle, "first")));
         assert!(admit(&mut pin, &ev(Reported::Idle, "second")));
         assert_eq!(pin, None);
+    }
+
+    /// Bodies from Codex 0.153.4 and Claude Code 2.1.304, two calls in
+    /// parallel and each one's dialog, cut to their keys.
+    #[test]
+    fn a_permission_dialog_names_the_call_it_is_about() {
+        let call =
+            |dialect, v: serde_json::Value| parse(dialect, v.to_string().as_bytes()).unwrap();
+        let pre = |id: &str, cmd: &str| {
+            json!({ "hook_event_name": "PreToolUse", "tool_name": "Bash",
+                    "tool_input": { "command": cmd }, "tool_use_id": id })
+        };
+        let dialog = |cmd: &str| {
+            json!({ "hook_event_name": "PermissionRequest", "tool_name": "Bash",
+                    "tool_input": { "command": cmd, "description": "test" } })
+        };
+        let a = call(Dialect::Codex, pre("call_0", "touch perm-a"));
+        let b = call(Dialect::Codex, pre("call_1", "touch perm-b"));
+        assert_eq!(call(Dialect::Codex, dialog("touch perm-b")).tool, b.tool);
+        assert_eq!(call(Dialect::Codex, dialog("touch perm-a")).tool, a.tool);
+        assert_ne!(a.tool, b.tool);
+        let claude = json!({ "hook_event_name": "PreToolUse", "tool_name": "Bash",
+            "tool_input": { "description": "make c", "command": "touch perm-c" },
+            "tool_use_id": "toolu_c0" });
+        let asked = json!({ "hook_event_name": "PermissionRequest", "tool_name": "Bash",
+            "tool_input": { "command": "touch perm-c", "description": "make c" },
+            "permission_suggestions": [] });
+        assert_eq!(call(Dialect::Claude, claude).tool, call(Dialect::Claude, asked).tool);
+        // Another agent's identical call is another call.
+        let mut sub = pre("call_2", "touch perm-a");
+        sub["agent_id"] = json!("01a15477-d8f6-7363-b4dd-41c9c57f99aa");
+        assert_ne!(call(Dialect::Codex, sub).tool, a.tool);
+        // A call ending names only its id.
+        let mut post = pre("call_0", "touch perm-a");
+        post["hook_event_name"] = json!("PostToolUse");
+        let post = call(Dialect::Codex, post);
+        assert_eq!((post.tool, post.tool_call.as_deref()), (None, Some("call_0")));
     }
 }

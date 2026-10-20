@@ -102,6 +102,10 @@ pub struct RunSnapshot {
 pub struct Said {
     pub state: ActivityState,
     pub since_ms: i64,
+    /// A `done` the user brought about themselves: Esc, which Codex reports
+    /// as `Interrupt`. Announced, it was a banner about a key the user had
+    /// pressed a second before, in the pane they were looking at.
+    pub by_user: bool,
 }
 
 #[derive(Clone)]
@@ -198,7 +202,7 @@ pub fn step(
                 // `idle_prompt` a minute later reports the same turn done:
                 // nudging again was two banners for one turn.
                 let pane_nudged = was.is_none() && idle_fired;
-                if !snap.is_loop && !pane_nudged {
+                if !snap.is_loop && !pane_nudged && !s.by_user {
                     events.push(NotifyKind::Idle);
                 }
                 idle_fired = true;
@@ -562,7 +566,7 @@ mod tests {
 
     fn reporting(reported: Option<ActivityState>, hash: u64, is_loop: bool) -> RunSnapshot {
         let blocked = if reported == Some(ActivityState::Blocked) { vec![0] } else { vec![] };
-        let reported = reported.map(|state| Said { state, since_ms: 0 });
+        let reported = reported.map(|state| Said { state, since_ms: 0, by_user: false });
         RunSnapshot {
             is_loop,
             reported,
@@ -573,7 +577,7 @@ mod tests {
 
     fn said(state: ActivityState, since_ms: i64, hash: u64) -> RunSnapshot {
         RunSnapshot {
-            reported: Some(Said { state, since_ms }),
+            reported: Some(Said { state, since_ms, by_user: false }),
             blocked: if state == ActivityState::Blocked { vec![since_ms] } else { vec![] },
             ..snap_input(running(), SessionStatus::Gone, hash, false)
         }
@@ -589,6 +593,22 @@ mod tests {
         assert!(ev.is_empty(), "the same turn");
         let (_w, ev) = step(Some(&w), &said(ActivityState::Done, 2_500, 2), 2, 2, 30);
         assert_eq!(ev, vec![NotifyKind::Idle], "a new turn, unseen in between");
+    }
+
+    /// Codex's `Interrupt`: the turn is over, and the user knows, having ended
+    /// it. The next turn the agent ends is news again.
+    #[test]
+    fn a_turn_the_user_stopped_is_not_announced() {
+        let (w, _) = step(None, &said(ActivityState::Working, 0, 1), 0, 2, 30);
+        let esc = RunSnapshot {
+            reported: Some(Said { state: ActivityState::Done, since_ms: 1_000, by_user: true }),
+            ..said(ActivityState::Done, 1_000, 2)
+        };
+        let (w, ev) = step(Some(&w), &esc, 1, 2, 30);
+        assert!(ev.is_empty());
+        let (w, _) = step(Some(&w), &said(ActivityState::Working, 2_000, 3), 2, 2, 30);
+        let (_w, ev) = step(Some(&w), &said(ActivityState::Done, 3_000, 4), 3, 2, 30);
+        assert_eq!(ev, vec![NotifyKind::Idle]);
     }
 
     /// Esc mid-turn: no `Stop`, so the report lapses and the pane nudges; the

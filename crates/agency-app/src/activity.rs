@@ -86,6 +86,13 @@ pub struct Report {
     /// For `blocked`: the user has since pressed a key that can answer the
     /// dialog. See [`answered`].
     pub answered: bool,
+    /// For `blocked`: the subagent whose dialog it is, by a hash of its id
+    /// (a hash so the entry stays `Copy`), or `None` for the main agent's.
+    /// See [`apply_event`].
+    pub blocked_by: Option<u64>,
+    /// For `done`: the user ended the turn themselves, so it is no news to
+    /// them. See `Reported::Interrupted`.
+    pub by_user: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -167,7 +174,14 @@ pub fn reported(prev: Option<ActivityEntry>, state: ActivityState, now_ms: i64) 
         Some(r) if r.state == state && !r.answered => r.since_ms,
         _ => now_ms,
     };
-    e.report = Some(Report { state, since_ms, at_ms: now_ms, answered: false });
+    e.report = Some(Report {
+        state,
+        since_ms,
+        at_ms: now_ms,
+        answered: false,
+        blocked_by: None,
+        by_user: false,
+    });
     e
 }
 
@@ -183,7 +197,7 @@ pub fn apply(
     let state = match said {
         Reported::Working => ActivityState::Working,
         Reported::Blocked => ActivityState::Blocked,
-        Reported::Done => ActivityState::Done,
+        Reported::Done | Reported::Interrupted => ActivityState::Done,
         Reported::Idle => ActivityState::Idle,
         Reported::AtPrompt => match prev.and_then(|e| e.report) {
             // A turn that ended with no `Stop`: an Esc mid-turn, or a dialog
@@ -199,34 +213,53 @@ pub fn apply(
             None => ActivityState::Idle,
         },
     };
-    reported(prev, state, now_ms)
+    let mut e = reported(prev, state, now_ms);
+    if let Some(r) = e.report.as_mut() {
+        r.by_user = said == Reported::Interrupted;
+    }
+    e
 }
 
 /// Fold in one hook post, from the main agent or a subagent.
 ///
 /// A subagent's tool call does not end a dialog standing in the run. Subagents
-/// run side by side: one stops on a permission dialog while another goes on
-/// calling tools, and its `working` replaced the `blocked` and lifted the send
-/// queue's hold with the dialog still on screen. The dialog's own subagent
-/// reporting its next tool call cannot be told apart from that, so the
-/// dialog is let go the way a refused one is: the main agent's next report,
-/// or a key that can answer it (see [`answered`]).
+/// run in parallel, and one of them kept calling tools while another's
+/// permission dialog was up: its `working` replaced the `blocked` and lifted
+/// the send queue's hold with the dialog still on screen. So the dialog
+/// remembers whose it is, and only that subagent going on, or the main agent,
+/// lets it go. Codex has no `idle_prompt` to fall back on: with any subagent's
+/// tool call ignored, a subagent's answered question held the queue until the
+/// main agent next reported, minutes later while it waited on its subagents.
 pub fn apply_event(
     prev: Option<ActivityEntry>,
     ev: &agency_core::preview::report::Event,
     now_ms: i64,
 ) -> ActivityEntry {
     use agency_core::preview::report::Reported;
-    match prev {
-        Some(e)
-            if ev.subagent
-                && ev.state == Reported::Working
-                && e.report.is_some_and(|r| r.state == ActivityState::Blocked) =>
+    let from = ev.subagent.as_deref().map(subagent_key);
+    let standing = prev.and_then(|e| e.report).filter(|r| r.state == ActivityState::Blocked);
+    match (prev, standing) {
+        (Some(e), Some(r))
+            if from.is_some() && ev.state == Reported::Working && r.blocked_by != from =>
         {
             e
         }
-        _ => apply(prev, ev.state, now_ms),
+        _ => {
+            let mut e = apply(prev, ev.state, now_ms);
+            if let Some(r) = e.report.as_mut().filter(|r| r.state == ActivityState::Blocked) {
+                r.blocked_by = from;
+            }
+            e
+        }
     }
+}
+
+/// A subagent's id, as [`Report::blocked_by`] keeps it.
+fn subagent_key(id: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    id.hash(&mut h);
+    h.finish()
 }
 
 /// The user pressed a key that can answer a prompt (see
@@ -673,17 +706,61 @@ mod tests {
     #[test]
     fn a_subagent_working_on_does_not_end_anothers_dialog() {
         use agency_core::preview::report::Event;
-        let ev = |state, subagent| Event { state, conversation: None, subagent, opens: false };
-        let e = apply_event(None, &ev(Reported::Blocked, true), 1_000);
+        let ev = |state, subagent: Option<&str>| Event {
+            state,
+            conversation: None,
+            subagent: subagent.map(str::to_string),
+            opens: false,
+        };
+        let e = apply_event(None, &ev(Reported::Blocked, Some("a")), 1_000);
         assert!(awaiting_answer(&e));
-        let e = apply_event(Some(e), &ev(Reported::Working, true), 2_000);
+        let e = apply_event(Some(e), &ev(Reported::Working, Some("b")), 2_000);
         assert!(awaiting_answer(&e), "a sibling subagent's tool call");
         assert_eq!(state(&e, false, 2_000), ActivityState::Blocked);
-        let e = apply_event(Some(e), &ev(Reported::Working, false), 3_000);
+        let e = apply_event(Some(e), &ev(Reported::Working, None), 3_000);
         assert!(!awaiting_answer(&e), "the main agent going on is the dialog gone");
         // With no dialog up, a subagent's tool call is the run working.
-        let e = apply_event(Some(e), &ev(Reported::Working, true), 4_000);
+        let e = apply_event(Some(e), &ev(Reported::Working, Some("b")), 4_000);
         assert_eq!(e.report.unwrap().at_ms, 4_000);
+    }
+
+    #[test]
+    fn the_subagent_whose_dialog_it_was_going_on_ends_it() {
+        use agency_core::preview::report::Event;
+        let ev = |state, subagent: Option<&str>| Event {
+            state,
+            conversation: None,
+            subagent: subagent.map(str::to_string),
+            opens: false,
+        };
+        // Codex: a subagent's question, answered. Its `PostToolUse` is all
+        // that says so, and the main agent is waiting on it, saying nothing.
+        let e = apply_event(None, &ev(Reported::Blocked, Some("a")), 1_000);
+        let e = apply_event(Some(e), &ev(Reported::Working, Some("a")), 2_000);
+        assert!(!awaiting_answer(&e));
+        assert_eq!(state(&e, false, 2_000), ActivityState::Working);
+        // The main agent's own dialog is not a subagent's to end.
+        let e = apply_event(Some(e), &ev(Reported::Blocked, None), 3_000);
+        let e = apply_event(Some(e), &ev(Reported::Working, Some("a")), 4_000);
+        assert!(awaiting_answer(&e));
+        // Nor one a second subagent raised after the first.
+        let e = apply_event(Some(e), &ev(Reported::Working, None), 5_000);
+        let e = apply_event(Some(e), &ev(Reported::Blocked, Some("a")), 6_000);
+        let e = apply_event(Some(e), &ev(Reported::Blocked, Some("b")), 7_000);
+        let e = apply_event(Some(e), &ev(Reported::Working, Some("a")), 8_000);
+        assert!(awaiting_answer(&e), "b's dialog is the one on screen");
+        let e = apply_event(Some(e), &ev(Reported::Working, Some("b")), 9_000);
+        assert!(!awaiting_answer(&e));
+    }
+
+    #[test]
+    fn an_interrupt_is_done_by_the_user() {
+        let e = apply(None, Reported::Working, 1_000);
+        let e = apply(Some(e), Reported::Interrupted, 2_000);
+        let r = e.report.unwrap();
+        assert_eq!((r.state, r.by_user), (ActivityState::Done, true));
+        let e = apply(Some(e), Reported::Done, 3_000);
+        assert!(!e.report.unwrap().by_user, "a turn the agent ended is news");
     }
 
     #[test]
@@ -700,6 +777,7 @@ mod tests {
             (Reported::Working, ActivityState::Working),
             (Reported::Blocked, ActivityState::Blocked),
             (Reported::Done, ActivityState::Done),
+            (Reported::Interrupted, ActivityState::Done),
             (Reported::Idle, ActivityState::Idle),
         ] {
             let prev = reported(None, ActivityState::Working, 0);

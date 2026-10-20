@@ -1285,32 +1285,28 @@ fn with_model(profile: &AgentProfile, model: Option<&str>) -> AgentProfile {
     }
 }
 
-/// A copy of `profile` whose every launch passes Codex the hooks that report
-/// its state (AGE-251), when `on`. Folded into the profile like [`with_model`],
-/// and for the same reason: fresh, resume, rerun, extra tab and loop attempt
-/// all launch from it, so none can be the one that goes without. Appended, and
-/// in front of a resume recipe since a resume launches `args` first: `-c` is
-/// Codex's own flag, read before its subcommand as well as after.
+/// A copy of a Codex `profile` whose every launch passes it the hooks that
+/// report its state (AGE-251). Folded into the profile, by `agent_env`, for
+/// the reason [`with_model`] is: fresh, resume, rerun, extra tab and loop
+/// attempt all launch from it, so none can be the one that goes without.
+/// Appended, and in front of a resume recipe since a resume launches `args`
+/// first: `-c` is Codex's own flag, read before its subcommand as well as
+/// after.
 ///
-/// Only for a profile that runs Codex, and never twice.
-fn with_state_hooks(profile: &AgentProfile, on: bool) -> AgentProfile {
-    let ours = agency_core::state_hooks::codex_args();
-    let carried = |recipe: &[String]| agency_core::state_hooks::carries_codex_args(recipe);
-    if !on || recipe_command(profile) != "codex" || carried(&profile.args) {
-        return profile.clone();
-    }
+/// Never twice, and each recipe on its own: a profile whose `args` already
+/// carried them once returned here as it was, and its `codex exec` loop
+/// attempts ran without them.
+fn with_state_hooks(profile: &AgentProfile) -> AgentProfile {
+    use agency_core::state_hooks::{carries_codex_args, codex_args};
     let with_ours = |recipe: &[String]| -> Vec<String> {
-        recipe.iter().cloned().chain(ours.iter().cloned()).collect()
+        if carries_codex_args(recipe) {
+            return recipe.to_vec();
+        }
+        recipe.iter().chain(codex_args()).cloned().collect()
     };
     AgentProfile {
         args: with_ours(&profile.args),
-        loop_args: profile.loop_args.as_deref().map(|l| {
-            if carried(l) {
-                l.to_vec()
-            } else {
-                with_ours(l)
-            }
-        }),
+        loop_args: profile.loop_args.as_deref().map(with_ours),
         ..profile.clone()
     }
 }
@@ -3036,6 +3032,19 @@ pub struct AppState {
     /// `agency_core::state_hooks::token_headers`). `None` if it could not be
     /// written, and Codex is then launched without hooks.
     state_headers: Option<PathBuf>,
+    /// See [`AppState::curl_on`].
+    curl_found: Mutex<HashMap<String, bool>>,
+    /// Runs with a Codex in them that was launched with state hooks, and so
+    /// posts to the run's server for as long as it lives, whatever the
+    /// setting says now. Read off the setting instead, turning it off took
+    /// the server down under a Codex still reporting: its last report (a
+    /// `blocked`, say) stood for good, and held the send queue with it.
+    /// Dropped by the sweep once the run has no agent alive.
+    codex_hooked: Mutex<HashSet<String>>,
+    /// Whether the sweep has yet guessed which live runs a Codex from the last
+    /// start of the app reports from, which it does once (see
+    /// [`AppState::runs_codex_hooks`]).
+    codex_survivors_seen: std::sync::atomic::AtomicBool,
     /// Run id → the line its agent last wrote about itself with `set_status`
     /// (AGE-208). An `Arc` because each run's preview server captures it, like
     /// `open_file` above. In-memory only, and dropped when an agent that could
@@ -3317,6 +3326,9 @@ impl AppState {
             hooks_seen: Mutex::new(HashMap::new()),
             state_token: Arc::from(state_token),
             state_headers,
+            curl_found: Mutex::new(HashMap::new()),
+            codex_hooked: Mutex::new(HashSet::new()),
+            codex_survivors_seen: std::sync::atomic::AtomicBool::new(false),
             mcp_named: Mutex::new(HashSet::new()),
             usage: Mutex::new(HashMap::new()),
             prompted: Mutex::new(HashSet::new()),
@@ -3627,6 +3639,9 @@ impl AppState {
         reg.set_setting(SETTING_CODEX_STATE_HOOKS, if s.codex_state_hooks { "1" } else { "0" })?;
         drop(reg);
         self.codex_state_hooks.store(s.codex_state_hooks, std::sync::atomic::Ordering::SeqCst);
+        // Saving settings is the one moment a user who has just installed
+        // `curl` can be expected to look for the switch to work.
+        self.curl_found.lock().unwrap().clear();
         // The switch and what it guards move together: turning it off has to
         // drop the path already recorded, or the last file the user had open
         // stays answerable until they open another one.
@@ -4435,13 +4450,12 @@ impl AppState {
                 spec.agent
             );
         }
-        let (profile, issue_key) = {
+        let (mut profile, issue_key) = {
             let reg = self.registry.lock().unwrap();
             let profile = reg
                 .get_profile(spec.agent)?
                 .ok_or_else(|| anyhow!("unknown agent profile: {agent}", agent = spec.agent))?;
-            let profile =
-                with_state_hooks(&with_model(&profile, model.as_deref()), self.codex_hooks_on());
+            let profile = with_model(&profile, model.as_deref());
             let profile = with_web_ui(
                 &profile,
                 gui_port_for(&config, Some(port), spec.agent),
@@ -4564,7 +4578,7 @@ impl AppState {
         // place that builds a headless attempt.
         if spec.loop_config.is_none() {
             let env = self
-                .agent_env(&profile, &workspace.path, &repo, &id, &id, Some(port))
+                .agent_env(&mut profile, &workspace.path, &repo, &id, &id, Some(port))
                 .inspect_err(|_| self.prune_checkpoints(&repo, &id))?;
             let conversation = self.open_conversation(&profile.command, &id, &id);
             // The default flow passes "" and behaves exactly as before: the user
@@ -6606,9 +6620,13 @@ impl AppState {
     }
 
     /// Whether any of the run's agents runs Codex, while Codex is launched with
-    /// state hooks. Asked only of a run with an agent alive in it.
+    /// state hooks: the best guess at whether a Codex that outlived the last
+    /// start of the app was launched with them. Asked once per live run, at
+    /// the first sweep; a launch since then records its own answer in
+    /// `codex_hooked`. Asked every sweep, it cost each live run a registry
+    /// query and a profile lookup per tab every 2s.
     fn runs_codex_hooks(&self, run_id: &str, run_agent: &str) -> bool {
-        if !self.codex_hooks_on() {
+        if !self.codex_hooks_on(&crate::pathenv::effective_path()) {
             return false;
         }
         let is_codex = |agent: &str| {
@@ -6682,6 +6700,7 @@ impl AppState {
             up.keys().filter(|id| named.contains(*id)).cloned().collect()
         };
         self.hooks_armed.lock().unwrap().retain(|_, at| at.elapsed() < HOOKS_ARMING);
+        let survivors = !self.codex_survivors_seen.swap(true, std::sync::atomic::Ordering::SeqCst);
         let worktrees: HashSet<PathBuf> = runs.iter().map(|(_, _, _, w, _)| w.clone()).collect();
         self.hooks_seen.lock().unwrap().retain(|w, _| worktrees.contains(w));
         for (id, repo, port_base, worktree, agent) in runs {
@@ -6713,11 +6732,19 @@ impl AppState {
                     }
                 }
             }
-            // Codex's hooks are in its argv, so there is no file to read. A
-            // live run with a Codex agent in it may have been launched with
-            // them (by this start of the app or the last), and posts to this
-            // port if it was.
-            let reports = (alive || arming) && (hooked || self.runs_codex_hooks(&id, &agent));
+            // Codex's hooks are in its argv, so there is no file to read: a
+            // launch records it, and one that survived the last start of the
+            // app is guessed at once, here.
+            let codex = if !(alive || arming) {
+                self.codex_hooked.lock().unwrap().remove(&id);
+                false
+            } else if survivors && self.runs_codex_hooks(&id, &agent) {
+                self.codex_hooked.lock().unwrap().insert(id.clone());
+                true
+            } else {
+                self.codex_hooked.lock().unwrap().contains(&id)
+            };
+            let reports = (alive || arming) && (hooked || codex);
             if let Some(bind) =
                 preview_port_this_sweep(&config, port_base, shares, reports, has_server)
             {
@@ -7890,18 +7917,30 @@ impl AppState {
     /// `run_id` and `session` differ only for an extra agent tab: the scripts
     /// belong to the run whose workspace they operate in, the conversation to
     /// the tab that is having it.
+    ///
+    /// A Codex `profile` comes back carrying its state hooks when they have
+    /// somewhere to post (see [`with_state_hooks`]): the launch builds its
+    /// argv from the profile afterwards.
     fn agent_env(
         &self,
-        profile: &AgentProfile,
+        profile: &mut AgentProfile,
         worktree: &Path,
         repo: &Path,
         run_id: &str,
         session: &str,
         port: Option<u16>,
     ) -> Result<Vec<(String, String)>> {
+        let command = recipe_command(profile);
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
         env.extend(agency_core::scripts::script_env(worktree, repo, run_id, port));
+        // The daemon inherited this process's PATH when it was spawned at
+        // startup; an agent installed since then may live in a directory
+        // adopted after that (pathenv::adopt_new_dirs), so the session gets
+        // the current answer rather than the daemon's copy.
+        // A profile that sets its own PATH keeps it.
+        let own_path = env.iter().rev().find(|(k, _)| k == "PATH").map(|(_, v)| v.clone());
+        let path = own_path.clone().unwrap_or_else(crate::pathenv::effective_path);
         // Here rather than at each launch site for the reason the pin below is:
         // every launch passes through, so none can start an agent whose hooks
         // point nowhere, or whose reports cannot say which tab they are from.
@@ -7910,21 +7949,22 @@ impl AppState {
         // that a pane-only tab ran through its shell inherited the variable,
         // posted under that tab's id, pinned that tab's conversation and left
         // it reading done.
-        env.extend(self.prepare_state_hooks(profile, worktree, repo, run_id, session, port));
-        // The daemon inherited this process's PATH when it was spawned at
-        // startup; an agent installed since then may live in a directory
-        // adopted after that (pathenv::adopt_new_dirs), so the session gets
-        // the current answer rather than the daemon's copy.
-        // A profile that sets its own PATH keeps it.
-        if !env.iter().any(|(k, _)| k == "PATH") {
-            env.push(("PATH".to_string(), crate::pathenv::effective_path()));
+        //
+        // Codex's hooks go on its command line, and only once the environment
+        // they read is in hand. Folded in at the launch sites, before anything
+        // knew whether there would be a server, a Codex in the project
+        // checkout was asked to trust hooks that could only post nowhere.
+        let codex = command == "codex" && self.codex_hooks_on(&path);
+        let hooks =
+            self.prepare_state_hooks(&command, codex, worktree, repo, run_id, session, port);
+        if codex && !hooks.is_empty() {
+            *profile = with_state_hooks(profile);
         }
-        env.extend(session_store_env(
-            self.agent_home().as_deref(),
-            &recipe_command(profile),
-            worktree,
-            session,
-        ));
+        env.extend(hooks);
+        if own_path.is_none() {
+            env.push(("PATH".to_string(), path));
+        }
+        env.extend(session_store_env(self.agent_home().as_deref(), &command, worktree, session));
         Ok(env)
     }
 
@@ -7937,15 +7977,18 @@ impl AppState {
     /// when it cannot be: Claude Code prints a hook error into the transcript
     /// on every tool call whose post is refused.
     ///
-    /// Codex's hooks are already in the profile's arguments (see
-    /// [`with_state_hooks`]), and need only the server and the environment they
-    /// read. Without the environment they post nowhere, quietly.
+    /// Codex's hooks go on its command line (see [`with_state_hooks`]) when
+    /// `codex` is set, and need only the server and the environment they read.
+    /// Without the environment they would post nowhere, quietly, so the caller
+    /// passes them only when this returns some.
     ///
     /// The variables the agent is to be launched with: none for an agent that
     /// reports nothing, which is then not told its session.
+    #[allow(clippy::too_many_arguments)]
     fn prepare_state_hooks(
         &self,
-        profile: &AgentProfile,
+        command: &str,
+        codex: bool,
         worktree: &Path,
         repo: &Path,
         run_id: &str,
@@ -7962,11 +8005,7 @@ impl AppState {
         self.report_pins.lock().unwrap().remove(session);
         // The project's own checkout is the user's, and nothing is written into
         // it at launch; see `emit_mcp`'s caller.
-        let command = recipe_command(profile);
-        let codex = command == "codex"
-            && agency_core::state_hooks::carries_codex_args(&profile.args)
-            && self.state_headers.is_some();
-        if worktree == repo || !(codex || agency_core::state_hooks::agent_supported(&command)) {
+        if worktree == repo || !(codex || agency_core::state_hooks::agent_supported(command)) {
             return Vec::new();
         }
         let config = agency_core::config::load(repo);
@@ -7979,29 +8018,46 @@ impl AppState {
                 return Vec::new();
             };
             let path = agency_core::state_hooks::CODEX_STATE_PATH;
+            self.codex_hooked.lock().unwrap().insert(run_id.to_string());
             return vec![
                 session_var,
                 (URL_ENV.to_string(), format!("http://127.0.0.1:{port}{path}")),
                 (HEADERS_ENV.to_string(), headers.to_string_lossy().into_owned()),
             ];
         }
-        if let Err(e) =
-            agency_core::state_hooks::emit_for_agent(&command, worktree, repo, listening)
+        if let Err(e) = agency_core::state_hooks::emit_for_agent(command, worktree, repo, listening)
         {
             log::warn!("writing state hooks into {}: {e}", worktree.display());
         }
         vec![session_var, (TOKEN_ENV.to_string(), self.state_token.to_string())]
     }
 
-    /// Whether a Codex launch now gets the hooks that report its state: the
-    /// user has not turned them off, the token header could be written, and
-    /// there is a `curl` on the agent's PATH for them to post with. Without
-    /// one, every hook would fail and Codex would still have asked the user to
-    /// trust them.
-    fn codex_hooks_on(&self) -> bool {
+    /// Whether a Codex launched on `path` now gets the hooks that report its
+    /// state: the user has not turned them off, the token header could be
+    /// written, and there is a `curl` on that PATH for them to post with.
+    /// Without one, every hook would fail and Codex would still have asked
+    /// the user to trust them.
+    ///
+    /// The PATH the agent runs with, which a profile may set for itself: the
+    /// app's own had a `curl` that a profile's narrower one did not.
+    fn codex_hooks_on(&self, path: &str) -> bool {
         self.codex_state_hooks.load(std::sync::atomic::Ordering::SeqCst)
             && self.state_headers.is_some()
-            && crate::agent_diag::resolve_on_path("curl").is_some()
+            && self.curl_on(path)
+    }
+
+    /// Whether `curl` resolves on `path`, remembered per PATH until settings
+    /// are next saved. Walked fresh, it stat'ed every PATH directory on each
+    /// launch, and for every live run on each 2s sweep, some of them inside
+    /// the registry lock; a stale network mount on PATH has held up a launch
+    /// before (see `agent_catalog::recipe_command`).
+    fn curl_on(&self, path: &str) -> bool {
+        if let Some(&found) = self.curl_found.lock().unwrap().get(path) {
+            return found;
+        }
+        let found = crate::agent_diag::resolve_in("curl", path).is_some();
+        self.curl_found.lock().unwrap().insert(path.to_string(), found);
+        found
     }
 
     /// Mint the conversation a fresh launch of `session` will open, and record
@@ -9391,7 +9447,7 @@ impl AppState {
                 50,
             );
         }
-        let profile = {
+        let mut profile = {
             let reg = self.registry.lock().unwrap();
             let profile =
                 reg.get_profile(agent)?.ok_or_else(|| anyhow!("unknown agent profile: {agent}"))?;
@@ -9399,7 +9455,7 @@ impl AppState {
             // run's model belongs to that agent's namespace — "opus" means
             // nothing to Codex. Only carry it when the tab is the same agent.
             let model = (agent == run.agent).then_some(run.model.as_deref()).flatten();
-            let profile = with_state_hooks(&with_model(&profile, model), self.codex_hooks_on());
+            let profile = with_model(&profile, model);
             // Same GUI port as the run would use: start_run_session refuses a
             // second web-GUI session in one workspace, so it can't be taken.
             with_web_ui(&profile, gui_port_for(&config, run.port_base, agent), &self.data_dir)
@@ -9435,7 +9491,7 @@ impl AppState {
         // conversation is the exception, and is the tab's own: sharing the
         // worktree is exactly how a tab used to take over the run's resume
         // (AGE-175).
-        let env = self.agent_env(&profile, &worktree, &repo, &run.id, sid, run.port_base)?;
+        let env = self.agent_env(&mut profile, &worktree, &repo, &run.id, sid, run.port_base)?;
         let setup = config.scripts.setup.as_deref();
         // Resume only what this tab can prove is its own: a conversation it
         // has on record, or a session store of its own. Without one of those,
@@ -9771,7 +9827,7 @@ impl AppState {
 
         let config = agency_core::config::load(&repo);
         let worktree = workspace_dir(&repo, &run);
-        let profile = {
+        let mut profile = {
             let reg = self.registry.lock().unwrap();
             let profile = reg
                 .get_profile(&run.agent)?
@@ -9779,13 +9835,10 @@ impl AppState {
             // Whatever model the run started on, it comes back on: a resume
             // that quietly changed model would rewrite the session's terms
             // halfway through the work.
-            let profile = with_state_hooks(
-                &with_model(&profile, run.model.as_deref()),
-                self.codex_hooks_on(),
-            );
+            let profile = with_model(&profile, run.model.as_deref());
             with_web_ui(&profile, gui_port_for(&config, run.port_base, &run.agent), &self.data_dir)
         };
-        let env = self.agent_env(&profile, &worktree, &repo, &run.id, id, run.port_base)?;
+        let env = self.agent_env(&mut profile, &worktree, &repo, &run.id, id, run.port_base)?;
         let setup = config.scripts.setup.as_deref();
         // The conversation this session owns, if it has one to come back to.
         let recorded = self.conversation_of(id);
@@ -9892,18 +9945,15 @@ impl AppState {
         let repo = self.project_repo(&run.project_id)?;
         let config = agency_core::config::load(&repo);
         let worktree = workspace_dir(&repo, &run);
-        let profile = {
+        let mut profile = {
             let reg = self.registry.lock().unwrap();
             let profile = reg
                 .get_profile(&run.agent)?
                 .ok_or_else(|| anyhow!("unknown agent profile: {}", run.agent))?;
-            let profile = with_state_hooks(
-                &with_model(&profile, run.model.as_deref()),
-                self.codex_hooks_on(),
-            );
+            let profile = with_model(&profile, run.model.as_deref());
             with_web_ui(&profile, gui_port_for(&config, run.port_base, &run.agent), &self.data_dir)
         };
-        let env = self.agent_env(&profile, &worktree, &repo, &run.id, id, run.port_base)?;
+        let env = self.agent_env(&mut profile, &worktree, &repo, &run.id, id, run.port_base)?;
         // A rerun is a fresh launch by definition, so it takes the fresh argv
         // (prompt and all, never the resume recipe) that `create_run` took, and
         // a new conversation with it. The one it replaces stays on disk under
@@ -9958,12 +10008,12 @@ impl AppState {
             }
             _ => {}
         }
-        let profile = {
+        let mut profile = {
             let reg = self.registry.lock().unwrap();
             let profile = reg
                 .get_profile(&run.agent)?
                 .ok_or_else(|| anyhow!("unknown agent profile: {}", run.agent))?;
-            with_state_hooks(&with_model(&profile, run.model.as_deref()), self.codex_hooks_on())
+            with_model(&profile, run.model.as_deref())
         };
         // Re-emit into the existing worktree on every attempt. A headless
         // attempt is a fresh agent process with no memory of the last one, and
@@ -9984,7 +10034,8 @@ impl AppState {
                 run.port_base,
             );
         }
-        let env = self.agent_env(&profile, &worktree, &repo, &run.id, &run.id, run.port_base)?;
+        let env =
+            self.agent_env(&mut profile, &worktree, &repo, &run.id, &run.id, run.port_base)?;
         // Every attempt is a fresh session, so every attempt names its own
         // conversation. The last one's is what the run resumes into if the
         // user takes the loop's work over by hand once it ends.
@@ -11831,10 +11882,10 @@ impl AppState {
         let now_ms = crate::activity::now_ms();
         let map = self.activity.lock().unwrap();
         let said = |id: &str| {
-            map.get(id)
-                .map(|e| crate::activity::classify(e, false, now_ms))
-                .filter(|a| a.reported)
-                .map(|a| notifier::Said { state: a.state, since_ms: a.since })
+            let e = map.get(id)?;
+            let a = crate::activity::classify(e, false, now_ms);
+            let by_user = a.state == ActivityState::Done && e.report.is_some_and(|r| r.by_user);
+            a.reported.then_some(notifier::Said { state: a.state, since_ms: a.since, by_user })
         };
         let mut blocked: Vec<i64> = map
             .keys()
@@ -13224,8 +13275,8 @@ mod tests {
             resume_args: Some(vec!["resume".into(), "--last".into()]),
             loop_args: Some(vec!["exec".into(), "{{prompt}}".into()]),
         };
-        let hooks = agency_core::state_hooks::codex_args();
-        let hooked = super::with_state_hooks(&codex, true);
+        let hooks = agency_core::state_hooks::codex_args().to_vec();
+        let hooked = super::with_state_hooks(&codex);
         let (_cmd, args) = super::fresh_agent_argv(&hooked, no_worktree(), "go", None, None);
         assert_eq!(args, [hooks.clone(), vec!["go".into()]].concat());
         // Ahead of `resume`: Codex reads `-c` before its subcommand.
@@ -13234,22 +13285,24 @@ mod tests {
         let (_cmd, args) = super::loop_argv(&hooked, no_worktree(), "go", None, None).unwrap();
         assert_eq!(args, [vec!["exec".into(), "go".into()], hooks.clone()].concat());
         // Once, however often it is applied.
-        assert_eq!(super::with_state_hooks(&hooked, true), hooked);
+        assert_eq!(super::with_state_hooks(&hooked), hooked);
     }
 
     #[test]
-    fn state_hooks_go_to_codex_alone_and_only_while_on() {
+    fn each_codex_recipe_gets_the_hooks_it_lacks() {
+        let hooks = agency_core::state_hooks::codex_args().to_vec();
+        let exec = vec!["exec".to_string(), "{{prompt}}".to_string()];
         let codex = AgentProfile {
             name: "codex".into(),
             command: "codex".into(),
-            args: vec![],
+            args: hooks.clone(),
             env: vec![],
             resume_args: None,
-            loop_args: None,
+            loop_args: Some(exec.clone()),
         };
-        assert_eq!(super::with_state_hooks(&codex, false), codex);
-        let claude = AgentProfile { name: "claude".into(), command: "claude".into(), ..codex };
-        assert_eq!(super::with_state_hooks(&claude, true), claude, "Claude Code's are a file");
+        let hooked = super::with_state_hooks(&codex);
+        assert_eq!(hooked.args, hooks, "already there, not doubled");
+        assert_eq!(hooked.loop_args, Some([exec, hooks].concat()), "the loop's own recipe");
     }
 
     #[test]

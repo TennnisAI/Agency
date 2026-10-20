@@ -115,6 +115,14 @@ pub fn version_line(stdout: &str) -> Option<String> {
 /// along PATH (which pathenv::repair() has already fixed up for Finder
 /// launches). Also backs `command_on_path` in state.rs.
 pub fn resolve_on_path(command: &str) -> Option<PathBuf> {
+    // `effective_path`, not `$PATH`: a directory an install created after
+    // startup is on the former and not the latter (see pathenv::adopt_new_dirs).
+    resolve_in(command, &crate::pathenv::effective_path())
+}
+
+/// [`resolve_on_path`] against a PATH of the caller's, such as one an agent
+/// profile sets for itself.
+pub fn resolve_in(command: &str, paths: &str) -> Option<PathBuf> {
     fn executable(p: &Path) -> bool {
         #[cfg(unix)]
         {
@@ -131,10 +139,7 @@ pub fn resolve_on_path(command: &str) -> Option<PathBuf> {
         let p = Path::new(command);
         return executable(p).then(|| p.to_path_buf());
     }
-    // `effective_path`, not `$PATH`: a directory an install created after
-    // startup is on the former and not the latter (see pathenv::adopt_new_dirs).
-    let paths = crate::pathenv::effective_path();
-    std::env::split_paths(&paths).map(|dir| dir.join(command)).find(|p| executable(p))
+    std::env::split_paths(paths).map(|dir| dir.join(command)).find(|p| executable(p))
 }
 
 /// How long a `--version` run gets before it is killed. The node-backed CLIs

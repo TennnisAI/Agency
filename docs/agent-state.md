@@ -97,7 +97,7 @@ assumptions did not survive.
 | `async: true` is accepted on an `http` hook but **not honoured**: a listener that slept 1.5s held the tool call for 1.5s. | The draft hoped `async` would remove the timeout concern. It does not. The server answers before it does anything else, and the 2s timeout bounds a wedged app. |
 | With nothing listening, the post costs nothing (loopback refuses at once), but the agent prints `PreToolUse:Bash hook error ... ECONNREFUSED` into its transcript on every tool call. A non-2xx answer prints the same kind of error. | The draft's reason to emit no hooks without a server (two seconds per tool call) was wrong; the real reason is the noise. The route answers 204 to everything, including a report it drops. |
 | `PostToolUseFailure` replaces `PostToolUse` when a tool fails. | Subscribed, as `working`. |
-| `Stop` is followed by `SubagentStop` from an internal subagent, carrying `agent_id`. | Not subscribed. A subagent's other events carry its `agent_id` too, and the parse keeps only its tool calls (`working`) and its dialogs (`blocked`): a subagent ending is not the run's turn ending, but its permission dialog is the run's to answer. Dropping all of them once meant a subagent's dialog never read `blocked`. |
+| `Stop` is followed by `SubagentStop` from an internal subagent, carrying `agent_id`. | Not subscribed. A subagent's other events carry its `agent_id` too, and the parse keeps only its tool calls (`working`) and its dialogs (`blocked`): a subagent ending is not the run's turn ending, but its permission dialog is the run's to answer. Dropping all of them once meant a subagent's dialog never read `blocked`. The `blocked` remembers which subagent raised it, and that subagent's next tool call ends it; a sibling's does not. |
 | `Notification` with `idle_prompt` fires about 60s after `Stop`. | Subscribed, as "at the prompt", which is `done` only after a turn the hooks saw (see *Authority and lapse*). It is also what lands after an Esc, or a refused dialog, that left no other report. |
 | `SessionEnd` fires on `/clear` as well as on exit. | Mapped to `idle`: after `/clear` the session is fresh. |
 | Header values interpolate `$VAR` for names in `allowedEnvVars`; an unset variable becomes an empty string. | The session id rides in a header (see *Transport*). |
@@ -195,12 +195,17 @@ permission dialog, a question and a subagent happen on cue. The findings are in
 - **Hooks can only run a command.** The decision AGE-206 avoided: no script in
   the worktree, and the one thing assumed on the PATH is `curl`, which ships
   with macOS and nearly every Linux. The flags are passed only when `curl`
-  resolves on the agent's PATH. The token is read from a 0600 file named in
+  resolves on the PATH the agent runs with (a profile's own, if it sets one),
+  looked up once per PATH rather than walked at every launch. The request
+  blanks `Expect:`: curl otherwise waits a second on a large body for a
+  `100 Continue` the run's server never sends. The token is read from a 0600 file named in
   the environment (`curl -H @file`), not put on the command line, where `ps`
   shows it to every account on the machine. Errors are silenced and the exit
   is always 0: a nonzero `Stop` hook is how a hook asks Codex to keep going.
-  Flags without the environment (the server could not bind) post nowhere,
-  silently; verified live.
+  Flags without the environment post nowhere, silently (verified live), so
+  `agent_env` adds the flags only once it has the environment: never in the
+  project's own checkout, and not when the server could not bind. Added
+  earlier, Codex asked the user to trust hooks that could do nothing.
 - **A child cannot speak for its parent.** The hooks are in the parent's argv,
   which a `codex` it starts does not inherit. That is what makes it safe for
   `SessionStart` to move the tab's pin (`Event::opens`): after `/clear`, Codex's
@@ -214,16 +219,20 @@ permission dialog, a question and a subagent happen on cue. The findings are in
 | `PreToolUse` | `working`; **`blocked`** for `request_user_input`, Codex's question, which fires no `PermissionRequest` |
 | `PermissionRequest` | **`blocked`** |
 | `Stop` | `done` |
-| `Interrupt` | `done`: Esc on a dialog or mid-turn. Unlike Claude Code, a refusal says so |
+| `Interrupt` | `done`: Esc on a dialog or mid-turn. Unlike Claude Code, a refusal says so. No "finished" banner: the user did it |
 | `SessionEnd` | `idle` (exit only, once per conversation the process had) |
 
 The route is `/__agency__/state/codex`, so each agent's events are parsed
 against its own allowlist (`report::Dialect`): Claude Code's posts never open a
 conversation, and an `Interrupt` on Claude Code's route means nothing. A
 subagent posts under its parent's `session_id` with its own `agent_id`, so the
-subagent rule is Claude Code's. The server sweep cannot read a file to know a
-run reports, so it keeps the server up for a live run with a Codex agent in it
-while the setting is on.
+subagent rule is Claude Code's. Codex has no `idle_prompt` to release a
+subagent's answered dialog, so it is the subagent's own next tool call that
+does. The server sweep cannot read a file to know a run reports, so a launch
+records it, and the server stays up for as long as that run has an agent
+alive, whatever the setting says by then: read off the setting, turning it off
+stranded a live Codex's last `blocked`. A Codex that outlived the last start
+of the app is guessed at once, from the setting and the run's agents.
 
 ## Transport
 

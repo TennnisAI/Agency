@@ -1165,7 +1165,7 @@ mod tests {
         assert_eq!(request(srv.port(), "POST", codex, &interrupt, &headers).0, 204);
         let claude = crate::state_hooks::STATE_PATH;
         assert_eq!(request(srv.port(), "POST", claude, &interrupt, &headers).0, 204);
-        assert_eq!(*seen.lock().unwrap(), vec![report::Reported::Done], "Codex's word only");
+        assert_eq!(*seen.lock().unwrap(), vec![report::Reported::Interrupted], "Codex's word only");
     }
 
     #[test]

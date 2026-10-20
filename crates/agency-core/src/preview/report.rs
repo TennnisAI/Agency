@@ -20,6 +20,10 @@ pub enum Reported {
     Blocked,
     /// The turn is over and the result is waiting for the user.
     Done,
+    /// The user stopped the turn themselves (Codex's `Interrupt`, from Esc).
+    /// Over like `Done`, but nothing is waiting that the user does not know
+    /// about: read as `Done`, it fired "agent finished" for their own key.
+    Interrupted,
     /// Sitting at the input box with nothing in flight (`idle_prompt`). Not a
     /// state on its own: it is a turn ending only after a turn, which is the
     /// app's to know (see `activity::apply` there). Read as `Done` outright, a
@@ -48,8 +52,10 @@ pub struct Event {
     /// since the child inherits the variable the header is built from; this
     /// can, and the app pins each tab to the first one it hears from.
     pub conversation: Option<String>,
-    /// Sent by a subagent (the Task tool) rather than the main agent.
-    pub subagent: bool,
+    /// The subagent that sent it (its `agent_id`), or `None` for the main
+    /// agent. An id rather than a flag, so the app can tell which subagent a
+    /// dialog is waiting on (see `activity::apply_event` there).
+    pub subagent: Option<String>,
     /// Opens a conversation in the tab's own agent, which the tab is pinned to
     /// from now on (see [`admit`]). Codex's `SessionStart` only: after `/clear`
     /// its next prompt comes under a new `session_id`, with no `SessionEnd` for
@@ -74,7 +80,11 @@ struct Body {
 /// `state_hooks::CODEX_EVENTS` for what each event was verified to mean.
 pub fn parse(dialect: Dialect, body: &[u8]) -> Option<Event> {
     let b: Body = serde_json::from_slice(body).ok()?;
-    let subagent = b.agent_id.is_some_and(|v| !v.is_null());
+    let subagent = match b.agent_id {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(id)) => Some(id),
+        Some(other) => Some(other.to_string()),
+    };
     let mut opens = false;
     let state = match (dialect, b.hook_event_name.as_deref()?) {
         (_, "UserPromptSubmit" | "PostToolUse") => Reported::Working,
@@ -95,7 +105,7 @@ pub fn parse(dialect: Dialect, body: &[u8]) -> Option<Event> {
         // The user stopped the turn, on a dialog or in the middle of it. Codex
         // says so where Claude Code says nothing, so this needs none of
         // `AtPrompt`'s guessing about whether a turn ran.
-        (Dialect::Codex, "Interrupt") => Reported::Done,
+        (Dialect::Codex, "Interrupt") => Reported::Interrupted,
         // A new conversation, nothing in flight in it yet. A `source` not
         // named here (`compact` is in the binary) is not a new conversation.
         (Dialect::Codex, "SessionStart")
@@ -112,7 +122,7 @@ pub fn parse(dialect: Dialect, body: &[u8]) -> Option<Event> {
     // though. Every subagent post was dropped here once, and a permission
     // dialog a subagent raised never read blocked: the report lapsed, the
     // quiet pane read done, and a queued message's Enter approved the command.
-    if subagent && !matches!(state, Reported::Working | Reported::Blocked) {
+    if subagent.is_some() && !matches!(state, Reported::Working | Reported::Blocked) {
         return None;
     }
     Some(Event { state, conversation: b.session_id.filter(|s| !s.is_empty()), subagent, opens })
@@ -221,9 +231,10 @@ mod tests {
             )
         };
         let blocked = sub("PermissionRequest").unwrap();
-        assert_eq!((blocked.state, blocked.subagent), (Reported::Blocked, true));
+        assert_eq!((blocked.state, blocked.subagent.as_deref()), (Reported::Blocked, Some("a1")));
         assert_eq!(sub("PostToolUse").unwrap().state, Reported::Working);
-        assert!(!parse(Dialect::Claude, br#"{"hook_event_name":"Stop"}"#).unwrap().subagent);
+        let stop = parse(Dialect::Claude, br#"{"hook_event_name":"Stop"}"#).unwrap();
+        assert_eq!(stop.subagent, None);
     }
 
     #[test]
@@ -237,7 +248,7 @@ mod tests {
     }
 
     fn ev(state: Reported, conversation: &str) -> Event {
-        Event { state, conversation: Some(conversation.to_string()), subagent: false, opens: false }
+        Event { state, conversation: Some(conversation.to_string()), subagent: None, opens: false }
     }
 
     #[test]
@@ -267,7 +278,7 @@ mod tests {
     fn a_body_without_a_conversation_is_admitted_and_pins_nothing() {
         let mut pin = None;
         let ev =
-            Event { state: Reported::Working, conversation: None, subagent: false, opens: false };
+            Event { state: Reported::Working, conversation: None, subagent: None, opens: false };
         assert!(admit(&mut pin, &ev));
         assert_eq!(pin, None);
         let blank =
@@ -291,7 +302,7 @@ mod tests {
             ("PostToolUse", Reported::Working),
             ("PermissionRequest", Reported::Blocked),
             ("Stop", Reported::Done),
-            ("Interrupt", Reported::Done),
+            ("Interrupt", Reported::Interrupted),
             ("SessionEnd", Reported::Idle),
         ] {
             assert_eq!(codex_state(event), Some(want), "{event}");
@@ -375,7 +386,7 @@ mod tests {
         let opening = |id: &str| Event {
             state: Reported::Idle,
             conversation: Some(id.to_string()),
-            subagent: false,
+            subagent: None,
             opens: true,
         };
         assert!(admit(&mut pin, &opening("first")));

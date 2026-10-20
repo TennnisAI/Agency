@@ -26,6 +26,7 @@
 use anyhow::Result;
 use serde_json::{json, Value};
 use std::path::Path;
+use std::sync::OnceLock;
 
 /// The route on a run's server that hook events are posted to.
 pub const STATE_PATH: &str = "/__agency__/state";
@@ -153,14 +154,19 @@ const CODEX_EVENTS: &[&str] = &[
 ///
 /// `curl`, because a command hook needs a program to post with, and `curl`
 /// ships with macOS and nearly every Linux; the launch passes these hooks only
-/// when it is on the agent's PATH (see `with_state_hooks` in the app), and
+/// when it is on the agent's PATH (see `agent_env` in the app), and
 /// nothing is written into the worktree. The token is read from a file named
 /// in the environment, not put on the command line, where `ps` shows it to
 /// every user on the machine. Errors are silenced and the exit is always 0:
 /// a nonzero exit from a `Stop` hook is how a hook asks Codex to keep going.
+///
+/// `Expect:` blank: past a size threshold (1 KiB on older builds, 1 MiB on
+/// current ones) curl sends `Expect: 100-continue` and holds the body until
+/// the server answers or a second passes. The run's server never answers it,
+/// so a `PostToolUse` carrying a large tool output cost Codex a second.
 const CODEX_COMMAND: &str = concat!(
     r#"curl -s -m 2 -o /dev/null -H @"$AGENCY_STATE_HEADERS" "#,
-    r#"-H "X-Agency-Session: $AGENCY_SESSION_ID" "#,
+    r#"-H "X-Agency-Session: $AGENCY_SESSION_ID" -H "Expect:" "#,
     r#"--data-binary @- "$AGENCY_STATE_URL" 2>/dev/null || true"#,
 );
 
@@ -170,20 +176,24 @@ const CODEX_TIMEOUT_SECS: u64 = 3;
 
 /// The arguments that pass Codex its state hooks, as `-c` overrides. Byte for
 /// byte the same on every launch, so the user's one trust covers all of them.
-pub fn codex_args() -> Vec<String> {
-    let command = toml_string(CODEX_COMMAND);
-    CODEX_EVENTS
-        .iter()
-        .flat_map(|event| {
-            [
-                "-c".to_string(),
-                format!(
-                    "hooks.{event}=[{{hooks=[{{type=\"command\",command={command},\
-                     timeout={CODEX_TIMEOUT_SECS}}}]}}]"
-                ),
-            ]
-        })
-        .collect()
+/// Built once: every launch asks for them, and so does [`carries_codex_args`].
+pub fn codex_args() -> &'static [String] {
+    static ARGS: OnceLock<Vec<String>> = OnceLock::new();
+    ARGS.get_or_init(|| {
+        let command = toml_string(CODEX_COMMAND);
+        CODEX_EVENTS
+            .iter()
+            .flat_map(|event| {
+                [
+                    "-c".to_string(),
+                    format!(
+                        "hooks.{event}=[{{hooks=[{{type=\"command\",command={command},\
+                         timeout={CODEX_TIMEOUT_SECS}}}]}}]"
+                    ),
+                ]
+            })
+            .collect()
+    })
 }
 
 /// Whether `args` already pass Codex our hooks.
@@ -730,13 +740,14 @@ mod tests {
         }
         assert!(!CODEX_COMMAND.contains(TOKEN_ENV), "the token stays off the command line");
         assert!(CODEX_COMMAND.ends_with("|| true"), "a nonzero Stop hook keeps Codex going");
+        assert!(CODEX_COMMAND.contains(r#"-H "Expect:""#), "the server never sends 100 Continue");
     }
 
     #[test]
     fn carried_codex_args_are_recognised_wherever_they_sit() {
         let mut args = vec!["--model".to_string(), "gpt-5.5".to_string()];
         assert!(!carries_codex_args(&args));
-        args.extend(codex_args());
+        args.extend(codex_args().iter().cloned());
         args.push("the prompt".to_string());
         assert!(carries_codex_args(&args));
         args.remove(3);

@@ -300,6 +300,29 @@ fn a_new_client_does_not_inherit_the_sessions_an_earlier_one_started() {
     assert!(!dir.path().join("termd-spawns.json").exists(), "and nothing was written to disk");
 }
 
+/// The app reconnecting in the same launch hands its record to the new
+/// client, which then knows its sessions as the old one did: a dropped
+/// connection used to switch every live agent's run tools off. The record
+/// still counts only against the daemon's own nonce, so a session replaced
+/// meanwhile stays a stranger.
+#[test]
+fn a_reconnecting_client_keeps_what_the_old_one_started() {
+    let (dir, client) = server_and_client();
+    let sock = dir.path().join("termd.sock");
+    let tmp = std::env::temp_dir();
+    client.start_session("agency-a", tmp.as_path(), "/bin/cat", &[], &[], 80, 24).unwrap();
+    client.start_session("agency-b", tmp.as_path(), "/bin/cat", &[], &[], 80, 24).unwrap();
+    let a = client.spawned_pid("agency-a").unwrap().expect("ours");
+    let other = TermClient::connect_or_spawn(sock.clone(), "/nonexistent".into()).unwrap();
+    other.start_session("agency-b", tmp.as_path(), "/bin/cat", &[], &[], 80, 24).unwrap();
+
+    let again = TermClient::connect_or_spawn(sock, "/nonexistent".into()).unwrap();
+    again.adopt_spawned(&client);
+    drop(client);
+    assert_eq!(again.spawned_pid("agency-a").unwrap(), Some(a));
+    assert_eq!(again.spawned_pid("agency-b").unwrap(), None, "replaced before the reconnect");
+}
+
 /// The cell styles have to survive the daemon round trip: they are what tells
 /// an agent's painted hint from the human's draft, and they are read on the app
 /// side, a socket away from the grid that has them.

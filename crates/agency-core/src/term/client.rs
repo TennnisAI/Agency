@@ -372,6 +372,21 @@ impl TermClient {
         Ok(pid.filter(|_| nonce.is_some() && nonce == ours))
     }
 
+    /// Take over what `from` recorded starting, for a client that replaces it
+    /// in the same process: the app reconnecting to a daemon that dropped its
+    /// connection. Starting the new client empty made every session the app
+    /// had started a stranger to it, and every live agent lost the run tools
+    /// mid-run, `run_wait` included, until it was relaunched.
+    ///
+    /// Still memory to memory, nothing read from outside the process. And a
+    /// record vouches for nothing on its own: [`TermClient::spawned_pid`]
+    /// counts it only while the daemon reports the same nonce, so a daemon
+    /// that was replaced rather than reconnected matches none of them.
+    pub fn adopt_spawned(&self, from: &TermClient) {
+        let theirs = from.spawned.lock().unwrap().clone();
+        self.spawned.lock().unwrap().extend(theirs);
+    }
+
     pub fn kill(&self, id: &str) -> Result<()> {
         self.spawned.lock().unwrap().remove(id);
         send_msg(&self.shared, &ClientMsg::Kill { id: id.into() })

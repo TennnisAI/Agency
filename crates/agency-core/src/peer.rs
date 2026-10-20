@@ -31,23 +31,26 @@ pub fn process_parents() -> Option<HashMap<u32, u32>> {
     platform::process_parents()
 }
 
-/// Whether `pid` is one of `roots` or descends from one of them, by `parents`.
-/// A process whose parent is not in the table, or a chain that loops, ends
-/// the walk with no.
-pub fn descends_from(pid: u32, roots: &[u32], parents: &HashMap<u32, u32>) -> bool {
+/// Which of `roots` `pid` is, or descends from, by `parents`: the nearest one
+/// up the chain. A process whose parent is not in the table, or a chain that
+/// loops, ends the walk with `None`.
+///
+/// Which one, not only whether: a run's sessions can run different agent
+/// profiles, and the run tools act under the caller's own.
+pub fn root_of(pid: u32, roots: &[u32], parents: &HashMap<u32, u32>) -> Option<u32> {
     let mut at = pid;
     // A real chain is a few dozen deep at most; the bound only guards a table
     // read mid-change that happens to describe a cycle.
     for _ in 0..256 {
         if roots.contains(&at) {
-            return true;
+            return Some(at);
         }
         match parents.get(&at) {
             Some(&up) if up != at && up > 1 => at = up,
-            _ => return false,
+            _ => return None,
         }
     }
-    false
+    None
 }
 
 /// `ps -axo pid=,ppid=` output, as `pid -> ppid`. Lines that are not two
@@ -198,19 +201,27 @@ mod tests {
     fn a_descendant_of_a_root_passes_and_a_sibling_tree_does_not() {
         // termd 100 spawned the parent's session 200 and the child's 300.
         let t = table(&[(100, 1), (200, 100), (201, 200), (202, 201), (300, 100), (301, 300)]);
-        assert!(descends_from(202, &[200], &t), "the parent's agent's own process");
-        assert!(descends_from(200, &[200], &t), "the root itself");
-        assert!(!descends_from(301, &[200], &t), "the child's process, under the same daemon");
-        assert!(!descends_from(100, &[200], &t), "the daemon is above the root, not under it");
-        assert!(!descends_from(999, &[200], &t), "a process the table does not know");
+        assert_eq!(root_of(202, &[200], &t), Some(200), "the parent's agent's own process");
+        assert_eq!(root_of(200, &[200], &t), Some(200), "the root itself");
+        assert_eq!(root_of(301, &[200], &t), None, "the child's process, under the same daemon");
+        assert_eq!(root_of(100, &[200], &t), None, "the daemon is above the root, not under it");
+        assert_eq!(root_of(999, &[200], &t), None, "a process the table does not know");
+    }
+
+    #[test]
+    fn the_root_named_is_the_callers_own_session() {
+        // One run, two tabs: 200 runs one profile and 300 another.
+        let t = table(&[(100, 1), (200, 100), (201, 200), (300, 100), (301, 300)]);
+        assert_eq!(root_of(201, &[200, 300], &t), Some(200));
+        assert_eq!(root_of(301, &[200, 300], &t), Some(300));
     }
 
     #[test]
     fn a_loop_or_an_orphan_ends_the_walk() {
-        assert!(!descends_from(5, &[200], &table(&[(5, 6), (6, 5)])));
+        assert_eq!(root_of(5, &[200], &table(&[(5, 6), (6, 5)])), None);
         // A process that double-forked out from under the session is launchd's.
-        assert!(!descends_from(5, &[200], &table(&[(5, 1)])));
-        assert!(!descends_from(5, &[200], &table(&[(5, 5)])));
+        assert_eq!(root_of(5, &[200], &table(&[(5, 1)])), None);
+        assert_eq!(root_of(5, &[200], &table(&[(5, 5)])), None);
     }
 
     #[test]
@@ -266,8 +277,8 @@ mod tests {
         // once: the server end's socket is the other way round.
         assert_eq!(tcp_peer_pid(server_port, peer_port), Some(me));
         let parents = process_parents().unwrap();
-        assert!(descends_from(me, &[me], &parents));
+        assert_eq!(root_of(me, &[me], &parents), Some(me));
         let up = parents[&me];
-        assert!(descends_from(me, &[up], &parents), "and from the process that started it");
+        assert_eq!(root_of(me, &[up], &parents), Some(up), "and from the process that started it");
     }
 }

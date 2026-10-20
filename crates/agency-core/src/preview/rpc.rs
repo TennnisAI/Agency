@@ -149,6 +149,52 @@ pub fn enabled(name: &str, caps: Caps) -> bool {
         || (caps.dispatch && RUN_TOOLS.contains(&name))
 }
 
+/// What a message asks of the run tools, which decides whether its caller has
+/// to be checked before it is answered (see the parent module's
+/// `request_caps`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum RunToolsAsk {
+    /// Nothing: the answer is the same whoever asked.
+    No,
+    /// A `tools/list`, which names them only for the run's own agent.
+    List,
+    /// A call of one of them, by request id.
+    Call(Value),
+}
+
+/// Read just enough of a raw POST body to say what it asks of the run tools.
+/// Anything [`handle`] would refuse before it got that far is `No`.
+pub fn run_tools_asked(body: &[u8]) -> RunToolsAsk {
+    let Ok(msg) = serde_json::from_slice::<Value>(body) else { return RunToolsAsk::No };
+    let Some(id) = msg.get("id").filter(|v| !v.is_null()).cloned() else {
+        return RunToolsAsk::No;
+    };
+    match msg.get("method").and_then(Value::as_str) {
+        Some("tools/list") => RunToolsAsk::List,
+        Some("tools/call") => {
+            let name = msg.pointer("/params/name").and_then(Value::as_str).unwrap_or_default();
+            if RUN_TOOLS.contains(&name) {
+                RunToolsAsk::Call(id)
+            } else {
+                RunToolsAsk::No
+            }
+        }
+        _ => RunToolsAsk::No,
+    }
+}
+
+/// The answer to a run tool call when the switch is on but the caller is not
+/// one Agency can vouch for. It used to get the switched-off text, and an
+/// agent that read "switched on per project by the user" asked the user to
+/// turn on a setting that was already on, when what it needed was relaunching.
+pub const RUN_CALLER_UNKNOWN: &str =
+    "the run tools are on for this project, but Agency could not confirm that this request \
+     comes from this run's own agent, so it is not answering it. An agent that was running \
+     before Agency last restarted is not one this launch of Agency started, and gets the run \
+     tools back once its tab is relaunched; a terminal tab, or a process started outside the \
+     run's own sessions, never has them. Ask the user to relaunch this agent, or do the work \
+     yourself.";
+
 /// Why a real tool is not answering, when the reason is a switch rather than a
 /// typo. `None` for a name no version of this server has ever had.
 fn switched_off_reason(name: &str) -> Option<&'static str> {
@@ -285,9 +331,9 @@ fn tools(caps: Caps) -> Value {
         {
             "name": "run_dispatch",
             "description": "Start another agent run in this project, exactly as the user's \
-                Dispatch does: a worktree and branch of its own cut from the project's base, the \
-                same agent and permission settings this run was started with, and a card on the \
-                user's board. Give it an issue key from this project's tracker, or a prompt that \
+                Dispatch does: a worktree and branch of its own, cut from the base this run was \
+                cut from and landing where this run lands, the same agent and permission \
+                settings you were started with, and a card on the user's board. Give it an issue key from this project's tracker, or a prompt that \
                 stands on its own, since the new run sees nothing of this conversation. Returns \
                 the run_id that run_wait and run_read take. The run asks the user, not you, \
                 for any permission it needs.",
@@ -380,6 +426,26 @@ mod tests {
 
     fn call(body: &str) -> Handled {
         handle(body.as_bytes(), ALL)
+    }
+
+    #[test]
+    fn only_a_listing_or_a_run_tool_call_asks_about_the_run_tools() {
+        let asked = |body: &str| run_tools_asked(body.as_bytes());
+        assert_eq!(asked(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#), RunToolsAsk::List);
+        assert_eq!(
+            asked(r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"run_wait"}}"#),
+            RunToolsAsk::Call(json!(7))
+        );
+        for no in [
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"set_status"}}"#,
+            r#"{"jsonrpc":"2.0","method":"tools/list"}"#,
+            r#"{"jsonrpc":"2.0","id":null,"method":"tools/list"}"#,
+            r#"[{"jsonrpc":"2.0","id":1,"method":"tools/list"}]"#,
+            "not json",
+        ] {
+            assert_eq!(asked(no), RunToolsAsk::No, "{no}");
+        }
     }
 
     fn tool_names(caps: Caps) -> Vec<String> {

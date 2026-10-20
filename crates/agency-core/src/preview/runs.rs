@@ -24,6 +24,29 @@ pub const WAIT_DEFAULT: Duration = Duration::from_secs(5 * 60);
 /// child's worktree, which the answer names.
 pub const READ_CHARS: usize = 24_000;
 
+/// How many `run_wait`s one run's server holds open at once. Each holds a
+/// connection, and the server has `MAX_CONNS` for everything: the
+/// agent's `set_status`, the preview bridge and the state hooks' posts too. A
+/// parent has at most four children to wait on, so twice that is room for a
+/// retry overlapping the call it replaces, and nowhere near the whole server.
+pub const WAITS_AT_ONCE: usize = 8;
+
+/// Who made a run tool call: the session [`super::Hooks::caller`] named when
+/// it admitted the request, and whether the client has since hung up.
+pub struct Asker<'a> {
+    /// The caller's session, by the name the app gave it.
+    pub session: &'a str,
+    /// True once the client has closed its end of the connection. A blocking
+    /// call asks between looks and gives up, since its answer has nowhere to
+    /// go: a client whose own tool-call timeout fires drops the connection and
+    /// calls again, and each abandoned `run_wait` used to hold its connection
+    /// for the whole of the timeout it asked for, up to half an hour.
+    pub hung_up: &'a dyn Fn() -> bool,
+}
+
+/// What carries a call out: the app's half, behind [`super::Hooks::runs`].
+pub type Exec = dyn Fn(&Asker, Call) -> Result<String, String> + Send + Sync;
+
 /// One call to a run tool, parsed.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Call {

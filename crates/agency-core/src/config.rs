@@ -806,33 +806,54 @@ fn is_env_assignment(token: &str) -> bool {
         && !name.starts_with(|c: char| c.is_ascii_digit())
 }
 
+/// Read `.agency/agency.local.toml`, let `edit` change its top-level table,
+/// and write it back, for every `save_*` below. A missing file is an empty
+/// one; a file that will not read or parse is an error, and is left as it was.
+///
+/// Each saver used to read the file with `.ok()` and fall back to an empty
+/// table, so one syntax error in a hand-edited file was read as no file at
+/// all, and the next toggle in Settings rewrote it holding that one section:
+/// the user's `[files]`, `[knowledge]` and run scripts silently gone.
+fn update_local(
+    repo_path: &Path,
+    edit: impl FnOnce(&mut toml::value::Table),
+) -> std::io::Result<()> {
+    let dir = repo_path.join(".agency");
+    let path = dir.join("agency.local.toml");
+    let mut doc = match std::fs::read_to_string(&path) {
+        Ok(text) => toml::from_str::<toml::value::Table>(&text).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{} is not valid TOML, so it was left as it is: {e}", path.display()),
+            )
+        })?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::value::Table::new(),
+        Err(e) => return Err(e),
+    };
+    edit(&mut doc);
+    let text = toml::to_string_pretty(&toml::Value::Table(doc)).map_err(std::io::Error::other)?;
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(&path, text)
+}
+
 /// Persist the `[knowledge]` section into `.agency/agency.local.toml` — the
 /// gitignored, per-machine override file (`load` merges it over the tracked
 /// `agency.toml`). Any other config already in that file is preserved. `graph`
 /// is always written so toggling off is durable; empty command overrides are
 /// omitted so the runtime defaults apply.
 pub fn save_knowledge(repo_path: &Path, k: &KnowledgeConfig) -> std::io::Result<()> {
-    let dir = repo_path.join(".agency");
-    let path = dir.join("agency.local.toml");
-    let mut doc = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|t| toml::from_str::<toml::Value>(&t).ok())
-        .and_then(|v| v.as_table().cloned())
-        .unwrap_or_default();
-
-    let mut table = toml::value::Table::new();
-    table.insert("graph".into(), toml::Value::Boolean(k.graph));
-    table.insert("rebuild_on_merge".into(), toml::Value::Boolean(k.rebuild_on_merge));
-    for (key, val) in [("serve_command", &k.serve_command), ("build_command", &k.build_command)] {
-        if let Some(s) = val.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
-            table.insert(key.into(), toml::Value::String(s.to_string()));
+    update_local(repo_path, |doc| {
+        let mut table = toml::value::Table::new();
+        table.insert("graph".into(), toml::Value::Boolean(k.graph));
+        table.insert("rebuild_on_merge".into(), toml::Value::Boolean(k.rebuild_on_merge));
+        for (key, val) in [("serve_command", &k.serve_command), ("build_command", &k.build_command)]
+        {
+            if let Some(s) = val.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                table.insert(key.into(), toml::Value::String(s.to_string()));
+            }
         }
-    }
-    doc.insert("knowledge".into(), toml::Value::Table(table));
-
-    let text = toml::to_string_pretty(&toml::Value::Table(doc)).map_err(std::io::Error::other)?;
-    std::fs::create_dir_all(&dir)?;
-    std::fs::write(&path, text)
+        doc.insert("knowledge".into(), toml::Value::Table(table));
+    })
 }
 
 /// Persist the `[issues]` section into `.agency/agency.local.toml`, the
@@ -846,31 +867,21 @@ pub fn save_knowledge(repo_path: &Path, k: &KnowledgeConfig) -> std::io::Result<
 /// commits `[issues] sync = true` into `agency.toml` by hand, and `load` already
 /// merges that under whatever this writes. See `docs/tracked-issues.md`.
 pub fn save_issues(repo_path: &Path, i: &IssuesConfig) -> std::io::Result<()> {
-    let dir = repo_path.join(".agency");
-    let path = dir.join("agency.local.toml");
-    let mut doc = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|t| toml::from_str::<toml::Value>(&t).ok())
-        .and_then(|v| v.as_table().cloned())
-        .unwrap_or_default();
-
-    let mut table = toml::value::Table::new();
-    // Always written, so turning either back off is durable rather than
-    // falling through to whatever the tracked file says.
-    table.insert("sync".into(), toml::Value::Boolean(i.sync));
-    table.insert("auto".into(), toml::Value::Boolean(i.auto));
-    // The remote is written even when it is the default, for the same reason:
-    // omitting `origin` left a tracked `remote = "tracker"` to win the merge,
-    // so a user who picked `origin` here got the repo's choice back on the next
-    // read and no way to say otherwise from the UI.
-    let remote = i.remote.trim();
-    let remote = if remote.is_empty() { default_remote() } else { remote.to_string() };
-    table.insert("remote".into(), toml::Value::String(remote));
-    doc.insert("issues".into(), toml::Value::Table(table));
-
-    let text = toml::to_string_pretty(&toml::Value::Table(doc)).map_err(std::io::Error::other)?;
-    std::fs::create_dir_all(&dir)?;
-    std::fs::write(&path, text)
+    update_local(repo_path, |doc| {
+        let mut table = toml::value::Table::new();
+        // Always written, so turning either back off is durable rather than
+        // falling through to whatever the tracked file says.
+        table.insert("sync".into(), toml::Value::Boolean(i.sync));
+        table.insert("auto".into(), toml::Value::Boolean(i.auto));
+        // The remote is written even when it is the default, for the same reason:
+        // omitting `origin` left a tracked `remote = "tracker"` to win the merge,
+        // so a user who picked `origin` here got the repo's choice back on the next
+        // read and no way to say otherwise from the UI.
+        let remote = i.remote.trim();
+        let remote = if remote.is_empty() { default_remote() } else { remote.to_string() };
+        table.insert("remote".into(), toml::Value::String(remote));
+        doc.insert("issues".into(), toml::Value::Table(table));
+    })
 }
 
 /// Persist the `[files]` section (the `copy` list) into `.agency/agency.local.toml`
@@ -879,50 +890,32 @@ pub fn save_issues(repo_path: &Path, i: &IssuesConfig) -> std::io::Result<()> {
 /// [`save_knowledge`]. The list lives in the local file because worktree-copy
 /// targets (`.env`, local certs) are inherently machine-specific.
 pub fn save_files(repo_path: &Path, f: &FilesConfig) -> std::io::Result<()> {
-    let dir = repo_path.join(".agency");
-    let path = dir.join("agency.local.toml");
-    let mut doc = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|t| toml::from_str::<toml::Value>(&t).ok())
-        .and_then(|v| v.as_table().cloned())
-        .unwrap_or_default();
-
-    let copy: Vec<toml::Value> = f
-        .copy
-        .iter()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(|s| toml::Value::String(s.to_string()))
-        .collect();
-    // `copy` is the only `[files]` key today, so replacing the whole table is
-    // safe. If more keys are added here, merge into the existing table instead of
-    // overwriting so sibling keys aren't dropped.
-    let mut table = toml::value::Table::new();
-    table.insert("copy".into(), toml::Value::Array(copy));
-    doc.insert("files".into(), toml::Value::Table(table));
-
-    let text = toml::to_string_pretty(&toml::Value::Table(doc)).map_err(std::io::Error::other)?;
-    std::fs::create_dir_all(&dir)?;
-    std::fs::write(&path, text)
+    update_local(repo_path, |doc| {
+        let copy: Vec<toml::Value> = f
+            .copy
+            .iter()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| toml::Value::String(s.to_string()))
+            .collect();
+        // `copy` is the only `[files]` key today, so replacing the whole table is
+        // safe. If more keys are added here, merge into the existing table instead of
+        // overwriting so sibling keys aren't dropped.
+        let mut table = toml::value::Table::new();
+        table.insert("copy".into(), toml::Value::Array(copy));
+        doc.insert("files".into(), toml::Value::Table(table));
+    })
 }
 
 /// Persist `[dispatch] agent_tools` into `.agency/agency.local.toml`, the
 /// gitignored per-machine file, which is the only place `load` reads it from.
 /// Mirrors [`save_knowledge`]; any other config in that file is preserved.
 pub fn save_dispatch(repo_path: &Path, agent_tools: bool) -> std::io::Result<()> {
-    let dir = repo_path.join(".agency");
-    let path = dir.join("agency.local.toml");
-    let mut doc = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|t| toml::from_str::<toml::Value>(&t).ok())
-        .and_then(|v| v.as_table().cloned())
-        .unwrap_or_default();
-    let mut table = toml::value::Table::new();
-    table.insert("agent_tools".into(), toml::Value::Boolean(agent_tools));
-    doc.insert("dispatch".into(), toml::Value::Table(table));
-    let text = toml::to_string_pretty(&toml::Value::Table(doc)).map_err(std::io::Error::other)?;
-    std::fs::create_dir_all(&dir)?;
-    std::fs::write(&path, text)
+    update_local(repo_path, |doc| {
+        let mut table = toml::value::Table::new();
+        table.insert("agent_tools".into(), toml::Value::Boolean(agent_tools));
+        doc.insert("dispatch".into(), toml::Value::Table(table));
+    })
 }
 
 /// True when the effective run list comes from the tracked `agency.toml`
@@ -954,44 +947,34 @@ pub fn run_scripts_are_shared(repo_path: &Path) -> bool {
 /// list is written: leaving `run =` behind would resurrect the old command the
 /// moment the list was emptied.
 pub fn save_run_scripts(repo_path: &Path, scripts: &[RunScript]) -> std::io::Result<()> {
-    let dir = repo_path.join(".agency");
-    let path = dir.join("agency.local.toml");
-    let mut doc = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|t| toml::from_str::<toml::Value>(&t).ok())
-        .and_then(|v| v.as_table().cloned())
-        .unwrap_or_default();
+    update_local(repo_path, |doc| {
+        let mut table = doc.get("scripts").and_then(|v| v.as_table().cloned()).unwrap_or_default();
+        table.remove("run");
+        table.remove("run_mode");
 
-    let mut table = doc.get("scripts").and_then(|v| v.as_table().cloned()).unwrap_or_default();
-    table.remove("run");
-    table.remove("run_mode");
+        let entries: Vec<toml::Value> = dedupe_by_name(scripts.to_vec())
+            .into_iter()
+            .map(|s| {
+                let mut t = toml::value::Table::new();
+                t.insert("name".into(), toml::Value::String(s.name));
+                t.insert("command".into(), toml::Value::String(s.command));
+                t.insert("web".into(), toml::Value::Boolean(s.web));
+                t.insert("nonconcurrent".into(), toml::Value::Boolean(s.nonconcurrent));
+                toml::Value::Table(t)
+            })
+            .collect();
+        if entries.is_empty() {
+            table.remove("runs");
+        } else {
+            table.insert("runs".into(), toml::Value::Array(entries));
+        }
 
-    let entries: Vec<toml::Value> = dedupe_by_name(scripts.to_vec())
-        .into_iter()
-        .map(|s| {
-            let mut t = toml::value::Table::new();
-            t.insert("name".into(), toml::Value::String(s.name));
-            t.insert("command".into(), toml::Value::String(s.command));
-            t.insert("web".into(), toml::Value::Boolean(s.web));
-            t.insert("nonconcurrent".into(), toml::Value::Boolean(s.nonconcurrent));
-            toml::Value::Table(t)
-        })
-        .collect();
-    if entries.is_empty() {
-        table.remove("runs");
-    } else {
-        table.insert("runs".into(), toml::Value::Array(entries));
-    }
-
-    if table.is_empty() {
-        doc.remove("scripts");
-    } else {
-        doc.insert("scripts".into(), toml::Value::Table(table));
-    }
-
-    let text = toml::to_string_pretty(&toml::Value::Table(doc)).map_err(std::io::Error::other)?;
-    std::fs::create_dir_all(&dir)?;
-    std::fs::write(&path, text)
+        if table.is_empty() {
+            doc.remove("scripts");
+        } else {
+            doc.insert("scripts".into(), toml::Value::Table(table));
+        }
+    })
 }
 
 /// Deep-merge `local` over `base`: tables merge recursively, every other value
@@ -1417,6 +1400,35 @@ mod tests {
         let c = load(dir.path());
         assert!(c.dispatch.agent_tools);
         assert_eq!(c.files.copy, vec!["a.pem".to_string()]);
+    }
+
+    /// A local file with one syntax error read as an empty one, and the next
+    /// toggle rewrote it holding only its own section.
+    #[test]
+    fn no_save_overwrites_a_local_file_it_cannot_parse() {
+        let dir = tempdir().unwrap();
+        let broken = "[files]\ncopy = [\"a.pem\"\n[knowledge]\ngraph = true\n";
+        write(dir.path(), "agency.local.toml", broken);
+        let path = dir.path().join(".agency").join("agency.local.toml");
+        let saves: [&dyn Fn() -> std::io::Result<()>; 5] = [
+            &|| save_dispatch(dir.path(), true),
+            &|| save_knowledge(dir.path(), &KnowledgeConfig::default()),
+            &|| save_issues(dir.path(), &IssuesConfig::default()),
+            &|| save_files(dir.path(), &FilesConfig::default()),
+            &|| save_run_scripts(dir.path(), &[]),
+        ];
+        for save in saves {
+            let err = save().unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+        }
+    }
+
+    #[test]
+    fn a_save_creates_the_local_file_when_there_is_none() {
+        let dir = tempdir().unwrap();
+        save_dispatch(dir.path(), true).unwrap();
+        assert!(load(dir.path()).dispatch.agent_tools);
     }
 
     #[test]

@@ -218,8 +218,9 @@ pub struct Hooks {
     pub report: Arc<dyn Fn(&str, report::Event) + Send + Sync>,
     /// A run tool call, carried out by the app for this run (AGE-209). `Ok` is
     /// the answer and `Err` a failure, both as text addressed to the agent.
-    /// May block: `run_wait` holds for as long as the call asked.
-    pub runs: Arc<dyn Fn(runs::Call) -> std::result::Result<String, String> + Send + Sync>,
+    /// May block: `run_wait` holds for as long as the call asked, or until
+    /// [`runs::Asker::hung_up`] says nobody is waiting for the answer.
+    pub runs: Arc<runs::Exec>,
     /// This run's own secret, written only into this run's MCP config
     /// ([`server_entry`]), which a run tool call has to carry in
     /// [`RUN_TOKEN_HEADER`]. The port alone says nothing about who is calling:
@@ -227,14 +228,15 @@ pub struct Hooks {
     /// child that posted to its parent's port would otherwise have dispatched
     /// as its parent, past the rule that children never do.
     pub run_token: Arc<str>,
-    /// Whether the process holding the client end of a connection, given as
-    /// (this server's port, the client's port), is one of this run's own: a
-    /// descendant of one of its sessions' processes (see [`crate::peer`]).
-    /// The token is in a file, and anything that can read the file can send
-    /// it; this is the check a copied token does not pass. Asked only of a
-    /// request that has already passed every cheaper check, since answering
-    /// means reading the process table.
-    pub caller: Arc<dyn Fn(u16, u16) -> bool + Send + Sync>,
+    /// Which of this run's sessions the process holding the client end of a
+    /// connection, given as (this server's port, the client's port), belongs
+    /// to: the one whose process it descends from (see [`crate::peer`]), by
+    /// the name the app knows it by. `None` if it is none of them. The token
+    /// is in a file, and anything that can read the file can send it; this is
+    /// the check a copied token does not pass. Asked only of a request that
+    /// has passed every cheaper check and whose answer depends on the run
+    /// tools, since answering means reading the process table.
+    pub caller: Arc<dyn Fn(u16, u16) -> Option<String> + Send + Sync>,
     /// What a `report` post has to carry in [`crate::state_hooks::TOKEN_HEADER`]
     /// (see [`crate::state_hooks::token`]).
     pub state_token: Arc<str>,
@@ -534,6 +536,8 @@ struct Ctx {
     hooks: Hooks,
     shutdown: AtomicBool,
     conns: AtomicUsize,
+    /// `run_wait`s in flight, held under [`runs::WAITS_AT_ONCE`].
+    waits: AtomicUsize,
 }
 
 /// One run's preview server: the listener thread plus the shared broker.
@@ -560,6 +564,7 @@ impl PreviewServer {
             hooks,
             shutdown: AtomicBool::new(false),
             conns: AtomicUsize::new(0),
+            waits: AtomicUsize::new(0),
         });
         let ctx2 = ctx.clone();
         let accept =
@@ -711,14 +716,25 @@ fn control(stream: &mut TcpStream, req: &http::Request, ctx: &Ctx) {
     let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
     let str_at = |k: &str| body.get(k).and_then(Value::as_str).map(str::to_string);
     match (req.method.as_str(), req.path()) {
-        ("POST", MCP_PATH) => match rpc::handle(&req.body, request_caps(req, stream, ctx)) {
-            rpc::Handled::Response(v) => http::respond_json(stream, 200, &v),
-            rpc::Handled::Notification => http::respond_status(stream, 202, "Accepted"),
-            rpc::Handled::Call { id, name, args } => {
-                let response = exec_tool(id, &name, &args, ctx);
-                http::respond_json(stream, 200, &response);
+        ("POST", MCP_PATH) => {
+            let (caps, caller) = match request_caps(req, stream, ctx) {
+                Ok(admitted) => admitted,
+                Err(refusal) => return http::respond_json(stream, 200, &refusal),
+            };
+            match rpc::handle(&req.body, caps) {
+                rpc::Handled::Response(v) => http::respond_json(stream, 200, &v),
+                rpc::Handled::Notification => http::respond_status(stream, 202, "Accepted"),
+                rpc::Handled::Call { id, name, args } => {
+                    let response = match caller {
+                        Some(session) if rpc::RUN_TOOLS.contains(&name.as_str()) => {
+                            run_tool(id, &name, &args, &session, stream, ctx)
+                        }
+                        _ => exec_tool(id, &name, &args, ctx),
+                    };
+                    http::respond_json(stream, 200, &response);
+                }
             }
-        },
+        }
         // The optional SSE listen channel (and session teardown): this server
         // never pushes, so saying 405 here is the spec-sanctioned answer.
         (_, MCP_PATH) => {
@@ -780,7 +796,9 @@ fn control(stream: &mut TcpStream, req: &http::Request, ctx: &Ctx) {
 }
 
 /// What this one request may be served: the run's switches, less the run
-/// tools unless the request is this run's own agent speaking.
+/// tools unless the request is this run's own agent speaking, and which of
+/// its sessions that is. `Err` is the whole answer to a run tool call from
+/// anyone else.
 ///
 /// Three checks, cheapest first. A page on the preview's own origin passes
 /// `handle_conn`'s origin check, since it is loopback, and a script on it (the
@@ -792,22 +810,97 @@ fn control(stream: &mut TcpStream, req: &http::Request, ctx: &Ctx) {
 /// the token out of this run's MCP config, a dispatched child above all, which
 /// could otherwise have dispatched as its parent: it is not in the parent's
 /// process tree, and no file it can read puts it there.
-fn request_caps(req: &http::Request, stream: &TcpStream, ctx: &Ctx) -> Caps {
+///
+/// Only a request whose answer depends on the run tools is checked at all
+/// ([`rpc::run_tools_asked`]). The last check runs `lsof` and reads the whole
+/// process table, and it ran on every request from the run's own agent, its
+/// `initialize`, `set_status` and preview calls included, since every one of
+/// them carries the token.
+fn request_caps(
+    req: &http::Request,
+    stream: &TcpStream,
+    ctx: &Ctx,
+) -> std::result::Result<(Caps, Option<String>), Value> {
     let mut caps = (ctx.hooks.caps)();
-    if !caps.dispatch {
-        return caps;
+    let asked = rpc::run_tools_asked(&req.body);
+    if !caps.dispatch || asked == rpc::RunToolsAsk::No {
+        // Nothing this request is answered with reads the switch, so nothing
+        // can leak through it either.
+        caps.dispatch = false;
+        return Ok((caps, None));
     }
     let from_browser = req.header("origin").is_some() || req.header("sec-fetch-site").is_some();
     let token = req.header(RUN_TOKEN_HEADER).unwrap_or("").trim();
     let has_token = !ctx.hooks.run_token.is_empty()
         && crate::state_hooks::token_matches(token, &ctx.hooks.run_token);
-    caps.dispatch = !from_browser
-        && has_token
-        && match (stream.local_addr(), stream.peer_addr()) {
+    let caller = (!from_browser && has_token)
+        .then(|| match (stream.local_addr(), stream.peer_addr()) {
             (Ok(local), Ok(peer)) => (ctx.hooks.caller)(local.port(), peer.port()),
-            _ => false,
-        };
-    caps
+            _ => None,
+        })
+        .flatten();
+    caps.dispatch = caller.is_some();
+    match (asked, caller) {
+        // The switch is on, so "switched off" would send the agent to ask
+        // the user for a setting they already chose.
+        (rpc::RunToolsAsk::Call(id), None) => Err(rpc::error(id, -32602, rpc::RUN_CALLER_UNKNOWN)),
+        (_, caller) => Ok((caps, caller)),
+    }
+}
+
+/// Whether the client on `stream` has closed its end. The server reads one
+/// request per connection, so anything readable after it is the end of the
+/// stream; nothing yet is a client still waiting.
+fn hung_up(stream: &TcpStream) -> bool {
+    let Ok(probe) = stream.try_clone() else { return true };
+    // The clone shares the socket, blocking mode included, so it goes back.
+    if probe.set_nonblocking(true).is_err() {
+        return true;
+    }
+    let gone = match probe.peek(&mut [0u8; 1]) {
+        Ok(0) => true,
+        Ok(_) => false,
+        Err(e) => e.kind() != std::io::ErrorKind::WouldBlock,
+    };
+    let _ = probe.set_nonblocking(false);
+    gone
+}
+
+/// One run tool call from `session`, admitted by [`request_caps`].
+fn run_tool(
+    id: Value,
+    name: &str,
+    args: &Value,
+    session: &str,
+    stream: &TcpStream,
+    ctx: &Ctx,
+) -> Value {
+    let call = match runs::parse(name, args) {
+        Ok(call) => call,
+        Err(why) => return rpc::error(id, -32602, &why),
+    };
+    let waiting = matches!(call, runs::Call::Wait { .. });
+    if waiting && ctx.waits.fetch_add(1, Ordering::SeqCst) >= runs::WAITS_AT_ONCE {
+        ctx.waits.fetch_sub(1, Ordering::SeqCst);
+        return rpc::tool_text(
+            id,
+            &format!(
+                "This run already has {} run_wait calls open, which is as many as Agency \
+                 holds at once. Wait for one of them to answer before starting another.",
+                runs::WAITS_AT_ONCE
+            ),
+            true,
+        );
+    }
+    let gone = || hung_up(stream);
+    let answer = (ctx.hooks.runs)(&runs::Asker { session, hung_up: &gone }, call);
+    if waiting {
+        ctx.waits.fetch_sub(1, Ordering::SeqCst);
+    }
+    match answer {
+        Ok(text) => rpc::tool_text(id, &text, false),
+        Err(text) => rpc::tool_text(id, &text, true),
+    }
 }
 
 /// Execute one MCP tool call and shape its response. Read tools answer from
@@ -859,13 +952,6 @@ fn exec_tool(id: Value, name: &str, args: &Value, ctx: &Ctx) -> Value {
             (ctx.hooks.set_status)(status);
             rpc::tool_text(id, &reply, false)
         }
-        runs::DISPATCH | runs::WAIT | runs::READ => match runs::parse(name, args) {
-            Ok(call) => match (ctx.hooks.runs)(call) {
-                Ok(text) => rpc::tool_text(id, &text, false),
-                Err(text) => rpc::tool_text(id, &text, true),
-            },
-            Err(why) => rpc::error(id, -32602, &why),
-        },
         "preview_snapshot" => bridge_tool(id, name, json!({ "kind": "snapshot" }), ctx),
         "preview_navigate" => {
             let path = arg("path");
@@ -1003,15 +1089,16 @@ mod tests {
             open_file: Arc::new(move || open.clone()),
             set_status: Arc::new(|_| {}),
             report: Arc::new(|_, _| {}),
-            runs: Arc::new(|call| Ok(format!("{call:?}"))),
+            runs: Arc::new(|asker, call| Ok(format!("{} {call:?}", asker.session))),
             run_token: Arc::from(RUN_TOKEN),
-            caller: Arc::new(|_, _| true),
+            caller: Arc::new(|_, _| Some(SESSION.to_string())),
             state_token: Arc::from(TOKEN),
         }
     }
 
     const TOKEN: &str = "0123456789abcdef0123456789abcdef";
     const RUN_TOKEN: &str = "fedcba9876543210fedcba9876543210";
+    const SESSION: &str = "agency-run-1";
 
     /// Raw HTTP client good enough for our own server.
     fn post(port: u16, path: &str, body: &str) -> (u16, String) {
@@ -1287,7 +1374,7 @@ mod tests {
             Caps { preview: false, editor: false, dispatch: true },
             OpenFocus::Nothing,
         );
-        hooks.runs = Arc::new(|call| match call {
+        hooks.runs = Arc::new(|_, call| match call {
             runs::Call::Wait { run_id, timeout } => Ok(format!("{run_id} {}", timeout.as_secs())),
             other => Err(format!("refused {other:?}")),
         });
@@ -1320,7 +1407,7 @@ mod tests {
         );
         let reached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let seen = reached.clone();
-        hooks.runs = Arc::new(move |_| {
+        hooks.runs = Arc::new(move |_, _| {
             seen.fetch_add(1, Ordering::SeqCst);
             Ok("started".into())
         });
@@ -1370,13 +1457,13 @@ mod tests {
         let log = asked.clone();
         hooks.caller = Arc::new(move |server, peer| {
             log.lock().unwrap().push((server, peer));
-            false
+            None
         });
-        hooks.runs = Arc::new(|_| panic!("a refused caller reached the app"));
+        hooks.runs = Arc::new(|_, _| panic!("a refused caller reached the app"));
         let srv = start(hooks);
         let own = [(RUN_TOKEN_HEADER, RUN_TOKEN)];
         let r = run_call(srv.port(), "run_dispatch", json!({ "prompt": "x" }), &own);
-        assert!(r["error"]["message"].is_string(), "{r}");
+        assert_eq!(r["error"]["message"], rpc::RUN_CALLER_UNKNOWN, "{r}");
         let asked = asked.lock().unwrap();
         assert_eq!(asked.len(), 1);
         assert_eq!(asked[0].0, srv.port(), "asked about this server's end");
@@ -1395,6 +1482,142 @@ mod tests {
         let srv = start(hooks);
         let r = run_call(srv.port(), "run_wait", json!({ "run_id": "c" }), &[]);
         assert!(r["error"]["message"].is_string(), "{r}");
+    }
+
+    /// Only a listing and a run tool call depend on who is asking. The
+    /// caller check ran on every request carrying the token, which is every
+    /// request the run's own agent makes: two subprocesses and a process table
+    /// for each `initialize`, `set_status` and preview call.
+    #[test]
+    fn the_caller_is_checked_only_when_the_answer_depends_on_it() {
+        let mut hooks = with_open_file(
+            None,
+            Err("n/a"),
+            Caps { preview: true, editor: false, dispatch: true },
+            OpenFocus::Nothing,
+        );
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = asked.clone();
+        hooks.caller = Arc::new(move |_, _| {
+            count.fetch_add(1, Ordering::SeqCst);
+            Some(SESSION.to_string())
+        });
+        let srv = start(hooks);
+        let own = [(RUN_TOKEN_HEADER, RUN_TOKEN)];
+        let send = |msg: Value| request(srv.port(), "POST", MCP_PATH, &msg.to_string(), &own);
+        send(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}));
+        send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
+        send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"set_status","arguments":{"text":"x"}}}));
+        send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call",
+            "params":{"name":"preview_console","arguments":{}}}));
+        assert_eq!(asked.load(Ordering::SeqCst), 0, "none of those is about the run tools");
+        let (_, list) = send(json!({"jsonrpc":"2.0","id":4,"method":"tools/list"}));
+        assert!(list.contains("run_dispatch"));
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        run_call(srv.port(), "run_read", json!({ "run_id": "c" }), &own);
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+    }
+
+    /// The app is told which of the run's sessions is calling, since the run
+    /// tools act under that session's own profile.
+    #[test]
+    fn a_run_tool_call_reaches_the_app_as_the_session_that_made_it() {
+        let mut hooks = with_open_file(
+            None,
+            Err("n/a"),
+            Caps { preview: false, editor: false, dispatch: true },
+            OpenFocus::Nothing,
+        );
+        hooks.caller = Arc::new(|_, _| Some("agency-run-1--2".to_string()));
+        hooks.runs = Arc::new(|asker, _| Ok(asker.session.to_string()));
+        let srv = start(hooks);
+        let own = [(RUN_TOKEN_HEADER, RUN_TOKEN)];
+        let r = run_call(srv.port(), "run_dispatch", json!({ "prompt": "x" }), &own);
+        assert_eq!(r["result"]["content"][0]["text"], "agency-run-1--2");
+    }
+
+    /// A client whose own tool-call timeout fires drops the connection and
+    /// calls again. Each abandoned `run_wait` held its connection for the
+    /// whole timeout it asked for, and enough of them fill the server.
+    #[test]
+    fn a_wait_whose_client_hung_up_is_told_so() {
+        let mut hooks = with_open_file(
+            None,
+            Err("n/a"),
+            Caps { preview: false, editor: false, dispatch: true },
+            OpenFocus::Nothing,
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        let tx = Mutex::new(tx);
+        hooks.runs = Arc::new(move |asker, _| {
+            assert!(!(asker.hung_up)(), "the client is still there when the call arrives");
+            let started = Instant::now();
+            while !(asker.hung_up)() {
+                assert!(started.elapsed() < Duration::from_secs(10), "never saw the hang-up");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            tx.lock().unwrap().send(()).unwrap();
+            Err("hung up".into())
+        });
+        let srv = start(hooks);
+        let msg = json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"run_wait","arguments":{"run_id":"c"}}})
+        .to_string();
+        let mut s = TcpStream::connect(("127.0.0.1", srv.port())).unwrap();
+        let head = format!(
+            "POST {MCP_PATH} HTTP/1.1\r\nhost: x\r\n{RUN_TOKEN_HEADER}: {RUN_TOKEN}\r\n\
+             content-length: {}\r\n\r\n",
+            msg.len()
+        );
+        s.write_all(head.as_bytes()).unwrap();
+        s.write_all(msg.as_bytes()).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        drop(s);
+        rx.recv_timeout(Duration::from_secs(10)).expect("the wait gave up");
+    }
+
+    #[test]
+    fn waits_past_the_cap_are_refused_and_their_places_come_back() {
+        let mut hooks = with_open_file(
+            None,
+            Err("n/a"),
+            Caps { preview: false, editor: false, dispatch: true },
+            OpenFocus::Nothing,
+        );
+        let release = Arc::new(AtomicBool::new(false));
+        let held = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (go, count) = (release.clone(), held.clone());
+        hooks.runs = Arc::new(move |_, call| {
+            if matches!(call, runs::Call::Wait { .. }) {
+                count.fetch_add(1, Ordering::SeqCst);
+                while !go.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            Ok("answered".into())
+        });
+        let srv = start(hooks);
+        let port = srv.port();
+        let own = [(RUN_TOKEN_HEADER, RUN_TOKEN)];
+        let wait = move || run_call(port, "run_wait", json!({ "run_id": "c" }), &own);
+        let open: Vec<_> = (0..runs::WAITS_AT_ONCE).map(|_| std::thread::spawn(wait)).collect();
+        let started = Instant::now();
+        while held.load(Ordering::SeqCst) < runs::WAITS_AT_ONCE {
+            assert!(started.elapsed() < Duration::from_secs(10), "the waits never all arrived");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let r = wait();
+        assert_eq!(r["result"]["isError"], true, "{r}");
+        assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("run_wait calls"));
+        // Other run tools are not waits, and are not held back by them.
+        let r = run_call(port, "run_read", json!({ "run_id": "c" }), &own);
+        assert_eq!(r["result"]["content"][0]["text"], "answered");
+        release.store(true, Ordering::SeqCst);
+        for t in open {
+            assert_eq!(t.join().unwrap()["result"]["content"][0]["text"], "answered");
+        }
+        assert_eq!(wait()["result"]["content"][0]["text"], "answered");
     }
 
     #[test]

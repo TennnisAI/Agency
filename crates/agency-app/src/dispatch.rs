@@ -5,13 +5,14 @@
 //!
 //! The rules here are the issue's hard constraints, made checkable:
 //!
-//! - **No escalation by proxy.** A child runs its parent's own agent profile
-//!   and model, read from the registry exactly as the user's Dispatch reads
-//!   them, so its permission gate is the one the user chose for the parent. No
-//!   argument names another profile: comparing two profiles' permissions is
-//!   not something free-form CLI flags allow (dropping a restrictive
-//!   `--permission-mode plan` is fewer arguments and a wider gate), so the only
-//!   comparison that cannot be got wrong is "the same one".
+//! - **No escalation by proxy.** A child runs the agent profile and model of
+//!   the session that dispatched it, read from the registry exactly as that
+//!   session was launched ([`caller_profile`]), so its permission gate is the
+//!   one the user chose for the caller. No argument names another profile:
+//!   comparing two profiles' permissions is not something free-form CLI flags
+//!   allow (dropping a restrictive `--permission-mode plan` is fewer arguments
+//!   and a wider gate), so the only comparison that cannot be got wrong is
+//!   "the same one".
 //! - **The parent cannot answer for the user.** There is no tool to type into
 //!   a child. A child stopped on a permission prompt is `blocked` on the
 //!   user's board with its own badge and notification, and `run_wait` tells
@@ -24,6 +25,7 @@
 //!   another user decision.
 
 use crate::activity::{ActivityInfo, ActivityState};
+use agency_core::registry::RunSession;
 use agency_core::term::SessionStatus;
 
 /// How many runs one agent may have dispatched and not yet seen archived or
@@ -49,6 +51,38 @@ pub fn admit(is_child: bool, live_children: usize) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// The agent profile and model a run dispatched from session `caller` of run
+/// `run_id` starts on: the caller's own, as that session was launched. `agent`
+/// and `model` are the run's, `tabs` its extra sessions.
+///
+/// A run's tabs can each run a different profile, and the caller check admits
+/// any of them. The child used to start on the run's own profile whichever
+/// tab asked, so a tab the user had opened on a narrower one (plan mode beside
+/// a lead that skips permission prompts) started children under the wider
+/// gate: the escalation by proxy this module exists to rule out. A tab's model
+/// follows `spawn_run_session`'s rule, the run's only when the tab runs the
+/// run's own agent, since a model name means nothing to another CLI.
+pub fn caller_profile<'a>(
+    run_id: &str,
+    agent: &'a str,
+    model: Option<&'a str>,
+    tabs: &'a [RunSession],
+    caller: &str,
+) -> Result<(&'a str, Option<&'a str>), String> {
+    if caller == run_id {
+        return Ok((agent, model));
+    }
+    match tabs.iter().find(|t| t.id == caller) {
+        Some(tab) if tab.agent == crate::state::SHELL_AGENT => Err("This request came from a \
+            terminal tab, not an agent, and only an agent dispatches runs."
+            .to_string()),
+        Some(tab) => Ok((tab.agent.as_str(), model.filter(|_| tab.agent == agent))),
+        None => Err("The tab this request came from has just been closed, so there is no \
+                     agent profile to start the run under."
+            .to_string()),
+    }
 }
 
 /// Whether the agent of run `asker` may wait on or read `run_id`, whose
@@ -170,7 +204,7 @@ pub fn wait_text(run_id: &str, outcome: Outcome, waited_secs: u64, screen: Optio
 pub fn dispatched_text(run_id: &str, title: &str, branch: &str, worktree: &str) -> String {
     format!(
         "Started {run_id} (\"{title}\") on branch {branch}, in its own worktree at {worktree}. \
-         It is on the user's board, running this run's agent with the same permission settings. \
+         It is on the user's board, running your own agent with the same permission settings. \
          Call run_wait with run_id \"{run_id}\" to block until it finishes or needs the user, \
          and run_read to see what it did; its files are at that path too."
     )
@@ -196,6 +230,30 @@ mod tests {
         assert!(admit(false, MAX_LIVE_CHILDREN - 1).is_ok());
         let no = admit(false, MAX_LIVE_CHILDREN).unwrap_err();
         assert!(no.contains("run_wait"), "the refusal says how to free a place: {no}");
+    }
+
+    fn tab(id: &str, agent: &str) -> RunSession {
+        RunSession { id: id.into(), run_id: "r".into(), agent: agent.into(), created_at: 0 }
+    }
+
+    #[test]
+    fn a_child_runs_the_callers_own_profile_not_the_runs() {
+        let tabs = [tab("r--2", "claude-plan"), tab("r--3", "claude"), tab("r--4", "codex")];
+        let of = |caller| caller_profile("r", "claude", Some("opus"), &tabs, caller);
+        assert_eq!(of("r"), Ok(("claude", Some("opus"))), "the run's own session");
+        // A narrower profile in a tab beside a wider lead stays narrow.
+        assert_eq!(of("r--2"), Ok(("claude-plan", None)));
+        assert_eq!(of("r--3"), Ok(("claude", Some("opus"))), "the run's agent, its model too");
+        assert_eq!(of("r--4"), Ok(("codex", None)), "\"opus\" means nothing to another CLI");
+    }
+
+    #[test]
+    fn a_terminal_tab_or_a_closed_one_dispatches_nothing() {
+        let tabs = [tab("r--2", crate::state::SHELL_AGENT)];
+        assert!(caller_profile("r", "claude", None, &tabs, "r--2")
+            .unwrap_err()
+            .contains("terminal"));
+        assert!(caller_profile("r", "claude", None, &tabs, "r--9").is_err());
     }
 
     #[test]

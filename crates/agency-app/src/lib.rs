@@ -504,9 +504,9 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         // And the run tools (AGE-209) their way back in: a server's connection
         // thread holds no `AppState`, so a call reaches it through the handle.
         let tools_handle = app.handle().clone();
-        state.set_run_tool(std::sync::Arc::new(move |asker, call| {
+        state.set_run_tool(std::sync::Arc::new(move |asker, who, call| {
             match tools_handle.try_state::<AppState>() {
-                Some(state) => state.run_tool(asker, call),
+                Some(state) => state.run_tool(asker, who, call),
                 None => Err("Agency is shutting down.".to_string()),
             }
         }));
@@ -514,7 +514,7 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         state.set_run_caller(std::sync::Arc::new(move |run_id, server, peer| {
             caller_handle
                 .try_state::<AppState>()
-                .is_some_and(|state| state.is_run_caller(run_id, server, peer))
+                .and_then(|state| state.run_caller(run_id, server, peer))
         }));
         state.sync_preview_servers();
     }

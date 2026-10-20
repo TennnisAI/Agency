@@ -320,18 +320,22 @@ pub struct PreviewTargetDto {
 pub type PreviewShotFn =
     std::sync::Arc<dyn Fn(&str) -> std::result::Result<Vec<u8>, String> + Send + Sync>;
 
+/// Which of a run's agent sessions the process on the client end of a
+/// connection to that run's server belongs to, given (run id, the server's
+/// port, the client's port). Installed beside [`RunToolFn`], for the same
+/// reason; see [`AppState::run_caller`]. Absent, none is.
+pub type RunCallerFn = std::sync::Arc<dyn Fn(&str, u16, u16) -> Option<String> + Send + Sync>;
+
 /// Carries out one run tool call (AGE-209) for the run named first, which is
 /// whose agent made it. Installed by the app shell, which holds the handle the
 /// call needs to reach `AppState` from a preview server's connection thread:
 /// see [`AppState::run_tool`]. Absent in tests.
-/// Whether the process on the client end of a connection to a run's server,
-/// given as (run id, the server's port, the client's port), is that run's own.
-/// Installed beside [`RunToolFn`], for the same reason; see
-/// [`AppState::is_run_caller`]. Absent, nobody is.
-pub type RunCallerFn = std::sync::Arc<dyn Fn(&str, u16, u16) -> bool + Send + Sync>;
-
 pub type RunToolFn = std::sync::Arc<
-    dyn Fn(&str, agency_core::preview::runs::Call) -> std::result::Result<String, String>
+    dyn Fn(
+            &str,
+            &agency_core::preview::runs::Asker,
+            agency_core::preview::runs::Call,
+        ) -> std::result::Result<String, String>
         + Send
         + Sync,
 >;
@@ -4613,9 +4617,20 @@ impl AppState {
             }
             // Before the server below starts: its first `tools/list` is the
             // one the child's agent caches, and it must already leave the run
-            // tools out. A run that then fails to start leaves an entry for an
+            // tools out. A run that then fails to start leaves a link for an
             // id nothing will ever use again, which is harmless.
+            //
+            // The registry first, and no run without it. Recorded after the
+            // agent had started, a failure was only logged: the link was gone
+            // at the next restart, and with it the child's refusal of the run
+            // tools once its agent was next launched.
             if let Some(parent) = &spec.parent {
+                let linked = self.registry.lock().unwrap().set_run_parent(&id, parent);
+                if let Err(e) = linked {
+                    let cut = spec.existing_branch.is_none().then_some(workspace.branch.as_str());
+                    let _ = manager.remove(&id, cut);
+                    return Err(e.context(format!("recording {parent} as the dispatcher of {id}")));
+                }
                 self.run_parents.lock().unwrap().insert(id.clone(), parent.clone());
             }
             self.emit_mcp(
@@ -4774,14 +4789,6 @@ impl AppState {
                 drop(reg);
                 self.prune_checkpoints(&repo, &id);
                 return Err(e);
-            }
-            // Best-effort like the bookkeeping below, but loudly: unrecorded,
-            // the link is lost at the next restart, and with it the child's
-            // refusal of the run tools and the parent's reach to it.
-            if let Some(parent) = &spec.parent {
-                if let Err(e) = reg.set_run_parent(&id, parent) {
-                    log::warn!("recording {parent} as the dispatcher of {id}: {e:#}");
-                }
             }
             // Remember the agent type so new-task shortcuts default to what
             // this project actually uses. Best-effort bookkeeping.
@@ -5058,20 +5065,22 @@ impl AppState {
 
     // ── run tools (AGE-209) ───────────────────────────────────────────────────
 
-    /// Carry out one run tool call made by the agent of run `asker`. Reached
-    /// from that run's preview server through [`RunToolFn`]; `Err` is text for
-    /// the agent, like `Ok`. The rules it applies are `crate::dispatch`'s.
+    /// Carry out one run tool call made by the agent of run `asker`, from its
+    /// session `who.session`. Reached from that run's preview server through
+    /// [`RunToolFn`]; `Err` is text for the agent, like `Ok`. The rules it
+    /// applies are `crate::dispatch`'s.
     pub fn run_tool(
         &self,
         asker: &str,
+        who: &agency_core::preview::runs::Asker,
         call: agency_core::preview::runs::Call,
     ) -> std::result::Result<String, String> {
         use agency_core::preview::runs::Call;
         match call {
-            Call::Dispatch(work) => self.dispatch_child(asker, work),
+            Call::Dispatch(work) => self.dispatch_child(asker, who.session, work),
             Call::Wait { run_id, timeout } => {
                 self.reach_child(asker, &run_id)?;
-                self.wait_child(&run_id, timeout)
+                self.wait_child(&run_id, timeout, who.hung_up)
             }
             Call::Read { run_id, what } => {
                 self.reach_child(asker, &run_id)?;
@@ -5080,33 +5089,47 @@ impl AppState {
         }
     }
 
-    /// Whether the process holding the client end of the loopback connection
-    /// from `peer_port` to `server_port` belongs to run `run_id`: descends
-    /// from the process the terminal daemon spawned for one of its sessions,
-    /// the run's own or one of its extra tabs. See `agency_core::peer`.
+    /// Which of run `run_id`'s agent sessions the process holding the client
+    /// end of the loopback connection from `peer_port` to `server_port`
+    /// belongs to, by session id (`run_id` itself, or a tab's `<run_id>--<n>`):
+    /// the one whose process it descends from. See `agency_core::peer`. A
+    /// terminal tab is not an agent, and is never one of them.
     ///
-    /// Every "cannot tell" is no. That includes a session this launch of the
-    /// app did not start, an agent that outlived a restart among them, since
-    /// only this process's memory can say what it started (see
+    /// Every "cannot tell" is `None`. That includes a session this launch of
+    /// the app did not start, an agent that outlived a restart among them,
+    /// since only this process's memory can say what it started (see
     /// `TermClient::spawned_pid`). And a daemon from before it reported its
     /// sessions' processes, which keeps running across an app update while it
     /// hosts agents. The log says so once per launch.
-    pub fn is_run_caller(&self, run_id: &str, server_port: u16, peer_port: u16) -> bool {
+    pub fn run_caller(&self, run_id: &str, server_port: u16, peer_port: u16) -> Option<String> {
         let Some(pid) = agency_core::peer::tcp_peer_pid(server_port, peer_port) else {
             log::info!("run tools: no single process holds port {peer_port}; refused");
-            return false;
+            return None;
+        };
+        let shells: Vec<String> = match self.registry.lock().unwrap().list_run_sessions(run_id) {
+            Ok(tabs) => tabs
+                .into_iter()
+                .filter(|t| t.agent == SHELL_AGENT)
+                .map(|t| session_name(&t.id))
+                .collect(),
+            Err(_) => return None,
         };
         let (sessions, roots) = {
             let term = self.term.read().unwrap();
-            let Ok(live) = term.list() else { return false };
-            let sessions = running_agent_sessions(run_id, &live);
-            let roots: Vec<u32> =
-                sessions.iter().filter_map(|name| term.spawned_pid(name).ok().flatten()).collect();
+            let live = term.list().ok()?;
+            let sessions: Vec<String> = running_agent_sessions(run_id, &live)
+                .into_iter()
+                .filter(|name| !shells.contains(name))
+                .collect();
+            let roots: Vec<(u32, String)> = sessions
+                .iter()
+                .filter_map(|name| Some((term.spawned_pid(name).ok()??, name.clone())))
+                .collect();
             (sessions, roots)
         };
         // No agent running in the run: nothing can be its agent.
         if sessions.is_empty() {
-            return false;
+            return None;
         }
         if roots.is_empty() {
             static SAID: std::sync::Once = std::sync::Once::new();
@@ -5119,16 +5142,18 @@ impl AppState {
                      replaced, when it is next idle or Agency quits"
                 )
             });
-            return false;
+            return None;
         }
-        let Some(parents) = agency_core::peer::process_parents() else { return false };
-        let own = agency_core::peer::descends_from(pid, &roots, &parents);
-        if !own {
+        let parents = agency_core::peer::process_parents()?;
+        let pids: Vec<u32> = roots.iter().map(|(pid, _)| *pid).collect();
+        let Some(root) = agency_core::peer::root_of(pid, &pids, &parents) else {
             log::warn!(
                 "run tools: process {pid} sent {run_id}'s token from outside its sessions; refused"
             );
-        }
-        own
+            return None;
+        };
+        let name = roots.into_iter().find(|(p, _)| *p == root).map(|(_, name)| name)?;
+        name.strip_prefix("agency-").map(str::to_string)
     }
 
     fn reach_child(&self, asker: &str, run_id: &str) -> std::result::Result<(), String> {
@@ -5146,15 +5171,17 @@ impl AppState {
     fn dispatch_child(
         &self,
         asker: &str,
+        session: &str,
         work: agency_core::preview::runs::Work,
     ) -> std::result::Result<String, String> {
         self.spawn_gates
-            .with(&format!("dispatch:{asker}"), || self.dispatch_child_locked(asker, work))
+            .with(&format!("dispatch:{asker}"), || self.dispatch_child_locked(asker, session, work))
     }
 
     fn dispatch_child_locked(
         &self,
         asker: &str,
+        session: &str,
         work: agency_core::preview::runs::Work,
     ) -> std::result::Result<String, String> {
         use agency_core::preview::runs::Work;
@@ -5168,10 +5195,17 @@ impl AppState {
                         yourself, or ask the user to start the run."
                 .to_string());
         }
-        let is_child = self.run_parents.lock().unwrap().contains_key(asker);
+        // Both answers from the one map. The count came from the registry's
+        // table and `is_child` from memory, and a link the registry failed to
+        // record was a child the cap never counted.
+        let (is_child, children) = {
+            let links = self.run_parents.lock().unwrap();
+            let children: Vec<String> =
+                links.iter().filter(|(_, p)| *p == asker).map(|(c, _)| c.clone()).collect();
+            (links.contains_key(asker), children)
+        };
         let live = {
             let reg = self.registry.lock().unwrap();
-            let children = reg.run_children(asker).map_err(text)?;
             children
                 .iter()
                 .filter(|c| reg.get_run(c).ok().flatten().is_some_and(|r| r.archived_at.is_none()))
@@ -5187,17 +5221,37 @@ impl AppState {
                 repo.display()
             ));
         }
-        // The parent's own profile and model, by name, read as the user's
-        // Dispatch reads them: the gate the user chose for the parent is the
+        // The calling session's own profile and model, by name, read as that
+        // session was launched: the gate the user chose for the caller is the
         // child's gate. See `crate::dispatch` for why no argument names another.
-        let agent = parent.agent.as_str();
-        let model = parent.model.as_deref();
+        let tabs = self.registry.lock().unwrap().list_run_sessions(asker).map_err(text)?;
+        let (agent, model) = crate::dispatch::caller_profile(
+            asker,
+            &parent.agent,
+            parent.model.as_deref(),
+            &tabs,
+            session,
+        )?;
+        // Cut from where the parent was cut, and landed where it lands. Cut
+        // from the project's default branch, a child of a parent working
+        // against `feature/x` started without the parent's base under it and
+        // offered to merge into main. A parent in the checkout itself records
+        // the branch it works on as its base, which is the one to cut from.
+        let base = Some(parent.base.as_str()).filter(|b| !b.trim().is_empty());
+        let merge_target = parent.merge_target.as_deref();
         let info = match work {
             Work::Issue(key) => {
                 let issue_id = self.issue_id_for_key(&parent.project_id, &key)?;
-                self.start_issue_run_for(&issue_id, agent, model, None, None, Some(asker.into()))
+                self.start_issue_run_for(
+                    &issue_id,
+                    agent,
+                    model,
+                    base,
+                    merge_target,
+                    Some(asker.into()),
+                )
             }
-            Work::Prompt(prompt) => agency_core::merge::detect_base(&repo).and_then(|base| {
+            Work::Prompt(prompt) => self.issue_base(&parent.project_id, base).and_then(|base| {
                 self.create_run_spec(
                     NewRunSpec {
                         project_id: &parent.project_id,
@@ -5205,7 +5259,7 @@ impl AppState {
                         agent,
                         model,
                         base: &base,
-                        merge_target: None,
+                        merge_target,
                         race_id: None,
                         title: None,
                         existing_branch: None,
@@ -5275,12 +5329,23 @@ impl AppState {
     /// `run_wait`: block until the child says something worth returning for.
     /// One look a second: the board itself only moves on the 2s notifier tick
     /// and on hook posts, so a tighter loop would read the same state twice.
-    fn wait_child(&self, run_id: &str, timeout: Duration) -> std::result::Result<String, String> {
+    ///
+    /// `hung_up` is asked between looks: a client whose own tool-call timeout
+    /// fired has dropped the connection, and the answer has nowhere to go.
+    fn wait_child(
+        &self,
+        run_id: &str,
+        timeout: Duration,
+        hung_up: &dyn Fn() -> bool,
+    ) -> std::result::Result<String, String> {
         use crate::dispatch::Outcome;
         let started = Instant::now();
         let outcome = loop {
             if let Some(outcome) = self.child_outcome(run_id) {
                 break outcome;
+            }
+            if hung_up() {
+                return Err("The caller hung up before the run had anything to say.".into());
             }
             let left = timeout.saturating_sub(started.elapsed());
             if left.is_zero() {
@@ -7004,11 +7069,13 @@ impl AppState {
         });
         let tool_cell = self.run_tool.clone();
         let tool_run = run_id.clone();
-        let runs = std::sync::Arc::new(move |call| match tool_cell.get() {
-            Some(run_tool) => run_tool(&tool_run, call),
-            None => Err("Agency cannot start or read runs right now: its window is not up. \
+        let runs = std::sync::Arc::new(move |who: &agency_core::preview::runs::Asker<'_>, call| {
+            match tool_cell.get() {
+                Some(run_tool) => run_tool(&tool_run, who, call),
+                None => Err("Agency cannot start or read runs right now: its window is not up. \
                          Try again in a moment."
-                .to_string()),
+                    .to_string()),
+            }
         });
         // Reads the cell, not the app state: a server outlives nothing here,
         // but capturing `self` would tie every run's server to its lifetime.
@@ -7061,7 +7128,7 @@ impl AppState {
         let state_token = self.state_token.clone();
         let caller_cell = self.run_caller.clone();
         let caller = std::sync::Arc::new(move |server: u16, peer: u16| {
-            caller_cell.get().is_some_and(|is_caller| is_caller(&caller_run, server, peer))
+            caller_cell.get().and_then(|run_caller| run_caller(&caller_run, server, peer))
         });
         agency_core::preview::Hooks {
             facts,
@@ -12456,7 +12523,9 @@ impl AppState {
                 Ok(client) => {
                     let n = client.list().map(|s| s.len()).unwrap_or(0);
                     log::warn!("termd reconnected; adopted {n} surviving session(s)");
-                    *self.term.write().unwrap() = client;
+                    let mut term = self.term.write().unwrap();
+                    client.adopt_spawned(&term);
+                    *term = client;
                 }
                 Err(e) => log::error!("termd unavailable (agents may have stopped): {e}"),
             }

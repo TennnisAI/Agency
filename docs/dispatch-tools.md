@@ -21,12 +21,19 @@ so that switching them changes nothing listed before them.
 - `run_dispatch(issue | prompt) -> run_id`. Exactly one of an issue key in this
   project's tracker (`AGE-14`) or a self-contained prompt. It goes through the
   same code as the user's Dispatch: `start_issue_run` for an issue (which also
-  moves the issue to in progress), `create_run_spec` for a prompt, cut from the
-  project's base branch. The answer names the run id, branch and worktree path.
+  moves the issue to in progress), `create_run_spec` for a prompt. Either way
+  the child is cut from the parent's own base and lands on the parent's merge
+  target, so the children of a parent working against `feature/x` land there
+  too, not on the default branch. The answer names the run id, branch and
+  worktree path.
 - `run_wait(run_id, timeout_secs?)`. Blocks until the child is done, blocked,
   idle, exited, archived or discarded, or until the timeout (default 300s, at
   most 1800s) passes and it answers "still working". For blocked, a guessed
-  "quiet" and an exit, the answer carries the bottom of the child's screen.
+  "quiet" and an exit, the answer carries the bottom of the child's screen. A
+  wait gives up as soon as its client hangs up, which a client whose own
+  tool-call timeout fires does, and a server holds at most eight at once
+  (`runs::WAITS_AT_ONCE`): its 64 connections are shared with everything else
+  the agent and the preview send it.
 - `run_read(run_id, what?)`. `transcript` (the default), `diff` (from the commit
   the branch was cut at to the worktree as it stands, uncommitted and untracked
   files included) or `screen`. Cut to 24,000 characters; the answer names the
@@ -65,8 +72,12 @@ Project, "Agent dispatch". Switching it off refuses the next call at once:
 `dispatch_child` reads the config afresh rather than through the server's
 five-second cache.
 
-**No escalation by proxy.** A child runs its parent's own profile and model,
-by name, read from the registry as the user's Dispatch reads them. The issue
+**No escalation by proxy.** A child runs the profile and model of the session
+that dispatched it, by name, read from the registry as that session was
+launched (`dispatch::caller_profile`). The session, not the run: a run's tabs
+can each run a different profile, and taking the run's own let a tab opened on
+a narrow one dispatch under the lead's wider gate. A terminal tab is not an
+agent and dispatches nothing. The issue
 sketched an optional `profile` argument; it is deliberately absent. Comparing
 two profiles' permissions is not possible with free-form CLI arguments:
 dropping `--permission-mode plan` is fewer arguments and a wider gate, so any
@@ -107,9 +118,18 @@ they are neither listed nor answered:
    config. So the server names the process on the client end of the
    connection (`agency_core::peer::tcp_peer_pid`) and admits it only if it
    descends from the process the terminal daemon spawned for one of the run's
-   own sessions (`AppState::is_run_caller`). A process cannot choose its
-   parent, and a child's processes descend from the child's session, so a
-   copied token gets the child nowhere.
+   own agent sessions (`AppState::run_caller`), and names which. A process
+   cannot choose its parent, and a child's processes descend from the child's
+   session, so a copied token gets the child nowhere. A terminal tab's
+   session is not an agent's, and is never one of them.
+
+Only a request whose answer depends on the run tools is checked: a
+`tools/list`, or a call of one of them (`rpc::run_tools_asked`). Every request
+the agent makes carries the token, and the third check runs `lsof` and reads
+the process table, so checking them all put that cost on every `initialize`,
+`set_status` and preview call. A run tool call that fails a check is told that
+the switch is on and Agency could not vouch for the caller, not that the tools
+are switched off, which sent agents to ask for a setting already on.
 
 "The run's own sessions" cannot mean the sessions with the run's names. Any
 client of the terminal daemon can start a session under any name, and starting
@@ -128,8 +148,10 @@ stayed trusted, but anything a file holds, any process of the user's can have
 written: start a session of its own, record its nonce under a run's name, and
 wait for a restart. So the cost is paid instead: a run whose agent survived a
 restart has no run tools until that agent is next launched, and the log says
-why. The daemon does report a session's nonce to any client that asks, which
-gives nothing away: a nonce only counts once the app has heard it in reply to
+why. A reconnect within one launch is not a restart: the new client takes the
+old one's record over (`TermClient::adopt_spawned`), memory to memory. The
+daemon does report a session's nonce to any client that asks, which gives
+nothing away: a nonce only counts once the app has heard it in reply to
 a `StartSession` of its own.
 
 The process and the nonce ride on the daemon's existing `Started` and

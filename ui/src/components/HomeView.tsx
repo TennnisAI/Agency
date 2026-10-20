@@ -13,10 +13,9 @@ import {
   parseRunFilter,
   pinnedFirst,
   projectAgentsLabel,
-  runStatus,
 } from "../lib/runstate";
 import AgentNote from "./AgentNote";
-import { runTabs, showsTabs } from "../lib/runTabs";
+import { runTabs, showsTabs, workspaceStatus } from "../lib/runTabs";
 import TabCount from "./TabCount";
 import WaitingTabs from "./WaitingTabs";
 import { useRunMenu } from "../hooks/useRunMenu";
@@ -478,7 +477,7 @@ function HomeTile({ run, onOpen, onChanged }: { run: RunInfo; onOpen: () => void
     return () => { alive = false; window.clearInterval(t); };
   }, [run.id]);
 
-  const st = runStatus(run);
+  const st = workspaceStatus(run);
   const isTerminal = run.kind === "terminal";
   const tabs = runTabs(run);
   return (
@@ -517,7 +516,7 @@ function HomeTile({ run, onOpen, onChanged }: { run: RunInfo; onOpen: () => void
       <div className="tile-foot">
         <AttentionMarker run={run} onChanged={onChanged} />
         <span title={st.title}>{st.text}</span>
-        <WaitingTabs run={run} tabs={tabs} dot={st.cls} />
+        <WaitingTabs tabs={tabs} dot={st.cls} />
       </div>
       {runMenu}
     </div>

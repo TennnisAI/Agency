@@ -25,6 +25,8 @@ export interface RunTab {
   cls: string;
   /** The dot in words, for a title. */
   status: string;
+  /** What the dot means, where the words alone leave it open. */
+  title?: string;
 }
 
 /**
@@ -43,14 +45,15 @@ export function tabLabel(agent: string, session: string, primary: boolean): stri
 // counts are made from it, so a dot that said less would contradict them. A
 // "New terminal" tab is a shell, which is never waiting on you, so it is "live":
 // lit but still, like a terminal run's plain "running".
-function sessionDot(s: RunSessionInfo, now: number): { cls: string; text: string } {
+function sessionDot(s: RunSessionInfo, now: number): { cls: string; text: string; title?: string } {
   const status = s.status;
   if (status.state === "running") {
     if (s.agent === "shell") return { cls: "live", text: "running" };
     return runStatus({ kind: "agent", status, activity: s.activity }, now);
   }
   if (status.state === "exited") {
-    return { cls: "exited", text: status.code === 0 ? "finished" : "failed" };
+    if (status.code === 0) return { cls: "exited", text: "finished" };
+    return { cls: "exited", text: "failed", title: `exited (${status.code})` };
   }
   return { cls: "exited", text: "not running" };
 }
@@ -72,6 +75,7 @@ export function runTabs(run: RunInfo, now: number = Date.now()): RunTab[] {
       label: tabLabel(run.agent, run.id, true),
       cls: st.cls,
       status: st.text,
+      title: st.title,
     });
   }
   for (const s of run.sessions) {
@@ -83,6 +87,7 @@ export function runTabs(run: RunInfo, now: number = Date.now()): RunTab[] {
       label: tabLabel(s.agent, s.id, false),
       cls: st.cls,
       status: st.text,
+      title: st.title,
     });
   }
   return tabs;
@@ -95,6 +100,47 @@ export function runTabs(run: RunInfo, now: number = Date.now()): RunTab[] {
  */
 export function showsTabs(run: Pick<RunInfo, "primaryClosed">, tabs: RunTab[]): boolean {
   return tabs.length > 1 || (run.primaryClosed && tabs.length > 0);
+}
+
+// Which tab a workspace's one dot stands for, most urgent first: an agent that
+// cannot go on without you, then one still at work, then one whose turn is
+// over, then one with nothing in flight.
+const WORKSPACE_RANK: Record<string, number> = { blocked: 0, running: 1, awaiting: 2, idle: 3 };
+
+/**
+ * The dot and label for a run listed by one name (a tile, a rail row, a tree
+ * row): the most urgent state among its agent tabs, ties going to the earliest
+ * tab. Read off `runTabs`, the list `waitingElsewhere` reads too, so the tab
+ * this dot shows is the one that leaves out.
+ *
+ * Those rows used `runStatus(run)`, the first agent alone, so a worktree whose
+ * first agent had finished read "waiting" while a second agent in it was still
+ * working, after the overview's counts had been fixed to count every tab
+ * (AGE-249).
+ *
+ * Where the row spells its tabs out, the title names the tab first: a tile
+ * named after its first agent otherwise explained a second agent's state as
+ * "this agent".
+ */
+export function workspaceStatus(run: RunInfo, now: number = Date.now()): { cls: string; text: string; title?: string } {
+  if (run.kind === "terminal") return runStatus(run, now);
+  const tabs = runTabs(run, now);
+  let best: RunTab | null = null;
+  for (const t of tabs) {
+    if (t.agent === "shell") continue;
+    if (!best || (WORKSPACE_RANK[t.cls] ?? 4) < (WORKSPACE_RANK[best.cls] ?? 4)) best = t;
+  }
+  if (best) {
+    if (!showsTabs(run, tabs)) return { cls: best.cls, text: best.status, title: best.title };
+    return { cls: best.cls, text: best.status, title: best.title ? `${best.label}\n${best.title}` : best.label };
+  }
+  // Only reached with the first agent's tab closed and no agent tab left. The
+  // run's own status is then the lowest-numbered live session's (AGE-184),
+  // which can be a "New terminal" tab, and runStatus read that shell as an
+  // agent: a workspace holding only terminals read "working".
+  return tabs.some((t) => t.cls === "live")
+    ? { cls: "live", text: "running", title: "No agent tab is open, only terminals." }
+    : { cls: "exited", text: "session ended" };
 }
 
 /** "3 tabs", for a surface with room for the word. */
@@ -113,16 +159,16 @@ export function tabsTitle(tabs: RunTab[]): string {
  * could bring up a tile whose dot said "working" and nothing on it said which
  * tab was the one asking.
  *
- * `dot` is the class of the tile's own dot, `runStatus(run).cls`. It shows the
- * first tab, or once that was closed the lowest-numbered one still running
- * (AGE-184). It accounts for that tab only when it reads waiting or blocked
- * itself; otherwise every such tab is listed, the dot's own included.
+ * `dot` is the class of the tile's own dot, `workspaceStatus(run).cls`, which
+ * shows the earliest tab in the most urgent state. When that state is waiting
+ * or blocked, that tab is the one the dot accounts for; otherwise every asking
+ * tab is listed.
  */
-export function waitingElsewhere(run: Pick<RunInfo, "primaryClosed">, tabs: RunTab[], dot: string): RunTab[] {
+export function waitingElsewhere(tabs: RunTab[], dot: string): RunTab[] {
   const asking = (cls: string) => cls === "awaiting" || cls === "blocked";
   const waiting = tabs.filter((t) => asking(t.cls));
   if (!asking(dot)) return waiting;
-  const shown = run.primaryClosed ? tabs.find((t) => t.cls !== "exited") : tabs[0];
+  const shown = waiting.find((t) => t.cls === dot);
   return waiting.filter((t) => t !== shown);
 }
 

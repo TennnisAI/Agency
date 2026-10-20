@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RunInfo, RunSessionInfo } from "../api";
+import { RunActivity, RunInfo, RunSessionInfo } from "../api";
 import { PRIMARY_TAB } from "./focusTab";
 import { runStatus } from "./runstate";
 import {
@@ -11,6 +11,7 @@ import {
   tabsTitle,
   waitingElsewhere,
   waitingElsewhereLabel,
+  workspaceStatus,
 } from "./runTabs";
 
 const session = (
@@ -104,7 +105,7 @@ describe("runTabs", () => {
 // tile said which of its tabs was the one asking (AGE-249).
 describe("waitingElsewhere", () => {
   const waiting = { state: "running" } as const;
-  const elsewhere = (r: RunInfo) => waitingElsewhere(r, runTabs(r, 0), runStatus(r, 0).cls);
+  const elsewhere = (r: RunInfo) => waitingElsewhere(runTabs(r, 0), workspaceStatus(r, 0).cls);
 
   it("names a waiting tab behind a working first agent", () => {
     const r = run({
@@ -132,9 +133,9 @@ describe("waitingElsewhere", () => {
     expect(waitingElsewhereLabel(elsewhere(r))).toBeNull();
   });
 
-  // With the first tab closed the dot shows the lowest-numbered tab still
-  // running (AGE-184), which is not the first row when an earlier one exited.
-  it("takes a closed first tab's stand-in as the dot's tab", () => {
+  // With the first tab closed its row is gone (AGE-184), and an exited tab
+  // ahead of the waiting ones is not the one the dot shows.
+  it("takes the first waiting tab as the dot's own when the first tab is closed", () => {
     const r = run({
       primaryClosed: true,
       sessions: [
@@ -146,26 +147,105 @@ describe("waitingElsewhere", () => {
     expect(elsewhere(r).map((t) => t.session)).toEqual(["r1--4"]);
   });
 
-  it("lists the stand-in too when the dot itself does not read waiting", () => {
+  it("lists every waiting tab when the dot reads working", () => {
     const r = run({
       primaryClosed: true,
-      activity: { state: "idle", since: 0, reported: false },
-      sessions: [session("r1--2", "codex", waiting, { state: "done", since: 0, reported: false })],
+      sessions: [
+        session("r1--2", "codex", waiting, { state: "done", since: 0, reported: false }),
+        session("r1--3", "codex", waiting, { state: "working", since: 0, reported: false }),
+        session("r1--4", "codex", waiting, { state: "done", since: 0, reported: false }),
+      ],
     });
-    expect(elsewhere(r).map((t) => t.session)).toEqual(["r1--2"]);
+    expect(elsewhere(r).map((t) => t.session)).toEqual(["r1--2", "r1--4"]);
   });
 
   it("names a blocked tab as blocked, not waiting", () => {
     const blocked = { state: "blocked", since: 0, reported: true } as const;
     const done = { state: "done", since: 0, reported: false } as const;
     const working = { state: "working", since: 0, reported: false } as const;
-    const one = run({ activity: working, sessions: [session("r1--2", "claude", waiting, blocked)] });
+    const one = run({
+      activity: blocked,
+      sessions: [session("r1--2", "claude", waiting, blocked), session("r1--3", "codex", waiting, working)],
+    });
     expect(waitingElsewhereLabel(elsewhere(one))).toBe("1 other tab blocked");
     const both = run({
-      activity: working,
+      activity: blocked,
       sessions: [session("r1--2", "claude", waiting, blocked), session("r1--3", "codex", waiting, done)],
     });
     expect(waitingElsewhereLabel(elsewhere(both))).toBe("2 other tabs: 1 blocked, 1 waiting");
+  });
+});
+
+// A worktree whose first agent had finished read "waiting" on its tile, rail
+// row and tree row while a second agent in it was still working.
+describe("workspaceStatus", () => {
+  const live = (n: number, state: RunActivity["state"] | null, agent = "codex") =>
+    session(`r1--${n}`, agent, { state: "running" }, state && { state, since: 0, reported: false });
+
+  it("reads working when any agent is working, whatever the first one says", () => {
+    const st = workspaceStatus(run({ sessions: [live(2, "idle"), live(3, "working")] }), 0);
+    expect(st.cls).toBe("running");
+    expect(st.text).toBe("working · 0s");
+  });
+
+  it("counts a freshly spawned tab with no activity yet as working", () => {
+    expect(workspaceStatus(run({ sessions: [live(2, null)] }), 0).cls).toBe("running");
+  });
+
+  it("reads blocked over working: that agent cannot go on without you", () => {
+    const r = run({ activity: { state: "working", since: 0, reported: false }, sessions: [live(2, "blocked")] });
+    expect(workspaceStatus(r, 0).cls).toBe("blocked");
+  });
+
+  it("reads waiting only when no agent is working or blocked", () => {
+    const r = run({ activity: { state: "idle", since: 0, reported: false }, sessions: [live(2, "done")] });
+    expect(workspaceStatus(r, 0).cls).toBe("awaiting");
+  });
+
+  it("takes the earliest tab on a tie, for its timer", () => {
+    const r = run({ activity: { state: "done", since: 5_000, reported: true }, sessions: [live(2, "done")] });
+    expect(workspaceStatus(r, 60_000).text).toBe("done · 55s");
+  });
+
+  it("ignores a closed first agent, and a terminal tab", () => {
+    const r = run({
+      primaryClosed: true,
+      activity: { state: "working", since: 0, reported: false },
+      sessions: [live(2, "done"), live(3, "working", "shell")],
+    });
+    expect(workspaceStatus(r, 0).cls).toBe("awaiting");
+  });
+
+  it("reads a live extra agent over a first agent that exited", () => {
+    const r = run({ status: { state: "exited", code: 0 }, sessions: [live(2, "working")] });
+    expect(workspaceStatus(r, 0).cls).toBe("running");
+  });
+
+  it("keeps a terminal run's own status", () => {
+    const r = run({ kind: "terminal", activity: null });
+    expect(workspaceStatus(r, 0)).toEqual(runStatus(r, 0));
+  });
+
+  // A tile named "Claude Code" explained a quiet Codex tab beside it as "this
+  // agent doesn't report which".
+  it("names the tab its title is about once the row spells tabs out", () => {
+    const r = run({ activity: { state: "idle", since: 0, reported: false }, sessions: [live(2, "done")] });
+    expect(workspaceStatus(r, 0).title).toBe(`Codex · 2\n${runStatus(run(), 0).title}`);
+    const working = run({ activity: { state: "working", since: 0, reported: false }, sessions: [live(2, "idle")] });
+    expect(workspaceStatus(working, 0).title).toBe("Claude Code");
+  });
+
+  it("leaves a lone agent's title as it is", () => {
+    expect(workspaceStatus(run(), 0).title).toBe(runStatus(run(), 0).title);
+  });
+
+  // The run's own status stands for its lowest-numbered live session once the
+  // first tab is closed (AGE-184), and with only terminals left that is a shell.
+  it("reads a workspace holding only terminals as live, not working", () => {
+    const r = run({ primaryClosed: true, activity: null, sessions: [live(2, null, "shell")] });
+    expect(workspaceStatus(r, 0)).toMatchObject({ cls: "live", text: "running" });
+    const ended = run({ primaryClosed: true, sessions: [session("r1--2", "shell", { state: "exited", code: 0 })] });
+    expect(workspaceStatus(ended, 0)).toEqual({ cls: "exited", text: "session ended" });
   });
 });
 

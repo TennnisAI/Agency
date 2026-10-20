@@ -5,8 +5,8 @@ import { projectAccent, runName } from "../agents";
 import { useRuns } from "../store/runs";
 import { toastError, toastInfo } from "../lib/toast";
 import { copyAbsPath, reveal, revealLabel } from "../lib/fileActions";
-import { pinnedFirst, runStatus } from "../lib/runstate";
-import { runTabs, showsTabs } from "../lib/runTabs";
+import { pinnedFirst } from "../lib/runstate";
+import { runTabs, showsTabs, workspaceStatus } from "../lib/runTabs";
 import TabCount from "./TabCount";
 import { newAgentItems, useAgentProfiles, useRunMenu } from "../hooks/useRunMenu";
 import { useSpawnAgent } from "../hooks/useSpawnAgent";
@@ -517,7 +517,7 @@ export default function ProjectTree({
           onContextMenu={(e) => openRunMenu(e, r, (run) => onSelectRun(p, run))}
         >
           <PinMark run={r} />
-          <span className={`dot ${runStatus(r).cls}`} />
+          <span className={`dot ${workspaceStatus(r).cls}`} />
           <span className="tree-child-name tl">{r.agent}: {runName(r)}</span>
           {listed && <TabCount tabs={tabs} open={open} onToggle={toggleTabs} />}
         </li>

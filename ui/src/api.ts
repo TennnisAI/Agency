@@ -1206,6 +1206,13 @@ export const getFilesConfig = (projectId: string) =>
 export const saveFilesConfig = (projectId: string, copy: string[]) =>
   invoke<void>("save_files_config", { projectId, copy });
 
+// Whether this project's agent runs may start runs of their own (AGE-209).
+// Kept in this machine's agency.local.toml; a repo cannot turn it on.
+export const getDispatchTools = (projectId: string) =>
+  invoke<boolean>("get_dispatch_tools", { projectId });
+export const setDispatchTools = (projectId: string, on: boolean) =>
+  invoke<void>("set_dispatch_tools", { projectId, on });
+
 export const listProfiles = () => invoke<AgentProfile[]>("list_profiles");
 export const saveProfile = (profile: AgentProfile) =>
   invoke<void>("save_profile", { profile });

@@ -320,6 +320,16 @@ pub struct PreviewTargetDto {
 pub type PreviewShotFn =
     std::sync::Arc<dyn Fn(&str) -> std::result::Result<Vec<u8>, String> + Send + Sync>;
 
+/// Carries out one run tool call (AGE-209) for the run named first, which is
+/// whose agent made it. Installed by the app shell, which holds the handle the
+/// call needs to reach `AppState` from a preview server's connection thread:
+/// see [`AppState::run_tool`]. Absent in tests.
+pub type RunToolFn = std::sync::Arc<
+    dyn Fn(&str, agency_core::preview::runs::Call) -> std::result::Result<String, String>
+        + Send
+        + Sync,
+>;
+
 /// The workspace a run script runs in, resolved from the Run tab's target
 /// token. `name` is what the command sees as `AGENCY_WORKSPACE_NAME`.
 struct RunTarget {
@@ -916,6 +926,8 @@ struct NewRunSpec<'a> {
     /// Model to launch this agent on, or None for the agent's own default.
     /// Validated by the command layer (`sanitize_model`) before it gets here.
     model: Option<&'a str>,
+    /// The run whose agent started this one with `run_dispatch` (AGE-209).
+    parent: Option<String>,
 }
 
 /// What an "Approve & merge" would do, computed before running it so the UI can
@@ -2544,11 +2556,27 @@ fn preview_tools_on(config: &agency_core::config::AgencyConfig) -> bool {
     config.preview.agent_tools && config.scripts.run_list().iter().any(|s| s.web)
 }
 
-/// What a run in this project would serve an agent: the two switches behind
-/// the MCP server's two halves. One function so the port that gets emitted and
+/// Whether this project's runs are offered the run tools (AGE-209): the switch
+/// the user holds in this machine's `agency.local.toml`, and nothing else. A
+/// run that was itself dispatched is refused them per request, not here: see
+/// `preview_hooks`.
+fn dispatch_tools_on(config: &agency_core::config::AgencyConfig) -> bool {
+    config.dispatch.agent_tools
+}
+
+/// What a run in this project would serve an agent: the switches behind the
+/// MCP server's tool groups. One function so the port that gets emitted and
 /// the tools that answer on it can never disagree about what is on.
-fn run_caps(preview_tools: bool, share_open_file: bool) -> agency_core::preview::Caps {
-    agency_core::preview::Caps { preview: preview_tools, editor: share_open_file }
+fn run_caps(
+    preview_tools: bool,
+    share_open_file: bool,
+    dispatch_tools: bool,
+) -> agency_core::preview::Caps {
+    agency_core::preview::Caps {
+        preview: preview_tools,
+        editor: share_open_file,
+        dispatch: dispatch_tools,
+    }
 }
 
 /// The config half of a run's `Caps`, cached. `serves_preview()` reads it,
@@ -2562,22 +2590,28 @@ fn run_caps(preview_tools: bool, share_open_file: bool) -> agency_core::preview:
 /// preview setting, so a few seconds of staleness cannot be observed. The
 /// editor half is deliberately not cached: it is a privacy switch, and
 /// switching sharing off has to bite on the very next call.
+///
+/// The run tools' switch rides along, as `(preview, dispatch)` from the one
+/// load. Its staleness only ever shows in the listing: a run tool call reads
+/// the switch afresh before it acts (`AppState::run_tool`), so switching it
+/// off refuses the very next call.
 struct PreviewToolsCache {
     repo: PathBuf,
-    cell: Mutex<Option<(Instant, bool)>>,
+    cell: Mutex<Option<(Instant, (bool, bool))>>,
 }
 
 impl PreviewToolsCache {
     const TTL: Duration = Duration::from_secs(5);
 
-    fn get(&self) -> bool {
+    fn get(&self) -> (bool, bool) {
         let mut cell = self.cell.lock().unwrap();
         if let Some((at, on)) = *cell {
             if at.elapsed() < Self::TTL {
                 return on;
             }
         }
-        let on = preview_tools_on(&agency_core::config::load(&self.repo));
+        let config = agency_core::config::load(&self.repo);
+        let on = (preview_tools_on(&config), dispatch_tools_on(&config));
         *cell = Some((Instant::now(), on));
         on
     }
@@ -2616,7 +2650,8 @@ fn server_port_for(
     share_open_file: bool,
     reports_state: bool,
 ) -> Option<u16> {
-    if !run_caps(preview_tools_on(config), share_open_file).any() && !reports_state {
+    let caps = run_caps(preview_tools_on(config), share_open_file, dispatch_tools_on(config));
+    if !caps.any() && !reports_state {
         return None;
     }
     agency_core::preview::mcp_port(port_base?, config.ports.block_size)
@@ -3041,6 +3076,13 @@ pub struct AppState {
     /// capture the cell and read it at call time — preview servers start
     /// before the window is up, and tests never install one at all.
     preview_shot: std::sync::Arc<std::sync::OnceLock<PreviewShotFn>>,
+    /// The run tools' executor, installed by the app shell; see [`RunToolFn`].
+    /// A cell the servers capture, for the same reason `preview_shot` is one.
+    run_tool: std::sync::Arc<std::sync::OnceLock<RunToolFn>>,
+    /// Which run's agent dispatched which (AGE-209), child to parent: the
+    /// registry's `run_parents`, held here because every request to a run's
+    /// server asks whether that run is a child.
+    run_parents: Arc<Mutex<HashMap<String, String>>>,
     /// The file the user has open in Agency's editor right now, or `None`.
     /// One cell for the whole app: one window, one file in focus.
     ///
@@ -3337,6 +3379,7 @@ impl AppState {
             registry.get_setting(SETTING_SHARE_OPEN_FILE)?.as_deref() == Some("1");
         let codex_state_hooks =
             codex_state_hooks_setting(registry.get_setting(SETTING_CODEX_STATE_HOOKS)?.as_deref());
+        let run_parents: HashMap<String, String> = registry.run_parents()?.into_iter().collect();
         let state_token = agency_core::state_hooks::token(data_dir);
         let state_headers = agency_core::state_hooks::token_headers(data_dir, &state_token);
         let repo_gates = Arc::new(crate::gates::KeyedGates::new());
@@ -3385,6 +3428,8 @@ impl AppState {
             preview_failures: Mutex::new(HashMap::new()),
             preview_rects: Mutex::new(HashMap::new()),
             preview_shot: std::sync::Arc::new(std::sync::OnceLock::new()),
+            run_tool: std::sync::Arc::new(std::sync::OnceLock::new()),
+            run_parents: Arc::new(Mutex::new(run_parents)),
             open_file: Arc::new(Mutex::new(None)),
             share_open_file: Arc::new(std::sync::atomic::AtomicBool::new(share_open_file)),
             codex_state_hooks: std::sync::atomic::AtomicBool::new(codex_state_hooks),
@@ -4455,6 +4500,7 @@ impl AppState {
                 loop_config: None,
                 issue_id: None,
                 worktree,
+                parent: None,
             },
             &mut on_progress,
         )
@@ -4555,6 +4601,13 @@ impl AppState {
             });
             if let Err(e) = manager.copy_essentials(&id, &config.files.copy) {
                 log::warn!("copying essentials into worktree {id}: {e}");
+            }
+            // Before the server below starts: its first `tools/list` is the
+            // one the child's agent caches, and it must already leave the run
+            // tools out. A run that then fails to start leaves an entry for an
+            // id nothing will ever use again, which is harmless.
+            if let Some(parent) = &spec.parent {
+                self.run_parents.lock().unwrap().insert(id.clone(), parent.clone());
             }
             self.emit_mcp(
                 spec.agent,
@@ -4712,6 +4765,14 @@ impl AppState {
                 self.prune_checkpoints(&repo, &id);
                 return Err(e);
             }
+            // Best-effort like the bookkeeping below, but loudly: unrecorded,
+            // the link is lost at the next restart, and with it the child's
+            // refusal of the run tools and the parent's reach to it.
+            if let Some(parent) = &spec.parent {
+                if let Err(e) = reg.set_run_parent(&id, parent) {
+                    log::warn!("recording {parent} as the dispatcher of {id}: {e:#}");
+                }
+            }
             // Remember the agent type so new-task shortcuts default to what
             // this project actually uses. Best-effort bookkeeping.
             let _ = reg.set_project_default_agent(spec.project_id, spec.agent);
@@ -4788,6 +4849,7 @@ impl AppState {
                     loop_config: None,
                     issue_id: issue_id.clone(),
                     worktree: true,
+                    parent: None,
                 },
                 &mut |_| {},
             )?);
@@ -4887,6 +4949,7 @@ impl AppState {
                 loop_config: Some(cfg),
                 issue_id,
                 worktree: true,
+                parent: None,
             },
             &mut |_| {},
         )
@@ -4935,6 +4998,21 @@ impl AppState {
         base: Option<&str>,
         merge_target: Option<&str>,
     ) -> Result<RunInfo> {
+        self.start_issue_run_for(issue_id, agent, model, base, merge_target, None)
+    }
+
+    /// [`start_issue_run`], for the user (`parent: None`) or for the run whose
+    /// agent called `run_dispatch` (AGE-209). One body, so an agent's dispatch
+    /// is the user's Dispatch and cannot drift from it.
+    fn start_issue_run_for(
+        &self,
+        issue_id: &str,
+        agent: &str,
+        model: Option<&str>,
+        base: Option<&str>,
+        merge_target: Option<&str>,
+        parent: Option<String>,
+    ) -> Result<RunInfo> {
         let (issue, prompt, title) = self.issue_dispatch(issue_id)?;
         // With no repository there is no base to cut from and no branch to land,
         // so the agent takes the issue on in the folder itself; the issue still
@@ -4957,6 +5035,7 @@ impl AppState {
                 loop_config: None,
                 issue_id: Some(issue.id.clone()),
                 worktree: !gitless,
+                parent,
             },
             &mut |_| {},
         )?;
@@ -4965,6 +5044,301 @@ impl AppState {
             self.advance_issue(&reg, &issue.id, IssueStatus::InProgress)?;
         }
         Ok(info)
+    }
+
+    // ── run tools (AGE-209) ───────────────────────────────────────────────────
+
+    /// Carry out one run tool call made by the agent of run `asker`. Reached
+    /// from that run's preview server through [`RunToolFn`]; `Err` is text for
+    /// the agent, like `Ok`. The rules it applies are `crate::dispatch`'s.
+    pub fn run_tool(
+        &self,
+        asker: &str,
+        call: agency_core::preview::runs::Call,
+    ) -> std::result::Result<String, String> {
+        use agency_core::preview::runs::Call;
+        match call {
+            Call::Dispatch(work) => self.dispatch_child(asker, work),
+            Call::Wait { run_id, timeout } => {
+                self.reach_child(asker, &run_id)?;
+                self.wait_child(&run_id, timeout)
+            }
+            Call::Read { run_id, what } => {
+                self.reach_child(asker, &run_id)?;
+                self.read_child(&run_id, what).map_err(|e| format!("{e:#}"))
+            }
+        }
+    }
+
+    fn reach_child(&self, asker: &str, run_id: &str) -> std::result::Result<(), String> {
+        let parent = self.run_parents.lock().unwrap().get(run_id).cloned();
+        crate::dispatch::may_reach(asker, run_id, parent.as_deref())
+    }
+
+    /// `run_dispatch`: start a run the way the user's Dispatch would, as the
+    /// asker's child, on the asker's own agent profile and model.
+    ///
+    /// Under a gate of the asker's own, from the count of its children to the
+    /// new one's link: agents make tool calls in parallel, and two dispatches
+    /// that both counted three live children would both have been admitted
+    /// under a cap of four.
+    fn dispatch_child(
+        &self,
+        asker: &str,
+        work: agency_core::preview::runs::Work,
+    ) -> std::result::Result<String, String> {
+        self.spawn_gates
+            .with(&format!("dispatch:{asker}"), || self.dispatch_child_locked(asker, work))
+    }
+
+    fn dispatch_child_locked(
+        &self,
+        asker: &str,
+        work: agency_core::preview::runs::Work,
+    ) -> std::result::Result<String, String> {
+        use agency_core::preview::runs::Work;
+        let text = |e: anyhow::Error| format!("{e:#}");
+        let parent = self.run_record(asker).map_err(text)?;
+        let repo = self.project_repo(&parent.project_id).map_err(text)?;
+        // Afresh, not the server's cached caps: switching the tools off has
+        // to refuse the very next call, not one five seconds on.
+        if !dispatch_tools_on(&agency_core::config::load(&repo)) {
+            return Err("The run tools have just been switched off for this project. Do the work \
+                        yourself, or ask the user to start the run."
+                .to_string());
+        }
+        let is_child = self.run_parents.lock().unwrap().contains_key(asker);
+        let live = {
+            let reg = self.registry.lock().unwrap();
+            let children = reg.run_children(asker).map_err(text)?;
+            children
+                .iter()
+                .filter(|c| reg.get_run(c).ok().flatten().is_some_and(|r| r.archived_at.is_none()))
+                .count()
+        };
+        crate::dispatch::admit(is_child, live)?;
+        // A worktree per child is what keeps children from colliding, so a
+        // project with no repository to cut one from has none to offer.
+        if require_gitless_known(&repo).map_err(text)? {
+            return Err(format!(
+                "{} is not a git repository, so there is no worktree to give a dispatched run. \
+                 Do the work in this run instead.",
+                repo.display()
+            ));
+        }
+        // The parent's own profile and model, by name, read as the user's
+        // Dispatch reads them: the gate the user chose for the parent is the
+        // child's gate. See `crate::dispatch` for why no argument names another.
+        let agent = parent.agent.as_str();
+        let model = parent.model.as_deref();
+        let info = match work {
+            Work::Issue(key) => {
+                let issue_id = self.issue_id_for_key(&parent.project_id, &key)?;
+                self.start_issue_run_for(&issue_id, agent, model, None, None, Some(asker.into()))
+            }
+            Work::Prompt(prompt) => agency_core::merge::detect_base(&repo).and_then(|base| {
+                self.create_run_spec(
+                    NewRunSpec {
+                        project_id: &parent.project_id,
+                        prompt: &prompt,
+                        agent,
+                        model,
+                        base: &base,
+                        merge_target: None,
+                        race_id: None,
+                        title: None,
+                        existing_branch: None,
+                        loop_config: None,
+                        issue_id: None,
+                        worktree: true,
+                        parent: Some(asker.to_string()),
+                    },
+                    &mut |_| {},
+                )
+            }),
+        }
+        .map_err(|e| format!("The run could not be started: {e:#}"))?;
+        let run = self.run_record(&info.id).map_err(text)?;
+        let title = run.title.clone().unwrap_or_default();
+        let worktree = workspace_dir(&repo, &run);
+        Ok(crate::dispatch::dispatched_text(
+            &run.id,
+            &title,
+            &run.branch,
+            &worktree.display().to_string(),
+        ))
+    }
+
+    /// The id of the issue `key` ("AGE-14") names in `project_id`'s tracker.
+    fn issue_id_for_key(&self, project_id: &str, key: &str) -> std::result::Result<String, String> {
+        let reg = self.registry.lock().unwrap();
+        let (_, prefix) = self.issue_root(&reg, project_id).map_err(|e| format!("{e:#}"))?;
+        let seq = key
+            .rsplit_once('-')
+            .filter(|(p, _)| p.eq_ignore_ascii_case(&prefix))
+            .and_then(|(_, n)| n.parse::<i64>().ok())
+            .ok_or_else(|| {
+                format!("{key} is not an issue key in this project, whose issues are {prefix}-<n>.")
+            })?;
+        reg.list_issues(project_id)
+            .map_err(|e| format!("{e:#}"))?
+            .into_iter()
+            .find(|i| i.seq == seq)
+            .map(|i| i.id)
+            .ok_or_else(|| format!("There is no issue {prefix}-{seq} in this project's tracker."))
+    }
+
+    /// One look at a child for `run_wait`: what the board would say of it now.
+    fn child_outcome(&self, run_id: &str) -> Option<crate::dispatch::Outcome> {
+        use crate::dispatch::Outcome;
+        let run = match self.registry.lock().unwrap().get_run(run_id) {
+            Ok(Some(run)) => run,
+            Ok(None) => return Some(Outcome::Discarded),
+            // A registry read that failed says nothing about the run.
+            Err(_) => return None,
+        };
+        if run.archived_at.is_some() {
+            return Some(Outcome::Archived);
+        }
+        // Likewise a listing the daemon did not answer: not "gone".
+        let live = self.term.read().unwrap().list().ok()?;
+        let lead = lead_session_name(&run, &live);
+        let status = live
+            .iter()
+            .find(|(name, _)| *name == lead)
+            .map_or(SessionStatus::Gone, |(_, status)| status.clone());
+        let activity = self.read_activity(&run, &live, crate::activity::now_ms());
+        crate::dispatch::verdict(&status, activity)
+    }
+
+    /// `run_wait`: block until the child says something worth returning for.
+    /// One look a second: the board itself only moves on the 2s notifier tick
+    /// and on hook posts, so a tighter loop would read the same state twice.
+    fn wait_child(&self, run_id: &str, timeout: Duration) -> std::result::Result<String, String> {
+        use crate::dispatch::Outcome;
+        let started = Instant::now();
+        let outcome = loop {
+            if let Some(outcome) = self.child_outcome(run_id) {
+                break outcome;
+            }
+            let left = timeout.saturating_sub(started.elapsed());
+            if left.is_zero() {
+                break Outcome::StillWorking;
+            }
+            std::thread::sleep(left.min(Duration::from_secs(1)));
+        };
+        let screen =
+            crate::dispatch::shows_screen(outcome).then(|| self.child_screen(run_id, 25)).flatten();
+        Ok(crate::dispatch::wait_text(
+            run_id,
+            outcome,
+            started.elapsed().as_secs(),
+            screen.as_deref(),
+        ))
+    }
+
+    /// The bottom `lines` of a child's lead session, as the user sees it.
+    fn child_screen(&self, run_id: &str, lines: usize) -> Option<String> {
+        let run = self.run_record(run_id).ok()?;
+        let term = self.term.read().unwrap();
+        let live = term.list().ok()?;
+        term.capture(&lead_session_name(&run, &live), lines).ok()
+    }
+
+    /// `run_read`: one view of what a child has done, headed with where it is.
+    fn read_child(&self, run_id: &str, what: agency_core::preview::runs::Read) -> Result<String> {
+        use agency_core::preview::runs::{keep_head, keep_tail, Read, READ_CHARS};
+        let run = self.run_record(run_id)?;
+        let repo = self.project_repo(&run.project_id)?;
+        let worktree = workspace_dir(&repo, &run);
+        let head = format!(
+            "{run_id} (\"{}\"), branch {}, worktree {}.",
+            run.title.as_deref().unwrap_or(""),
+            run.branch,
+            worktree.display()
+        );
+        let screen = |note: &str| -> String {
+            let text = self.child_screen(run_id, 120).unwrap_or_default();
+            if text.trim().is_empty() {
+                return format!("{head}{note}\n\nIts screen is empty: the agent is not running.");
+            }
+            format!("{head}{note}\n\nIts screen now:\n{}", keep_tail(text.trim_end(), READ_CHARS))
+        };
+        Ok(match what {
+            Read::Screen => screen(""),
+            Read::Transcript => {
+                let convo = self.read_run_conversation(run_id)?;
+                let mut text = String::new();
+                for session in &convo.sessions {
+                    for turn in &session.turns {
+                        let who = match turn.role {
+                            agency_core::transcript::Role::User => "User",
+                            agency_core::transcript::Role::Assistant => "Agent",
+                            agency_core::transcript::Role::Tool => "Tool",
+                        };
+                        text.push_str(&format!("{who}: {}\n", turn.text.trim_end()));
+                    }
+                }
+                if !convo.supported {
+                    screen(" Agency cannot read this agent's transcript, so here is its screen.")
+                } else if text.trim().is_empty() {
+                    screen(" Its transcript has nothing in it yet, so here is its screen.")
+                } else {
+                    format!("{head}\n\n{}", keep_tail(&text, READ_CHARS))
+                }
+            }
+            Read::Diff => {
+                // From the commit the branch was cut at, to the worktree as it
+                // stands: what the child committed and what it has not yet.
+                let from = run
+                    .base_commit
+                    .clone()
+                    .or_else(|| agency_core::merge::fork_point(&repo, &run.branch, &run.base))
+                    .ok_or_else(|| anyhow!("{run_id}'s base, {}, no longer resolves", run.base))?;
+                let diff = agency_core::git::git_with(&worktree, &["diff", &from], &[], None)?;
+                let untracked = agency_core::git::git_with(
+                    &worktree,
+                    &["ls-files", "--others", "--exclude-standard"],
+                    &[],
+                    None,
+                )?;
+                let mut text = String::new();
+                if !untracked.trim().is_empty() {
+                    text.push_str("New files not yet added to git:\n");
+                    text.push_str(&untracked);
+                    text.push('\n');
+                }
+                text.push_str(&diff);
+                if text.trim().is_empty() {
+                    format!("{head}\n\nNo changes against {} yet.", run.base)
+                } else {
+                    format!(
+                        "{head} Changes against {}:\n\n{}",
+                        run.base,
+                        keep_head(&text, READ_CHARS)
+                    )
+                }
+            }
+        })
+    }
+
+    /// Whether this project's runs are offered the run tools.
+    pub fn dispatch_tools(&self, project_id: &str) -> Result<bool> {
+        Ok(dispatch_tools_on(&agency_core::config::load(&self.project_repo(project_id)?)))
+    }
+
+    /// Switch the run tools on or off for this project, on this machine.
+    ///
+    /// Off bites at once: a call made after it is refused (see
+    /// `dispatch_child`), and the tools drop out of the listing within the
+    /// cache's few seconds. On reaches the runs started after it. One already
+    /// going has them only if its agent was launched with the `agency-preview`
+    /// server in its MCP config, since that entry is written when an agent
+    /// starts and an agent reads its config once.
+    pub fn set_dispatch_tools(&self, project_id: &str, on: bool) -> Result<()> {
+        agency_core::config::save_dispatch(&self.project_repo(project_id)?, on)?;
+        self.sync_preview_servers();
+        Ok(())
     }
 
     /// Race several attempts on one issue; every attempt links the issue.
@@ -5726,6 +6100,7 @@ impl AppState {
                 loop_config: None,
                 issue_id: None,
                 worktree: true,
+                parent: None,
             },
             &mut |_| {},
         )
@@ -5789,6 +6164,7 @@ impl AppState {
                 loop_config: None,
                 issue_id: None,
                 worktree: own_worktree,
+                parent: None,
             },
             &mut |_| {},
         )
@@ -5906,6 +6282,7 @@ impl AppState {
                 loop_config: None,
                 issue_id: None,
                 worktree: own_worktree,
+                parent: None,
             },
             &mut |_| {},
         )?;
@@ -6540,8 +6917,23 @@ impl AppState {
         });
         let tools = PreviewToolsCache { repo: repo.clone(), cell: Mutex::new(None) };
         let share = self.share_open_file.clone();
+        let parents = self.run_parents.clone();
+        let caps_run = run_id.clone();
         let caps = std::sync::Arc::new(move || {
-            run_caps(tools.get(), share.load(std::sync::atomic::Ordering::SeqCst))
+            let (preview, dispatch) = tools.get();
+            // A dispatched run never has more than its parent had, and its
+            // parent had no run tools of its own to hand on: the tree stops at
+            // one level (see `crate::dispatch`).
+            let dispatch = dispatch && !parents.lock().unwrap().contains_key(&caps_run);
+            run_caps(preview, share.load(std::sync::atomic::Ordering::SeqCst), dispatch)
+        });
+        let tool_cell = self.run_tool.clone();
+        let tool_run = run_id.clone();
+        let runs = std::sync::Arc::new(move |call| match tool_cell.get() {
+            Some(run_tool) => run_tool(&tool_run, call),
+            None => Err("Agency cannot start or read runs right now: its window is not up. \
+                         Try again in a moment."
+                .to_string()),
         });
         // Reads the cell, not the app state: a server outlives nothing here,
         // but capturing `self` would tie every run's server to its lifetime.
@@ -6599,6 +6991,7 @@ impl AppState {
             open_file,
             set_status,
             report,
+            runs,
             state_token,
         }
     }
@@ -6886,6 +7279,11 @@ impl AppState {
     /// Installed once by the app shell; see [`PreviewShotFn`].
     pub fn set_preview_shot(&self, shot: PreviewShotFn) {
         let _ = self.preview_shot.set(shot);
+    }
+
+    /// Installed once by the app shell; see [`RunToolFn`].
+    pub fn set_run_tool(&self, run_tool: RunToolFn) {
+        let _ = self.run_tool.set(run_tool);
     }
 
     /// The issue key prefix a project's tracker uses, for the workspace
@@ -11569,6 +11967,7 @@ impl AppState {
                 loop_config: None,
                 issue_id: None,
                 worktree: false,
+                parent: None,
             },
             &mut |_| {},
         )?;
@@ -12225,10 +12624,11 @@ fn validate_project_path(repo_path: &Path) -> Result<()> {
 mod tests {
     use super::{
         agent_argv, branch_leaf_from_first_prompt, branch_to_adopt, command_on_path,
-        graphify_server, hooked_and_gone, id_source, is_auto_cut_branch, new_task_id,
-        open_file_for, pick_port, preview_mcp_port_for, preview_port_this_sweep, preview_tools_on,
-        require_branch_exists, require_gitless_known, require_own_branch, server_port_for,
-        should_resume, slugify, split_session_id, validate_race, OpenFileRef, RaceAttempt,
+        dispatch_tools_on, graphify_server, hooked_and_gone, id_source, is_auto_cut_branch,
+        new_task_id, open_file_for, pick_port, preview_mcp_port_for, preview_port_this_sweep,
+        preview_tools_on, require_branch_exists, require_gitless_known, require_own_branch,
+        server_port_for, should_resume, slugify, split_session_id, validate_race, OpenFileRef,
+        RaceAttempt,
     };
     use agency_core::config::KnowledgeConfig;
     use agency_core::profile::AgentProfile;
@@ -12291,6 +12691,20 @@ mod tests {
         assert_eq!(preview_mcp_port_for(&config, Some(5240), true), Some(5249));
         // Still nowhere to bind, whatever is switched on.
         assert_eq!(preview_mcp_port_for(&config, None, true), None);
+    }
+
+    /// The run tools are a third reason (AGE-209), and the server they bring
+    /// is named in the agent's MCP config like the other two, or an agent
+    /// would have tools it could never reach.
+    #[test]
+    fn the_run_tools_earn_a_server_only_once_switched_on() {
+        use agency_core::config::AgencyConfig;
+        let mut config = AgencyConfig::default();
+        assert!(!dispatch_tools_on(&config), "off by default");
+        assert_eq!(preview_mcp_port_for(&config, Some(5240), false), None);
+        config.dispatch.agent_tools = true;
+        assert_eq!(preview_mcp_port_for(&config, Some(5240), false), Some(5249));
+        assert_eq!(preview_mcp_port_for(&config, None, false), None);
     }
 
     /// A server the switches would not start today, but which a live agent's

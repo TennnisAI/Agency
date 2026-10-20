@@ -26,7 +26,7 @@ export const GROUP_IDS = ["interface", "agents", "project", "app"] as const;
 export const SECTION_IDS = [
   "appearance", "editor", "messages", "notifications",
   "agents", "mcp", "localModel",
-  "backlog", "knowledge", "files",
+  "backlog", "knowledge", "files", "dispatch",
   "workspace", "about",
 ] as const;
 
@@ -89,6 +89,10 @@ export const SECTIONS: Section[] = [
     terms: "graphify index build rebuild stop backend model uv context" },
   { id: "files", label: "Worktree files", group: "project",
     terms: "copy env certs keys secrets untracked service account" },
+  // Looked for by what it lets an agent do, which is the vocabulary other
+  // tools use for it: orchestrating, delegating, spawning subagents.
+  { id: "dispatch", label: "Agent dispatch", group: "project",
+    terms: "run tools start runs wait read orchestrate orchestration delegate spawn subagents child children parallel autonomy" },
   { id: "workspace", label: "Workspace", group: "app",
     terms: "journal notes daily weekly planning folder location move switch git hide markdown" },
   { id: "about", label: "About", group: "app",

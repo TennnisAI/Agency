@@ -110,7 +110,10 @@ fn initialize_result(params: &Value) -> Value {
             \"this file\" and \"here\" mean when they say it. Whichever of the two the user has \
             switched off is not listed. set_status goes the other way: it puts one short line \
             about what you are doing on this run's card in Agency, so the user can see it at a \
-            glance without opening your pane.",
+            glance without opening your pane. Where the user has switched them on for this \
+            project, the run tools start other agent runs, each in a worktree of its own: \
+            run_dispatch starts one, run_wait blocks until it is done or stuck, and run_read \
+            shows what it did.",
     })
 }
 
@@ -134,11 +137,16 @@ pub const PREVIEW_TOOLS: &[&str] = &[
 /// The editor half: what Agency's own window is showing (AGE-200).
 pub const EDITOR_TOOLS: &[&str] = &["editor_open_file"];
 
+/// The run tools: starting other runs and waiting on them (AGE-209). Last, so
+/// switching them on or off moves nothing listed ahead of them.
+pub const RUN_TOOLS: &[&str] = &[super::runs::DISPATCH, super::runs::WAIT, super::runs::READ];
+
 /// Whether `name` is a tool this server is serving right now.
 pub fn enabled(name: &str, caps: Caps) -> bool {
     STATUS_TOOLS.contains(&name)
         || (caps.preview && PREVIEW_TOOLS.contains(&name))
         || (caps.editor && EDITOR_TOOLS.contains(&name))
+        || (caps.dispatch && RUN_TOOLS.contains(&name))
 }
 
 /// Why a real tool is not answering, when the reason is a switch rather than a
@@ -155,6 +163,13 @@ fn switched_off_reason(name: &str) -> Option<&'static str> {
             "editor_open_file is switched off: Agency shares the file the user has open only \
               when \"Let agents see the file you have open\" is on in its settings, and it is off \
               by default. Ask the user which file they mean, or ask them to turn it on.",
+        )
+    } else if RUN_TOOLS.contains(&name) {
+        Some(
+            "the run tools are switched off for this run. They are off by default, and switched \
+              on per project by the user in Agency's settings; a run that was itself started by \
+              run_dispatch never has them. Do the work yourself, or ask the user to start the \
+              run.",
         )
     } else {
         None
@@ -267,6 +282,57 @@ fn tools(caps: Caps) -> Value {
                 relying on an earlier one.",
             "inputSchema": none,
         },
+        {
+            "name": "run_dispatch",
+            "description": "Start another agent run in this project, exactly as the user's \
+                Dispatch does: a worktree and branch of its own cut from the project's base, the \
+                same agent and permission settings this run was started with, and a card on the \
+                user's board. Give it an issue key from this project's tracker, or a prompt that \
+                stands on its own, since the new run sees nothing of this conversation. Returns \
+                the run_id that run_wait and run_read take. The run asks the user, not you, \
+                for any permission it needs.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "issue": { "type": "string", "description": "An issue key in this project's tracker, e.g. \"AGE-14\". The issue becomes the run's prompt." },
+                    "prompt": { "type": "string", "description": "The whole task, when there is no issue for it." },
+                },
+                "additionalProperties": false,
+            },
+        },
+        {
+            "name": "run_wait",
+            "description": "Block until a run you dispatched finishes its turn, stops on a \
+                permission prompt or question only the user can answer, or exits, and say which, \
+                instead of sleeping and checking. Returns early with \"still working\" when the \
+                timeout passes; call it again to keep waiting. A blocked run stays blocked until \
+                the user answers it in Agency.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "run_id": { "type": "string", "description": "The run_id run_dispatch returned." },
+                    "timeout_secs": { "type": "number", "description": "How long to wait, in seconds. Default 300, at most 1800. Keep it under your own tool-call timeout if your client has one." },
+                },
+                "required": ["run_id"],
+                "additionalProperties": false,
+            },
+        },
+        {
+            "name": "run_read",
+            "description": "What a run you dispatched has done: its conversation (transcript), \
+                what its branch changes against its base, uncommitted work included (diff), or \
+                the bottom of its terminal as the user sees it (screen). Long answers are cut; \
+                the run's worktree, named in the answer, has the rest.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "run_id": { "type": "string", "description": "The run_id run_dispatch returned." },
+                    "what": { "type": "string", "enum": ["transcript", "diff", "screen"], "description": "Which view. Default transcript." },
+                },
+                "required": ["run_id"],
+                "additionalProperties": false,
+            },
+        },
     ]);
     Value::Array(
         all.as_array()
@@ -310,7 +376,7 @@ pub fn tool_image(id: Value, base64_png: &str, caption: &str) -> Value {
 mod tests {
     use super::*;
 
-    const ALL: Caps = Caps { preview: true, editor: true };
+    const ALL: Caps = Caps { preview: true, editor: true, dispatch: true };
 
     fn call(body: &str) -> Handled {
         handle(body.as_bytes(), ALL)
@@ -364,6 +430,7 @@ mod tests {
             .iter()
             .chain(PREVIEW_TOOLS.iter())
             .chain(EDITOR_TOOLS.iter())
+            .chain(RUN_TOOLS.iter())
             .copied()
             .collect();
         assert_eq!(names, every);
@@ -378,8 +445,10 @@ mod tests {
         let with_status = |half: &[&str]| -> Vec<String> {
             STATUS_TOOLS.iter().chain(half).map(|s| s.to_string()).collect()
         };
-        assert_eq!(tool_names(Caps { preview: true, editor: false }), with_status(PREVIEW_TOOLS));
-        assert_eq!(tool_names(Caps { preview: false, editor: true }), with_status(EDITOR_TOOLS));
+        let only = |preview, editor, dispatch| tool_names(Caps { preview, editor, dispatch });
+        assert_eq!(only(true, false, false), with_status(PREVIEW_TOOLS));
+        assert_eq!(only(false, true, false), with_status(EDITOR_TOOLS));
+        assert_eq!(only(false, false, true), with_status(RUN_TOOLS));
     }
 
     /// A server outlives its switches (see the app's `preview_port_this_sweep`),
@@ -408,7 +477,7 @@ mod tests {
         };
         let Handled::Response(half) = handle(
             br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
-            Caps { preview: true, editor: false },
+            Caps { preview: true, editor: false, dispatch: false },
         ) else {
             panic!("expected response");
         };
@@ -421,7 +490,7 @@ mod tests {
     fn a_switched_off_tool_says_so_instead_of_denying_it_exists() {
         let Handled::Response(r) = handle(
             br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"editor_open_file"}}"#,
-            Caps { preview: true, editor: false },
+            Caps { preview: true, editor: false, dispatch: false },
         ) else {
             panic!("expected response");
         };
@@ -431,7 +500,15 @@ mod tests {
 
         let Handled::Response(r) = handle(
             br##"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"preview_click","arguments":{"selector":"#go"}}}"##,
-            Caps { preview: false, editor: true },
+            Caps { preview: false, editor: true, dispatch: false },
+        ) else {
+            panic!("expected response");
+        };
+        assert!(r["error"]["message"].as_str().unwrap().contains("switched off"));
+
+        let Handled::Response(r) = handle(
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run_dispatch","arguments":{"prompt":"x"}}}"#,
+            Caps { preview: true, editor: true, dispatch: false },
         ) else {
             panic!("expected response");
         };

@@ -427,7 +427,12 @@ impl Registry {
                 run_id TEXT NOT NULL,
                 conversation_id TEXT NOT NULL,
                 updated_at INTEGER NOT NULL
-            );",
+            );
+            CREATE TABLE IF NOT EXISTS run_parents (
+                run_id TEXT PRIMARY KEY,
+                parent_id TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS run_parents_by_parent ON run_parents (parent_id);",
         )?;
         // Migrate older DBs whose `runs` table predates `port_base`.
         if !column_exists(&conn, "runs", "port_base")? {
@@ -1141,7 +1146,49 @@ impl Registry {
 
     pub fn delete_run(&self, id: &str) -> Result<()> {
         self.conn.execute("DELETE FROM runs WHERE id = ?1", [id])?;
+        // Only the link up: a deleted parent's children are still runs on the
+        // board, and still runs that were dispatched, which is what keeps
+        // them from dispatching (see `run_parent`).
+        self.conn.execute("DELETE FROM run_parents WHERE run_id = ?1", [id])?;
         Ok(())
+    }
+
+    /// Record that `parent_id`'s agent started `run_id` with `run_dispatch`
+    /// (AGE-209). Kept apart from `runs` so that no `Run` literal anywhere has
+    /// to learn a field only dispatch reads.
+    pub fn set_run_parent(&self, run_id: &str, parent_id: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO run_parents (run_id, parent_id) VALUES (?1, ?2)",
+            [run_id, parent_id],
+        )?;
+        Ok(())
+    }
+
+    /// The run whose agent dispatched `run_id`, if one did.
+    pub fn run_parent(&self, run_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT parent_id FROM run_parents WHERE run_id = ?1", [run_id], |r| {
+                r.get(0)
+            })
+            .optional()?)
+    }
+
+    /// Every `(run, parent)` link, for the app to hold in memory: the preview
+    /// server asks whether a run is a child on every request.
+    pub fn run_parents(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare("SELECT run_id, parent_id FROM run_parents")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The runs `parent_id` dispatched, oldest first.
+    pub fn run_children(&self, parent_id: &str) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT run_id FROM run_parents WHERE parent_id = ?1 ORDER BY rowid")?;
+        let rows = stmt.query_map([parent_id], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     pub fn set_port_base(&self, id: &str, port_base: Option<u16>) -> Result<()> {
@@ -1595,7 +1642,7 @@ impl Registry {
     pub fn clear_runs(&self) -> Result<()> {
         self.conn.execute_batch(
             "DELETE FROM review_comments; DELETE FROM run_sessions;
-             DELETE FROM conversations; DELETE FROM runs;",
+             DELETE FROM conversations; DELETE FROM run_parents; DELETE FROM runs;",
         )?;
         Ok(())
     }
@@ -1881,6 +1928,29 @@ mod tests {
     use super::*;
     use rusqlite::Connection;
     use tempfile::tempdir;
+
+    #[test]
+    fn run_parents_link_children_up_and_survive_a_reopen() {
+        let dir = tempdir().unwrap();
+        let db = dir.path().join("agency.db");
+        {
+            let reg = Registry::open(&db).unwrap();
+            reg.set_run_parent("child-a", "parent").unwrap();
+            reg.set_run_parent("child-b", "parent").unwrap();
+            reg.set_run_parent("grandchild", "child-a").unwrap();
+        }
+        let reg = Registry::open(&db).unwrap();
+        assert_eq!(reg.run_parent("child-a").unwrap().as_deref(), Some("parent"));
+        assert_eq!(reg.run_parent("parent").unwrap(), None);
+        assert_eq!(reg.run_children("parent").unwrap(), vec!["child-a", "child-b"]);
+        assert_eq!(reg.run_parents().unwrap().len(), 3);
+        // Deleting a run takes its own link up, never its children's.
+        reg.delete_run("child-a").unwrap();
+        assert_eq!(reg.run_parent("child-a").unwrap(), None);
+        assert_eq!(reg.run_parent("grandchild").unwrap().as_deref(), Some("child-a"));
+        reg.clear_runs().unwrap();
+        assert!(reg.run_parents().unwrap().is_empty());
+    }
 
     #[test]
     fn backup_skips_fresh_install_but_stamps_the_version() {

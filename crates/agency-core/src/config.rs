@@ -17,6 +17,8 @@ pub struct AgencyConfig {
     pub preview: PreviewConfig,
     #[serde(default)]
     pub issues: IssuesConfig,
+    #[serde(default)]
+    pub dispatch: DispatchConfig,
 }
 
 /// Where this project's backlog lives. Off by default: a tracker that starts
@@ -107,6 +109,19 @@ impl Default for PreviewConfig {
 
 fn default_true() -> bool {
     true
+}
+
+/// The run tools (AGE-209): a dispatched agent starting runs of its own,
+/// waiting on them and reading what they did. Off by default and per machine,
+/// unlike `[preview]`. The preview tools act on a page the user can already
+/// see; these start agents, each one a process with the user's own
+/// credentials, so they are a grant of autonomy and the user has to be the one
+/// who made it. A tracked `agency.toml` cannot make it for them: see
+/// [`strip_machine_only`], and [`save_dispatch`] for where the switch is kept.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DispatchConfig {
+    #[serde(default)]
+    pub agent_tools: bool,
 }
 
 /// Project-level MCP servers (`[mcp.servers.<name>]` tables), merged over the
@@ -332,9 +347,18 @@ pub fn load(repo_path: &Path) -> AgencyConfig {
 /// `agency.local.toml` at all, so there is no local `false` for the merge to
 /// prefer. Stripped from the tracked value rather than special-cased in
 /// `merge_values`, which has no business knowing which keys these are.
+///
+/// `[dispatch]` goes whole, for the same reason and a sharper one: a cloned
+/// repo whose tracked file said `agent_tools = true` would hand every agent
+/// run in it the power to start more agents, a grant nobody on this machine
+/// chose. Default-deny for shared config means the only file that can turn it
+/// on is the one this machine writes.
 fn strip_machine_only(mut v: toml::Value) -> toml::Value {
     if let Some(issues) = v.get_mut("issues").and_then(|i| i.as_table_mut()) {
         issues.remove("auto");
+    }
+    if let Some(root) = v.as_table_mut() {
+        root.remove("dispatch");
     }
     v
 }
@@ -882,6 +906,25 @@ pub fn save_files(repo_path: &Path, f: &FilesConfig) -> std::io::Result<()> {
     std::fs::write(&path, text)
 }
 
+/// Persist `[dispatch] agent_tools` into `.agency/agency.local.toml`, the
+/// gitignored per-machine file, which is the only place `load` reads it from.
+/// Mirrors [`save_knowledge`]; any other config in that file is preserved.
+pub fn save_dispatch(repo_path: &Path, agent_tools: bool) -> std::io::Result<()> {
+    let dir = repo_path.join(".agency");
+    let path = dir.join("agency.local.toml");
+    let mut doc = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| toml::from_str::<toml::Value>(&t).ok())
+        .and_then(|v| v.as_table().cloned())
+        .unwrap_or_default();
+    let mut table = toml::value::Table::new();
+    table.insert("agent_tools".into(), toml::Value::Boolean(agent_tools));
+    doc.insert("dispatch".into(), toml::Value::Table(table));
+    let text = toml::to_string_pretty(&toml::Value::Table(doc)).map_err(std::io::Error::other)?;
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(&path, text)
+}
+
 /// True when the effective run list comes from the tracked `agency.toml`
 /// rather than the per-machine `agency.local.toml` — i.e. the whole team sees
 /// these commands. False when they are local-only or unset. The UI uses it to
@@ -1351,6 +1394,29 @@ mod tests {
         assert_eq!(c.ports.base, 5200);
         assert_eq!(c.ports.block_size, 10);
         assert!(c.preview.agent_tools, "preview tools are on unless switched off");
+    }
+
+    #[test]
+    fn dispatch_tools_are_off_until_this_machine_turns_them_on() {
+        let dir = tempdir().unwrap();
+        assert!(!load(dir.path()).dispatch.agent_tools, "off by default");
+        // A repo cannot turn them on for whoever clones it.
+        write(dir.path(), "agency.toml", "[dispatch]\nagent_tools = true\n");
+        assert!(!load(dir.path()).dispatch.agent_tools, "the tracked file is not read");
+        save_dispatch(dir.path(), true).unwrap();
+        assert!(load(dir.path()).dispatch.agent_tools, "the local file is");
+        save_dispatch(dir.path(), false).unwrap();
+        assert!(!load(dir.path()).dispatch.agent_tools);
+    }
+
+    #[test]
+    fn saving_dispatch_keeps_the_rest_of_the_local_file() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "agency.local.toml", "[files]\ncopy = [\"a.pem\"]\n");
+        save_dispatch(dir.path(), true).unwrap();
+        let c = load(dir.path());
+        assert!(c.dispatch.agent_tools);
+        assert_eq!(c.files.copy, vec!["a.pem".to_string()]);
     }
 
     #[test]

@@ -40,6 +40,9 @@ browser with `support.js` beside it).
 - [`run-teardown.md`](run-teardown.md) — what archiving and deleting an agent
   actually remove, why that is decided from the branch rather than from the
   verb, and the record a finished run leaves behind (shipped, AGE-149).
+- [`dispatch-tools.md`](dispatch-tools.md) — an agent starting runs of its
+  own, waiting on them and reading what they did, and how that is kept from
+  escalating anyone's permissions (shipped, AGE-209).
 - [`beta-readiness.md`](beta-readiness.md) — the pre-beta bug hunt and fix
   pass, kept as a historical record.
 

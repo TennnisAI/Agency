@@ -5,6 +5,7 @@ mod checkpoints;
 mod clipboard;
 mod commands;
 mod datadir;
+mod dispatch;
 mod foreground;
 mod gates;
 mod installer;
@@ -254,6 +255,8 @@ pub fn run() {
             commands::install_knowledge_tooling,
             commands::get_files_config,
             commands::save_files_config,
+            commands::get_dispatch_tools,
+            commands::set_dispatch_tools,
             commands::import_mcp_json,
             commands::authenticate_mcp_server,
             commands::deauthenticate_mcp_server,
@@ -498,6 +501,15 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         // waiting out the first notifier tick.
         let state = app.state::<AppState>();
         state.set_preview_shot(crate::preview_shot::provider(app.handle().clone()));
+        // And the run tools (AGE-209) their way back in: a server's connection
+        // thread holds no `AppState`, so a call reaches it through the handle.
+        let tools_handle = app.handle().clone();
+        state.set_run_tool(std::sync::Arc::new(move |asker, call| {
+            match tools_handle.try_state::<AppState>() {
+                Some(state) => state.run_tool(asker, call),
+                None => Err("Agency is shutting down.".to_string()),
+            }
+        }));
         state.sync_preview_servers();
     }
     let handle = app.handle().clone();

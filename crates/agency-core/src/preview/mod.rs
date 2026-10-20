@@ -46,6 +46,7 @@ mod http;
 pub(crate) mod proxy;
 pub mod report;
 mod rpc;
+pub mod runs;
 pub mod status;
 
 use anyhow::{Context as _, Result};
@@ -132,16 +133,19 @@ pub struct Caps {
     pub preview: bool,
     /// `editor_open_file`: the user turned on sharing the file they have open.
     pub editor: bool,
+    /// The run tools ([`runs`]): the user switched them on for this project,
+    /// and this run was not itself dispatched by one (AGE-209).
+    pub dispatch: bool,
 }
 
 impl Caps {
     /// Nothing to serve — the state in which no server should be listening.
     pub fn none() -> Caps {
-        Caps { preview: false, editor: false }
+        Caps { preview: false, editor: false, dispatch: false }
     }
 
     pub fn any(&self) -> bool {
-        self.preview || self.editor
+        self.preview || self.editor || self.dispatch
     }
 }
 
@@ -206,6 +210,10 @@ pub struct Hooks {
     pub open_file: Arc<dyn Fn() -> OpenFocus + Send + Sync>,
     pub set_status: Arc<dyn Fn(status::Status) + Send + Sync>,
     pub report: Arc<dyn Fn(&str, report::Event) + Send + Sync>,
+    /// A run tool call, carried out by the app for this run (AGE-209). `Ok` is
+    /// the answer and `Err` a failure, both as text addressed to the agent.
+    /// May block: `run_wait` holds for as long as the call asked.
+    pub runs: Arc<dyn Fn(runs::Call) -> std::result::Result<String, String> + Send + Sync>,
     /// What a `report` post has to carry in [`crate::state_hooks::TOKEN_HEADER`]
     /// (see [`crate::state_hooks::token`]).
     pub state_token: Arc<str>,
@@ -799,6 +807,13 @@ fn exec_tool(id: Value, name: &str, args: &Value, ctx: &Ctx) -> Value {
             (ctx.hooks.set_status)(status);
             rpc::tool_text(id, &reply, false)
         }
+        runs::DISPATCH | runs::WAIT | runs::READ => match runs::parse(name, args) {
+            Ok(call) => match (ctx.hooks.runs)(call) {
+                Ok(text) => rpc::tool_text(id, &text, false),
+                Err(text) => rpc::tool_text(id, &text, true),
+            },
+            Err(why) => rpc::error(id, -32602, &why),
+        },
         "preview_snapshot" => bridge_tool(id, name, json!({ "kind": "snapshot" }), ctx),
         "preview_navigate" => {
             let path = arg("path");
@@ -913,7 +928,12 @@ mod tests {
     use std::io::{Read, Write};
 
     fn hooks(script: Option<(&str, &str)>, shot: Result<Vec<u8>, &str>) -> Hooks {
-        with_open_file(script, shot, Caps { preview: true, editor: true }, OpenFocus::Nothing)
+        with_open_file(
+            script,
+            shot,
+            Caps { preview: true, editor: true, dispatch: false },
+            OpenFocus::Nothing,
+        )
     }
 
     fn with_open_file(
@@ -931,6 +951,7 @@ mod tests {
             open_file: Arc::new(move || open.clone()),
             set_status: Arc::new(|_| {}),
             report: Arc::new(|_, _| {}),
+            runs: Arc::new(|call| Ok(format!("{call:?}"))),
             state_token: Arc::from(TOKEN),
         }
     }
@@ -1173,7 +1194,7 @@ mod tests {
         let srv = start(with_open_file(
             None,
             Err("n/a"),
-            Caps { preview: false, editor: true },
+            Caps { preview: false, editor: true, dispatch: false },
             OpenFocus::File(OpenFile {
                 rel_path: "docs/plan.md".into(),
                 abs_path: "/w/run-1/docs/plan.md".into(),
@@ -1195,11 +1216,36 @@ mod tests {
     }
 
     #[test]
+    fn run_tools_reach_the_app_parsed_and_answer_as_it_says() {
+        let mut hooks = with_open_file(
+            None,
+            Err("n/a"),
+            Caps { preview: false, editor: false, dispatch: true },
+            OpenFocus::Nothing,
+        );
+        hooks.runs = Arc::new(|call| match call {
+            runs::Call::Wait { run_id, timeout } => Ok(format!("{run_id} {}", timeout.as_secs())),
+            other => Err(format!("refused {other:?}")),
+        });
+        let srv = start(hooks);
+        let r = tool_call(srv.port(), "run_wait", json!({ "run_id": "child", "timeout_secs": 7 }));
+        assert_eq!(r["result"]["content"][0]["text"], "child 7");
+        assert_eq!(r["result"]["isError"], false);
+        // The app's refusal is a tool error the agent reads, not a protocol one.
+        let r = tool_call(srv.port(), "run_dispatch", json!({ "prompt": "x" }));
+        assert_eq!(r["result"]["isError"], true);
+        assert!(r["result"]["content"][0]["text"].as_str().unwrap().starts_with("refused"));
+        // A malformed call never reaches the app at all.
+        let r = tool_call(srv.port(), "run_read", json!({}));
+        assert_eq!(r["error"]["code"], -32602);
+    }
+
+    #[test]
     fn editor_open_file_says_when_the_file_is_the_checkout_copy() {
         let srv = start(with_open_file(
             None,
             Err("n/a"),
-            Caps { preview: false, editor: true },
+            Caps { preview: false, editor: true, dispatch: false },
             OpenFocus::File(OpenFile {
                 rel_path: "docs/plan.md".into(),
                 abs_path: "/repo/docs/plan.md".into(),
@@ -1219,7 +1265,7 @@ mod tests {
         let srv = start(with_open_file(
             None,
             Err("n/a"),
-            Caps { preview: false, editor: true },
+            Caps { preview: false, editor: true, dispatch: false },
             OpenFocus::Nothing,
         ));
         let text = tool_call(srv.port(), "editor_open_file", json!({}))["result"]["content"][0]

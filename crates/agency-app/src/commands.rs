@@ -1567,6 +1567,20 @@ pub fn save_files_config(
     state.save_files_config(&project_id, copy).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub fn get_dispatch_tools(state: State<'_, AppState>, project_id: String) -> Result<bool, String> {
+    state.dispatch_tools(&project_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_dispatch_tools(
+    state: State<'_, AppState>,
+    project_id: String,
+    on: bool,
+) -> Result<(), String> {
+    state.set_dispatch_tools(&project_id, on).map_err(|e| e.to_string())
+}
+
 /// "Fix with agent" on a conflicted merge: type the conflict into one of this
 /// run's own agent sessions rather than spawning a separate resolver. True if
 /// it went in now, false if it is queued behind that agent's current turn.

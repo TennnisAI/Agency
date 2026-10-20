@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Project, RunInfo } from "../api";
 import { useRuns } from "../store/runs";
-import { runStatus } from "../lib/runstate";
+import { workspaceStatus } from "../lib/runstate";
 import { loadFocusTab, saveFocusTab, PRIMARY_TAB } from "../lib/focusTab";
 import { RunTab, runTabs, showsTabs, sidePanelTab } from "../lib/runTabs";
 import { runListLabel } from "../agents";
@@ -102,7 +102,7 @@ export default function AgentSidePanel({ project }: { project: Project }) {
     if (focusedRunId) requestAgentView(focusedRunId);
   };
 
-  const st = focused ? runStatus(focused) : null;
+  const st = focused ? workspaceStatus(focused) : null;
 
   // One row per run, or, for a workspace with more than one tab (or whose only
   // tab is not the agent it is named after), the run as a heading over a row
@@ -118,7 +118,7 @@ export default function AgentSidePanel({ project }: { project: Project }) {
           disabled={!only}
           onClick={() => { if (only) pickTab(r, only); }}
         >
-          <span className={`dot ${runStatus(r).cls}`} />
+          <span className={`dot ${workspaceStatus(r).cls}`} />
           <span className="agent-side-menu-name">{runListLabel(r)}</span>
         </button>
       );
@@ -126,7 +126,7 @@ export default function AgentSidePanel({ project }: { project: Project }) {
     return (
       <div key={r.id} className="agent-side-menu-run">
         <div className="agent-side-menu-run-name">
-          <span className={`dot ${runStatus(r).cls}`} />
+          <span className={`dot ${workspaceStatus(r).cls}`} />
           <span className="agent-side-menu-name">{runListLabel(r)}</span>
         </div>
         {tabs.map((t) => (

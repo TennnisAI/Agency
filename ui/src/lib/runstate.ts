@@ -256,3 +256,29 @@ export function runStatus(
   }
   return { cls: "exited", text: "session ended" };
 }
+
+// Which of a workspace's agents its one dot stands for, most urgent first: one
+// that cannot go on without you, then one still at work, then one whose turn
+// is over, then one with nothing in flight.
+const WORKSPACE_RANK: Record<string, number> = { blocked: 0, running: 1, awaiting: 2, idle: 3 };
+
+/**
+ * The dot and label for a run listed by one name (a tile, a rail row, a tree
+ * row): the most urgent state among its agents, every tab counted, ties going
+ * to the earliest tab.
+ *
+ * Those rows used `runStatus(run)`, the first agent alone, so a worktree whose
+ * first agent had finished read "waiting" while a second agent in it was still
+ * working, after the overview's counts had been fixed to count every tab
+ * (AGE-249). A tab this dot does not show is named by `waitingElsewhere` when
+ * it is asking for you. A terminal run, or one with no agent tab left, keeps
+ * its own status.
+ */
+export function workspaceStatus(run: RunInfo, now: number = Date.now()): { cls: string; text: string; title?: string } {
+  let best: ReturnType<typeof runStatus> | null = null;
+  for (const a of runAgents(run)) {
+    const st = runStatus({ kind: "agent", status: a.status, activity: a.activity }, now);
+    if (!best || (WORKSPACE_RANK[st.cls] ?? 4) < (WORKSPACE_RANK[best.cls] ?? 4)) best = st;
+  }
+  return best ?? runStatus(run, now);
+}

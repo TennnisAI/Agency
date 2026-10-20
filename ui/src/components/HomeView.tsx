@@ -13,7 +13,7 @@ import {
   parseRunFilter,
   pinnedFirst,
   projectAgentsLabel,
-  runStatus,
+  workspaceStatus,
 } from "../lib/runstate";
 import AgentNote from "./AgentNote";
 import { runTabs, showsTabs } from "../lib/runTabs";
@@ -478,7 +478,7 @@ function HomeTile({ run, onOpen, onChanged }: { run: RunInfo; onOpen: () => void
     return () => { alive = false; window.clearInterval(t); };
   }, [run.id]);
 
-  const st = runStatus(run);
+  const st = workspaceStatus(run);
   const isTerminal = run.kind === "terminal";
   const tabs = runTabs(run);
   return (
@@ -517,7 +517,7 @@ function HomeTile({ run, onOpen, onChanged }: { run: RunInfo; onOpen: () => void
       <div className="tile-foot">
         <AttentionMarker run={run} onChanged={onChanged} />
         <span title={st.title}>{st.text}</span>
-        <WaitingTabs run={run} tabs={tabs} dot={st.cls} />
+        <WaitingTabs tabs={tabs} dot={st.cls} />
       </div>
       {runMenu}
     </div>

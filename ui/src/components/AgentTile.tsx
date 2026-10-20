@@ -3,7 +3,7 @@ import { RunInfo, runPreview } from "../api";
 import { useRuns } from "../store/runs";
 import { runName } from "../agents";
 import { useRunMenu } from "../hooks/useRunMenu";
-import { inGitlessFolder, runStatus } from "../lib/runstate";
+import { inGitlessFolder, workspaceStatus } from "../lib/runstate";
 import { removalLabel, removalsFor } from "../lib/runRemoval";
 import { usageLabel, usageTitle } from "../lib/usage";
 import { runTabs, showsTabs } from "../lib/runTabs";
@@ -48,7 +48,7 @@ export default function AgentTile({ run, pinDrag }: { run: RunInfo; pinDrag?: Pi
     return () => { alive = false; window.clearInterval(t); };
   }, [run.id]);
 
-  const st = runStatus(run);
+  const st = workspaceStatus(run);
   const isTerminal = run.kind === "terminal";
   const tabs = runTabs(run);
   return (
@@ -113,7 +113,7 @@ export default function AgentTile({ run, pinDrag }: { run: RunInfo; pinDrag?: Pi
             the queued marker came and went. */}
         <AttentionMarker run={run} onChanged={refreshRuns} />
         <span title={st.title}>{st.text}</span>
-        <WaitingTabs run={run} tabs={tabs} dot={st.cls} />
+        <WaitingTabs tabs={tabs} dot={st.cls} />
         {/* Same register as the status beside it: what the agent is doing, and
             what it has not been handed yet. */}
         <QueuedMarker run={run} />

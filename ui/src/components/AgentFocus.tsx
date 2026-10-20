@@ -10,7 +10,7 @@ import { Removal, removalLabel, removalsFor } from "../lib/runRemoval";
 import { issueLabel } from "../lib/issues";
 import { requestNavigate } from "../lib/navigate";
 import { toastError } from "../lib/toast";
-import { inGitlessFolder, runStatus } from "../lib/runstate";
+import { inGitlessFolder, workspaceStatus } from "../lib/runstate";
 import { runListLabel, agentLabel } from "../agents";
 import FocusTerminal, { shellStream } from "./FocusTerminal";
 import RunPanel from "./RunPanel";
@@ -244,7 +244,7 @@ function RailRow({
         title="Double-click to rename"
       >
         <PinMark run={run} />
-        <span className={`dot ${runStatus(run).cls}`} />
+        <span className={`dot ${workspaceStatus(run).cls}`} />
         <span className="rail-name">{runListLabel(run)}</span>
         {run.runScriptsLive && (
           <span className="run-dot" title="A run script is running in this workspace" />

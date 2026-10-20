@@ -113,16 +113,16 @@ export function tabsTitle(tabs: RunTab[]): string {
  * could bring up a tile whose dot said "working" and nothing on it said which
  * tab was the one asking.
  *
- * `dot` is the class of the tile's own dot, `runStatus(run).cls`. It shows the
- * first tab, or once that was closed the lowest-numbered one still running
- * (AGE-184). It accounts for that tab only when it reads waiting or blocked
- * itself; otherwise every such tab is listed, the dot's own included.
+ * `dot` is the class of the tile's own dot, `workspaceStatus(run).cls`, which
+ * shows the earliest tab in the most urgent state. When that state is waiting
+ * or blocked, that tab is the one the dot accounts for; otherwise every asking
+ * tab is listed.
  */
-export function waitingElsewhere(run: Pick<RunInfo, "primaryClosed">, tabs: RunTab[], dot: string): RunTab[] {
+export function waitingElsewhere(tabs: RunTab[], dot: string): RunTab[] {
   const asking = (cls: string) => cls === "awaiting" || cls === "blocked";
   const waiting = tabs.filter((t) => asking(t.cls));
   if (!asking(dot)) return waiting;
-  const shown = run.primaryClosed ? tabs.find((t) => t.cls !== "exited") : tabs[0];
+  const shown = waiting.find((t) => t.cls === dot);
   return waiting.filter((t) => t !== shown);
 }
 

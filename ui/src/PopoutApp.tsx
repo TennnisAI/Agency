@@ -17,6 +17,7 @@ import { IS_LINUX, IS_TAURI } from "./lib/platform";
 import { NAVIGATE_EVENT, NavTarget, requestNavigate } from "./lib/navigate";
 import { requestFind, requestFindStep } from "./lib/findBus";
 import { bufferKey, stashBuffer } from "./lib/editorBuffers";
+import { opensInPreview } from "./lib/fileTabs";
 import { applyTheme, STORAGE_KEY as THEME_KEY } from "./lib/themes";
 import { useDocs } from "./hooks/useDocs";
 import { useCrossRefs } from "./hooks/useCrossRefs";
@@ -282,7 +283,9 @@ function PopoutFile({
   };
   return (
     <div className="popout-editor">
-      <FileEditor ref={editor} root={target.root} path={target.path} />
+      <FileEditor
+        ref={editor} root={target.root} path={target.path} preview={opensInPreview(target.path)}
+      />
     </div>
   );
 }

@@ -70,6 +70,7 @@ export default function IssueRow({
   runs,
   selected,
   onSelect,
+  check,
   onStart,
   onSpawnAgent,
   onPatch,
@@ -83,7 +84,11 @@ export default function IssueRow({
   label: string;
   runs: RunInfo[];
   selected: boolean;
-  onSelect: () => void;
+  // Handed the click, so the board can read ⌘ and ⇧ off it for batch selection.
+  onSelect: (e: React.MouseEvent) => void;
+  // Batch selection, where the board offers it: whether this row is checked,
+  // and the box at the row's start that flips it. Absent, the row has no box.
+  check?: { checked: boolean; onToggle: (e: React.MouseEvent) => void };
   // Plain click on ▶ = default agent; the caret next to it opens the full menu.
   onStart: () => void;
   // The issue's project folder has no git repository: the agent takes the issue
@@ -147,12 +152,24 @@ export default function IssueRow({
 
   return (
     <div
-      className={`issue-row${selected ? " selected" : ""}${menu || agentOpen ? " menu-open" : ""}${drag?.over ? ` drop-${drag.over}` : ""}${drag?.source ? " dragging" : ""}`}
+      className={`issue-row${selected ? " selected" : ""}${check?.checked ? " checked" : ""}${menu || agentOpen ? " menu-open" : ""}${drag?.over ? ` drop-${drag.over}` : ""}${drag?.source ? " dragging" : ""}`}
       onClick={onSelect}
       onMouseDown={drag?.onMouseDown}
       data-issue-idx={drag?.idx}
       data-issue-status={drag?.status}
     >
+      {check && (
+        // A button, so a press on it never starts the row's reorder drag.
+        <button
+          className={`issue-check${check.checked ? " on" : ""}`}
+          role="checkbox"
+          aria-checked={check.checked}
+          title={check.checked ? "Uncheck (x)" : "Check for batch edit (x, or ⌘-click the row)"}
+          onClick={(e) => { e.stopPropagation(); check.onToggle(e); }}
+        >
+          {check.checked ? "✓" : ""}
+        </button>
+      )}
       <button
         ref={prioRef}
         className="issue-prio-btn"

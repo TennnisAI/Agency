@@ -5,6 +5,10 @@ import {
   syncIssues, updateIssue, updateIssueComment,
 } from "../api";
 import { planReorder } from "../lib/issueRank";
+import {
+  BatchPatch, batchSummary, batchWrites, pruneChecked, rangeChecked, toggleChecked,
+} from "../lib/issueBatch";
+import { topModal } from "../lib/modalStack";
 import { Corpus, IssueRef, LinkEdge, buildLinkIndex, mentionsOf, resolveTarget } from "../lib/links";
 import { IssueLink, hasLink, issueLinks, linkCandidates, withLink, withoutLink } from "../lib/issueLinks";
 import { requestNavigate } from "../lib/navigate";
@@ -46,6 +50,7 @@ import { pickDefaultAgent } from "../lib/defaultAgent";
 import { loadFold, saveFold, usePaneWidth } from "../hooks/usePaneWidth";
 import { useRepoReadiness, isGitless } from "../hooks/useRepoReadiness";
 import IssueRow from "./IssueRow";
+import IssueBatchBar from "./IssueBatchBar";
 import IssueDetail from "./IssueDetail";
 import IssueComposer from "./IssueComposer";
 import ConfirmDialog from "./ConfirmDialog";
@@ -91,6 +96,12 @@ export default function IssuesView({
   const gitless = isGitless(readiness);
   const [selectedId, setSelectedIdState] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Issue | null>(null);
+  // Rows checked for a batch edit, apart from the one open in the detail pane:
+  // checking rows never opens or closes an issue. `anchor` is where a ⇧-click
+  // range starts, the last row clicked or checked without ⇧.
+  const [checked, setChecked] = useState<Set<string>>(() => new Set());
+  const anchor = useRef<string | null>(null);
+  const [confirmBatchDelete, setConfirmBatchDelete] = useState(false);
   // Backlog sharing. `syncOn` is null until the config lands, so the button
   // doesn't flash in and out on every project switch.
   const [syncOn, setSyncOn] = useState<boolean | null>(null);
@@ -254,7 +265,12 @@ export default function IssuesView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [issues, project.id, selectedKey]);
 
-  useEffect(() => { setSelectedIdState(null); clearFilters(); }, [project.id]);
+  useEffect(() => {
+    setSelectedIdState(null);
+    clearFilters();
+    setChecked(new Set());
+    anchor.current = null;
+  }, [project.id]);
 
   // The palette's "New Issue" lands here: open the composer on tab activation.
   useEffect(() => {
@@ -310,6 +326,9 @@ export default function IssuesView({
     [groups, collapsed, filtered],
   );
   const matched = groups.reduce((n, g) => n + g.issues.length, 0);
+  // A checked row the board stops showing leaves the batch (see pruneChecked).
+  useEffect(() => { setChecked((c) => pruneChecked(c, visible)); }, [visible]);
+  const checkedIssues = useMemo(() => visible.filter((i) => checked.has(i.id)), [visible, checked]);
   // ⌘G / ⇧⌘G walk the filtered board. Focus stays wherever it was, including
   // in the filter field, so the keys read as "show me the next one" without
   // taking the field away mid-search.
@@ -731,6 +750,61 @@ export default function IssuesView({
     }
   }
 
+  // ⌘-click flips a row into the batch, ⇧-click adds the run from the anchor,
+  // and a plain click opens or closes the issue as it always has.
+  function clickRow(issue: Issue, e: React.MouseEvent) {
+    if (e.metaKey || e.ctrlKey) {
+      setChecked(toggleChecked(checked, issue.id, selectedId));
+      anchor.current = issue.id;
+    } else if (e.shiftKey) {
+      // ⇧-click also extends the page's text selection over the rows it spans.
+      window.getSelection()?.removeAllRanges();
+      setChecked(rangeChecked(checked, visible, anchor.current ?? selectedId, issue.id));
+      anchor.current ??= issue.id;
+    } else {
+      setSelectedId(issue.id === selectedId ? null : issue.id);
+      anchor.current = issue.id;
+    }
+  }
+
+  // The row's own box is about that row only, so unlike ⌘-click it does not
+  // take the open issue along.
+  function checkRow(issue: Issue, e: React.MouseEvent) {
+    if (e.shiftKey) {
+      setChecked(rangeChecked(checked, visible, anchor.current ?? selectedId, issue.id));
+      anchor.current ??= issue.id;
+      return;
+    }
+    setChecked(toggleChecked(checked, issue.id, null));
+    anchor.current = issue.id;
+  }
+
+  // Every checked issue gets the change, written one file each through the same
+  // call a single edit uses. Issues already there are skipped (see batchWrites).
+  // Partial failure keeps what landed and says how much that was.
+  async function batchPatch(p: BatchPatch) {
+    const writes = batchWrites(checkedIssues, p);
+    if (writes.length === 0) return;
+    const results = await Promise.allSettled(writes.map((w) => updateIssue(w.issue.id, w.patch)));
+    await refresh();
+    const failed = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    const summary = batchSummary("Updated", writes.length - failed.length, writes.length);
+    if (failed.length > 0) toastError(failed[0].reason, summary);
+    else toastSuccess(summary);
+  }
+
+  async function doBatchDelete() {
+    const targets = checkedIssues;
+    setConfirmBatchDelete(false);
+    if (selectedId && targets.some((i) => i.id === selectedId)) setSelectedId(null);
+    const results = await Promise.allSettled(targets.map((i) => deleteIssue(i.id)));
+    await refresh();
+    const failed = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    const summary = batchSummary("Deleted", targets.length - failed.length, targets.length);
+    if (failed.length > 0) toastError(failed[0].reason, summary);
+    else toastSuccess(summary);
+  }
+
   async function doDelete(issue: Issue) {
     setConfirmDelete(null);
     if (selectedId === issue.id) setSelectedId(null);
@@ -763,6 +837,8 @@ export default function IssuesView({
 
   function onRowMouseDown(status: IssueStatus, from: number, e: React.MouseEvent) {
     if (e.button !== 0) return;
+    // A ⌘- or ⇧-press is a batch selection, not a grab.
+    if (e.metaKey || e.ctrlKey || e.shiftKey) return;
     // Grabs must start on the row itself — not its buttons and menus.
     if ((e.target as HTMLElement).closest("button, input, textarea")) return;
     // Retire the focused editor by hand: the drag's preventDefault suppresses the
@@ -812,7 +888,8 @@ export default function IssuesView({
   }
 
   // Linear-flavored keys: `c` captures, `/` searches, arrows move, Enter
-  // opens, 0-4 set priority. Skipped while typing in any field.
+  // opens, 0-4 set priority, `x` checks the open issue for a batch edit and
+  // Escape clears the batch. Skipped while typing in any field.
   useEffect(() => {
     if (tab !== "issues") return;
     const onKey = (e: KeyboardEvent) => {
@@ -839,15 +916,27 @@ export default function IssuesView({
       } else if (e.key === "Enter" && selectedId == null && visible.length > 0) {
         e.preventDefault();
         setSelectedId(visible[0].id);
+      } else if (/^[0-4]$/.test(e.key) && checkedIssues.length > 0) {
+        // With a batch checked, the number keys set it rather than the open
+        // issue alone: the bar on screen is what the user is looking at.
+        e.preventDefault();
+        void batchPatch({ priority: Number(e.key) });
       } else if (/^[0-4]$/.test(e.key) && selected) {
         e.preventDefault();
         patch(selected, { priority: Number(e.key) });
+      } else if (e.key === "x" && selectedId) {
+        e.preventDefault();
+        setChecked(toggleChecked(checked, selectedId, null));
+        anchor.current = selectedId;
+      } else if (e.key === "Escape" && checked.size > 0 && !e.defaultPrevented && topModal() === null) {
+        // Only when no dialog or calendar is up: those take Escape first.
+        setChecked(new Set());
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, visible, selectedId, selected, composing, draft]);
+  }, [tab, visible, selectedId, selected, composing, draft, checked, checkedIssues]);
 
   // The list only compresses while there is a detail pane to give the room to.
   const wide = expanded && selected != null;
@@ -1037,7 +1126,10 @@ export default function IssuesView({
             </div>
           </div>
         ) : (
-          <div ref={listRef} className={`issues-list${drag ? " reordering" : ""}${wide ? " compact" : ""}`}>
+          <div
+            ref={listRef}
+            className={`issues-list${drag ? " reordering" : ""}${wide ? " compact" : ""}${checked.size > 0 ? " batching" : ""}`}
+          >
             {issues.length > 0 && matched === 0 && (
               <div className="issues-nomatch">
                 <div className="issues-nomatch-title">No issues match</div>
@@ -1070,9 +1162,8 @@ export default function IssuesView({
                       label={issueLabel(project, issue)}
                       runs={runsFor(issue)}
                       selected={issue.id === selectedId}
-                      onSelect={() => {
-                        setSelectedId(issue.id === selectedId ? null : issue.id);
-                      }}
+                      onSelect={(e) => clickRow(issue, e)}
+                      check={{ checked: checked.has(issue.id), onToggle: (e) => checkRow(issue, e) }}
                       onStart={() => { startDefault(issue); }}
                       onSpawnAgent={(agentId, opts) => { onStartIssue(issue, agentId, opts); }}
                       onPatch={(p) => patch(issue, p)}
@@ -1096,6 +1187,17 @@ export default function IssuesView({
               );
             })}
           </div>
+        )}
+        {checkedIssues.length > 0 && (
+          <IssueBatchBar
+            issues={checkedIssues}
+            visibleCount={visible.length}
+            compact={wide}
+            onPatch={(p) => { void batchPatch(p); }}
+            onDelete={() => setConfirmBatchDelete(true)}
+            onSelectAll={() => setChecked(new Set(visible.map((i) => i.id)))}
+            onClear={() => setChecked(new Set())}
+          />
         )}
       </div>
       {selected && (
@@ -1229,6 +1331,20 @@ export default function IssuesView({
             setConflicts(conflictReports.dismiss(project.id));
           }}
           onCancel={() => setConflicts(conflictReports.dismiss(project.id))}
+        />
+      )}
+      {confirmBatchDelete && checkedIssues.length > 0 && (
+        <ConfirmDialog
+          title={`Delete ${checkedIssues.length} issue${checkedIssues.length === 1 ? "" : "s"}?`}
+          body={
+            `Delete ${checkedIssues.slice(0, 6).map((i) => issueLabel(project, i)).join(", ")}` +
+            (checkedIssues.length > 6 ? ` and ${checkedIssues.length - 6} more` : "") +
+            ". Their numbers are never reused. This cannot be undone."
+          }
+          confirmLabel="Delete"
+          danger
+          onConfirm={() => { void doBatchDelete(); }}
+          onCancel={() => setConfirmBatchDelete(false)}
         />
       )}
       {confirmDelete && (

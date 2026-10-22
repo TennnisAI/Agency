@@ -14,6 +14,7 @@ export default function DatePicker({
   onPick,
   onClear,
   onClose,
+  clearable,
 }: {
   value: string | null;
   coords: MenuCoords;
@@ -21,6 +22,9 @@ export default function DatePicker({
   onPick: (date: string) => void;
   onClear: () => void;
   onClose: () => void;
+  // Offer Clear without a value: a batch of issues with mixed dates has none to
+  // show, and still has dates to clear. Defaults to "there is a value".
+  clearable?: boolean;
 }) {
   const today = dateStamp(new Date());
   const anchor = value ?? today;
@@ -63,7 +67,7 @@ export default function DatePicker({
         <div className="date-picker-foot">
           <button className="ghost" onClick={() => onPick(today)}>Today</button>
           <div className="spacer" />
-          {value && <button className="ghost" onClick={onClear}>Clear</button>}
+          {(clearable ?? value != null) && <button className="ghost" onClick={onClear}>Clear</button>}
         </div>
       </div>
     </>

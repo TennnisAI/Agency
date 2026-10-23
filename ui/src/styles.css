@@ -3433,8 +3433,6 @@ input, textarea, code,
 .issues-list.compact:not(.batching) .issue-check { display: none; }
 .issue-row.checked { background: color-mix(in srgb, var(--blue) 10%, transparent); }
 .issue-row.checked:hover { background: color-mix(in srgb, var(--blue) 16%, transparent); }
-/* Room for the batch bar under the last row. */
-.issues-list.batching { padding-bottom: 72px; }
 
 .issues-main { position: relative; /* anchors the batch bar */ }
 .issue-batch-bar {

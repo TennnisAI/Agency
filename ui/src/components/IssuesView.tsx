@@ -6,7 +6,7 @@ import {
 } from "../api";
 import { planReorder } from "../lib/issueRank";
 import {
-  BatchPatch, batchSummary, batchWrites, pruneChecked, rangeChecked, toggleChecked,
+  BatchPatch, batchSummary, batchWrites, describeBatch, pruneChecked, rangeChecked, toggleChecked,
 } from "../lib/issueBatch";
 import { topModal } from "../lib/modalStack";
 import { Corpus, IssueRef, LinkEdge, buildLinkIndex, mentionsOf, resolveTarget } from "../lib/links";
@@ -101,7 +101,13 @@ export default function IssuesView({
   // range starts, the last row clicked or checked without ⇧.
   const [checked, setChecked] = useState<Set<string>>(() => new Set());
   const anchor = useRef<string | null>(null);
-  const [confirmBatchDelete, setConfirmBatchDelete] = useState(false);
+  // The issues a batch delete asks about, fixed when Delete… is clicked. Read
+  // live, the dialog's list followed the checked set: `x` pressed under it
+  // changed what Confirm would delete, and unchecking the last row hid the
+  // dialog with its flag still up, so the next row checked opened it again.
+  const [confirmBatchDelete, setConfirmBatchDelete] = useState<Issue[] | null>(null);
+  // The batch bar's height, so the list leaves room under its last row.
+  const [batchBarHeight, setBatchBarHeight] = useState(0);
   // Backlog sharing. `syncOn` is null until the config lands, so the button
   // doesn't flash in and out on every project switch.
   const [syncOn, setSyncOn] = useState<boolean | null>(null);
@@ -788,14 +794,13 @@ export default function IssuesView({
     const results = await Promise.allSettled(writes.map((w) => updateIssue(w.issue.id, w.patch)));
     await refresh();
     const failed = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
-    const summary = batchSummary("Updated", writes.length - failed.length, writes.length);
+    const summary = batchSummary("Updated", writes.length - failed.length, writes.length, describeBatch(p));
     if (failed.length > 0) toastError(failed[0].reason, summary);
     else toastSuccess(summary);
   }
 
-  async function doBatchDelete() {
-    const targets = checkedIssues;
-    setConfirmBatchDelete(false);
+  async function doBatchDelete(targets: Issue[]) {
+    setConfirmBatchDelete(null);
     if (selectedId && targets.some((i) => i.id === selectedId)) setSelectedId(null);
     const results = await Promise.allSettled(targets.map((i) => deleteIssue(i.id)));
     await refresh();
@@ -898,6 +903,11 @@ export default function IssuesView({
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       // The composer covers the board, so the board's keys are off under it.
       if (composing) return;
+      // So are they under any dialog, menu or calendar on the modal stack. A
+      // dialog's autofocused button is no text field, so `x` and 0-4 used to
+      // reach the board through it: a priority key under the batch-delete
+      // confirmation set the batch it was asking about.
+      if (topModal() !== null) return;
       if (e.key === "c") {
         e.preventDefault();
         openComposer();
@@ -928,8 +938,7 @@ export default function IssuesView({
         e.preventDefault();
         setChecked(toggleChecked(checked, selectedId, null));
         anchor.current = selectedId;
-      } else if (e.key === "Escape" && checked.size > 0 && !e.defaultPrevented && topModal() === null) {
-        // Only when no dialog or calendar is up: those take Escape first.
+      } else if (e.key === "Escape" && checked.size > 0 && !e.defaultPrevented) {
         setChecked(new Set());
       }
     };
@@ -1129,6 +1138,8 @@ export default function IssuesView({
           <div
             ref={listRef}
             className={`issues-list${drag ? " reordering" : ""}${wide ? " compact" : ""}${checked.size > 0 ? " batching" : ""}`}
+            // The bar floats 14px off the bottom; another 14px clears it.
+            style={checkedIssues.length > 0 ? { paddingBottom: batchBarHeight + 28 } : undefined}
           >
             {issues.length > 0 && matched === 0 && (
               <div className="issues-nomatch">
@@ -1194,9 +1205,10 @@ export default function IssuesView({
             visibleCount={visible.length}
             compact={wide}
             onPatch={(p) => { void batchPatch(p); }}
-            onDelete={() => setConfirmBatchDelete(true)}
+            onDelete={() => setConfirmBatchDelete(checkedIssues)}
             onSelectAll={() => setChecked(new Set(visible.map((i) => i.id)))}
             onClear={() => setChecked(new Set())}
+            onHeight={setBatchBarHeight}
           />
         )}
       </div>
@@ -1333,18 +1345,18 @@ export default function IssuesView({
           onCancel={() => setConflicts(conflictReports.dismiss(project.id))}
         />
       )}
-      {confirmBatchDelete && checkedIssues.length > 0 && (
+      {confirmBatchDelete && (
         <ConfirmDialog
-          title={`Delete ${checkedIssues.length} issue${checkedIssues.length === 1 ? "" : "s"}?`}
+          title={`Delete ${confirmBatchDelete.length} issue${confirmBatchDelete.length === 1 ? "" : "s"}?`}
           body={
-            `Delete ${checkedIssues.slice(0, 6).map((i) => issueLabel(project, i)).join(", ")}` +
-            (checkedIssues.length > 6 ? ` and ${checkedIssues.length - 6} more` : "") +
+            `Delete ${confirmBatchDelete.slice(0, 6).map((i) => issueLabel(project, i)).join(", ")}` +
+            (confirmBatchDelete.length > 6 ? ` and ${confirmBatchDelete.length - 6} more` : "") +
             ". Their numbers are never reused. This cannot be undone."
           }
           confirmLabel="Delete"
           danger
-          onConfirm={() => { void doBatchDelete(); }}
-          onCancel={() => setConfirmBatchDelete(false)}
+          onConfirm={() => { void doBatchDelete(confirmBatchDelete); }}
+          onCancel={() => setConfirmBatchDelete(null)}
         />
       )}
       {confirmDelete && (

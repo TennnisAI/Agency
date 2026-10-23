@@ -1,4 +1,5 @@
 import { Issue, IssuePatch } from "../api";
+import { PRIORITY_LABELS, STATUS_LABELS } from "./issues";
 
 // Batch editing on the issue board: which rows are checked, and what a change
 // applied to all of them actually has to write. Pure, so the rules are tested
@@ -76,10 +77,28 @@ export function sharedValue<K extends keyof BatchPatch>(issues: Issue[], key: K)
   return issues.every((i) => i[key] === first) ? first : undefined;
 }
 
+// What a batch change set, in words, for its toast. With a batch checked the
+// number keys set the batch and not the open issue, so a user reading the
+// detail pane with a forgotten batch below would change issues they cannot see
+// changing; the toast is where that shows, so it says what was set.
+export function describeBatch(patch: BatchPatch): string {
+  const parts: string[] = [];
+  if (patch.status !== undefined) parts.push(`status ${STATUS_LABELS[patch.status]}`);
+  if (patch.priority !== undefined) {
+    parts.push(patch.priority === 0 ? "no priority" : `${PRIORITY_LABELS[patch.priority]} priority`);
+  }
+  if (patch.due !== undefined) parts.push(patch.due ? `due ${patch.due}` : "due date cleared");
+  if (patch.scheduled !== undefined) {
+    parts.push(patch.scheduled ? `scheduled ${patch.scheduled}` : "scheduled date cleared");
+  }
+  return parts.join(", ");
+}
+
 // What a finished batch says. A partial failure names how many landed, since
 // the rows that did change are already on the board and "couldn't update" alone
 // reads as if none had.
-export function batchSummary(verb: string, done: number, total: number): string {
+export function batchSummary(verb: string, done: number, total: number, detail = ""): string {
   const noun = (n: number) => `${n} issue${n === 1 ? "" : "s"}`;
-  return done === total ? `${verb} ${noun(total)}` : `${verb} ${done} of ${noun(total)}`;
+  const head = done === total ? `${verb} ${noun(total)}` : `${verb} ${done} of ${noun(total)}`;
+  return detail ? `${head}: ${detail}` : head;
 }

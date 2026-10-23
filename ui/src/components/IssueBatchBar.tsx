@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Issue } from "../api";
 import { ISSUE_STATUSES, PRIORITY_LABELS, STATUS_LABELS } from "../lib/issues";
@@ -6,6 +6,7 @@ import { BatchPatch, sharedValue } from "../lib/issueBatch";
 import { MenuCoords, anchorMenu } from "../lib/menuAnchor";
 import { useDismissOnResize } from "../hooks/useDismissOnResize";
 import { useMenuAnchor } from "../hooks/useMenuAnchor";
+import { useModalKeys } from "../hooks/useModalKeys";
 import { PriorityGlyph, StatusDot } from "./IssueRow";
 import DatePicker from "./DatePicker";
 
@@ -24,6 +25,7 @@ export default function IssueBatchBar({
   onDelete,
   onSelectAll,
   onClear,
+  onHeight,
 }: {
   // The checked issues, in board order.
   issues: Issue[];
@@ -35,6 +37,8 @@ export default function IssueBatchBar({
   onDelete: () => void;
   onSelectAll: () => void;
   onClear: () => void;
+  // The bar's rendered height, whenever it changes.
+  onHeight: (px: number) => void;
 }) {
   const [menu, setMenu] = useState<Menu | null>(null);
   const [rect, setRect] = useState<DOMRect | null>(null);
@@ -44,8 +48,25 @@ export default function IssueBatchBar({
   const dueRef = useRef<HTMLButtonElement>(null);
   const schedRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const barRef = useRef<HTMLDivElement>(null);
   const coords = useMenuAnchor(menu ? rect : null, menuRef);
   useDismissOnResize(menu !== null, () => setMenu(null));
+  // On the modal stack while open: off it, the board's Escape found no modal up
+  // and cleared the whole batch, taking the bar and the menu down with it.
+  useModalKeys(() => setMenu(null), menu !== null);
+
+  // The bar wraps as the list narrows, and the list has to leave room for it.
+  // At the sidebar's default 288px it wraps to three lines, about 84px, and the
+  // fixed 72px the list used to reserve left the last row under the bar.
+  useLayoutEffect(() => {
+    const el = barRef.current;
+    if (!el) return;
+    onHeight(el.offsetHeight);
+    const ro = new ResizeObserver(() => onHeight(el.offsetHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const openMenu = (which: Menu, ref: React.RefObject<HTMLButtonElement>) => {
     setRect(ref.current?.getBoundingClientRect() ?? null);
@@ -66,7 +87,12 @@ export default function IssueBatchBar({
   const n = issues.length;
 
   return (
-    <div className={`issue-batch-bar${compact ? " compact" : ""}`} role="toolbar" aria-label="Edit checked issues">
+    <div
+      ref={barRef}
+      className={`issue-batch-bar${compact ? " compact" : ""}`}
+      role="toolbar"
+      aria-label="Edit checked issues"
+    >
       <span className="issue-batch-count">{n} selected</span>
       <button ref={statusRef} className="issue-batch-btn" title="Set status" onClick={() => openMenu("status", statusRef)}>
         {status ? <StatusDot status={status} /> : <span className="issue-batch-mixed" />}

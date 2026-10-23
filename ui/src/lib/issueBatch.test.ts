@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { Issue } from "../api";
-import { batchSummary, batchWrites, pruneChecked, rangeChecked, sharedValue, toggleChecked } from "./issueBatch";
+import {
+  batchSummary, batchWrites, describeBatch, pruneChecked, rangeChecked, sharedValue, toggleChecked,
+} from "./issueBatch";
 
 let seq = 0;
 function issue(over: Partial<Issue>): Issue {
@@ -137,5 +139,29 @@ describe("batchSummary", () => {
 
   it("says how many of them landed when some failed", () => {
     expect(batchSummary("Deleted", 2, 3)).toBe("Deleted 2 of 3 issues");
+  });
+
+  it("appends what was set", () => {
+    expect(batchSummary("Updated", 3, 3, "High priority")).toBe("Updated 3 issues: High priority");
+    expect(batchSummary("Updated", 2, 3, "status Done")).toBe("Updated 2 of 3 issues: status Done");
+  });
+});
+
+describe("describeBatch", () => {
+  it("names each field the batch set", () => {
+    expect(describeBatch({ status: "in_progress" })).toBe("status In Progress");
+    expect(describeBatch({ priority: 3 })).toBe("High priority");
+    expect(describeBatch({ due: "2026-11-01" })).toBe("due 2026-11-01");
+    expect(describeBatch({ scheduled: "2026-11-02" })).toBe("scheduled 2026-11-02");
+  });
+
+  it("reads priority 0 and cleared dates as words, not labels", () => {
+    expect(describeBatch({ priority: 0 })).toBe("no priority");
+    expect(describeBatch({ due: null })).toBe("due date cleared");
+    expect(describeBatch({ scheduled: null })).toBe("scheduled date cleared");
+  });
+
+  it("joins several fields", () => {
+    expect(describeBatch({ status: "done", priority: 1 })).toBe("status Done, Low priority");
   });
 });

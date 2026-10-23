@@ -1,8 +1,9 @@
 //! Search over the archive: which archived runs a query matches, and the
 //! line that explains each match.
 //!
-//! An archived run is three texts: its summary (the row's label, plus the
-//! title, branch and issue it was given), its record, and its conversation.
+//! An archived run is three texts: its summary (the row's label, plus its
+//! title, branch, and its issue's key and title), its record, and its
+//! conversation.
 //! The archive row shows only the start of its label, so a query that matched
 //! anything else and came back as a bare row would leave the user to open
 //! runs one at a time looking for why. Every hit therefore carries a snippet
@@ -43,7 +44,7 @@ pub struct Hit {
 pub struct Haystack<'a> {
     /// The text the archive row shows, as it shows it.
     pub label: &'a str,
-    /// The rest of what names the run: title, branch, issue.
+    /// The rest of what names the run: title, branch, issue key and title.
     pub summary: &'a [&'a str],
     pub record: Option<&'a str>,
     /// One entry per rendered turn, tool lines included: "which run ran the
@@ -217,13 +218,17 @@ mod tests {
     fn a_match_in_a_name_the_row_does_not_show_shows_a_snippet() {
         let h = Haystack {
             label: "claude: fix it",
-            summary: &["agent/age-212-merge-queue-x9a1", "AGE-212 Merge queue"],
+            summary: &["agent/age-212-x9a1", "AGE-212", "Serialize the merge queue"],
             record: None,
             conversation: &[],
         };
         let hit = search(&terms("age-212"), &h).unwrap();
         assert_eq!(hit.field, Field::Summary);
         assert_eq!(hit.snippet.unwrap().before, "agent/");
+        // The issue is remembered by its title as often as by its key.
+        let hit = search(&terms("serialize"), &h).unwrap();
+        assert_eq!(hit.field, Field::Summary);
+        assert_eq!(hit.snippet.unwrap().hit, "Serialize");
     }
 
     #[test]

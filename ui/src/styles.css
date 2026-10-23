@@ -2186,6 +2186,8 @@ button.diff-path:hover { color: var(--text); text-decoration: underline; }
 .archived-snippet:disabled { cursor: default; }
 .archived-snippet-where { color: var(--o1); font-weight: 500; }
 .archived-hit { background: none; color: var(--yellow); font-weight: 600; }
+/* The answer to an older query, kept on screen while the new one runs. */
+.archived-stale { opacity: 0.5; }
 /* Restore / delete, as one group pushed to the right edge. At the sidebar's
    width three 28px buttons spaced 4px apart left about two words of the title
    readable and every row looked alike; squared down to 20px and butted

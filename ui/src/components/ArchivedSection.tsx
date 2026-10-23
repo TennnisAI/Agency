@@ -50,9 +50,12 @@ export default function ArchivedSection() {
   // read as "Nothing archived." over an archive with hundreds of runs in it.
   const [items, setItems] = useState<RunInfo[] | null>(null);
   const [query, setQuery] = useState("");
-  // The current query's matches by run id; null while no search has answered.
-  const [hits, setHits] = useState<Map<string, ArchiveHit> | null>(null);
-  const [searching, setSearching] = useState(false);
+  // The latest answer's matches by run id, with the query they answer; null
+  // while no search has answered. Kept while a newer query is on its way, so
+  // the list does not blank between keystrokes, but dimmed. Passed off as the
+  // new query's answer, it said "No archived agent matches" the new text
+  // before that text had been searched for.
+  const [hits, setHits] = useState<{ q: string; byId: Map<string, ArchiveHit> } | null>(null);
   // Answers can land out of order while typing; only the latest one counts.
   const searchSeq = useRef(0);
   // Permanent deletion is gated behind a confirm; `busy` covers restore,
@@ -97,22 +100,18 @@ export default function ArchivedSection() {
     if (!open || !selectedProjectId || !q) {
       searchSeq.current++;
       setHits(null);
-      setSearching(false);
       return;
     }
     const seq = ++searchSeq.current;
-    setSearching(true);
     const t = window.setTimeout(async () => {
       try {
         const found = await searchArchivedRuns(selectedProjectId, q);
-        if (seq === searchSeq.current) setHits(new Map(found.map((h) => [h.id, h])));
+        if (seq === searchSeq.current) setHits({ q, byId: new Map(found.map((h) => [h.id, h])) });
       } catch (e) {
         if (seq === searchSeq.current) {
-          setHits(new Map());
+          setHits({ q, byId: new Map() });
           toastError(e, "Search failed");
         }
-      } finally {
-        if (seq === searchSeq.current) setSearching(false);
       }
     }, 200);
     return () => window.clearTimeout(t);
@@ -180,7 +179,10 @@ export default function ArchivedSection() {
   // counts rather than talking about all of them at once.
   const all = items ?? [];
   const holding = all.filter((r) => r.archived?.branchKept).length;
-  const shown = q && hits ? all.filter((r) => hits.has(r.id)) : all;
+  // A query with no answer yet shows nothing rather than the whole list; one
+  // whose answer is for an older query shows that answer, dimmed.
+  const shown = !q ? all : hits ? all.filter((r) => hits.byId.has(r.id)) : [];
+  const pending = !!q && hits?.q !== q;
 
   return (
     <div className="archived">
@@ -219,12 +221,11 @@ export default function ArchivedSection() {
         </div>
       )}
       {open &&
-        (!q || hits) &&
         shown.map((r) => {
-          const hit = q ? hits?.get(r.id) : undefined;
+          const hit = q ? hits?.byId.get(r.id) : undefined;
           const readable = !!(r.archived?.hasRecord || r.archived?.hasConversation);
           return (
-          <div key={r.id}>
+          <div key={r.id} className={pending ? "archived-stale" : undefined}>
             <div className="archived-row">
               {/* The row used to carry a "branch"/"record" chip here. On a
                   sidebar this narrow it cost more of the title than it was
@@ -268,14 +269,16 @@ export default function ArchivedSection() {
               </div>
             </div>
             {/* Why a row matched, where its title does not say. Opens the
-                dialog on the tab the match is in. */}
+                dialog on the tab the match is in; a summary match is in
+                neither, so the dialog picks its own, which for a run with no
+                record is the conversation rather than an empty record pane. */}
             {hit?.snippet && (
               <button
                 className="archived-snippet"
                 disabled={busy || !readable}
                 title={`Matched in the ${hit.field}`}
                 onClick={() =>
-                  setReading({ run: r, tab: hit.field === "conversation" ? "conversation" : "record" })
+                  setReading({ run: r, tab: hit.field === "summary" ? undefined : hit.field })
                 }
               >
                 <span className="archived-snippet-where">{WHERE[hit.field]}</span>{" "}
@@ -289,8 +292,10 @@ export default function ArchivedSection() {
         })}
       {open && items === null && <div className="archived-empty">Loading…</div>}
       {open && items?.length === 0 && <div className="archived-empty">Nothing archived.</div>}
-      {open && q && !hits && searching && <div className="archived-empty">Searching…</div>}
-      {open && q && hits && shown.length === 0 && (
+      {open && all.length > 0 && pending && shown.length === 0 && (
+        <div className="archived-empty">Searching…</div>
+      )}
+      {open && all.length > 0 && q && !pending && shown.length === 0 && (
         <div className="archived-empty">No archived agent matches “{q}”.</div>
       )}
       {reading && (

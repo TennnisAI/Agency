@@ -2315,16 +2315,55 @@ fn resume_command(command: &str, dir: &Path) -> Option<String> {
 /// principle as `list_archived_runs` asking git whether a branch is still
 /// there: a file deleted by hand stops being named instead of being promised.
 fn prior_records(repo: &Path, run_id: &str) -> Vec<(u32, PathBuf)> {
-    let Ok(entries) = std::fs::read_dir(agency_core::record::dir(repo)) else { return Vec::new() };
-    let mut out: Vec<(u32, PathBuf)> = entries
-        .flatten()
-        .filter_map(|e| {
-            let n = agency_core::record::prior_ordinal(run_id, e.file_name().to_str()?)?;
-            Some((n, e.path()))
+    prior_records_in(repo, run_id, &record_dir_names(repo))
+}
+
+/// [`prior_records`] from a listing of the record directory already taken.
+fn prior_records_in(repo: &Path, run_id: &str, names: &[String]) -> Vec<(u32, PathBuf)> {
+    let dir = agency_core::record::dir(repo);
+    let mut out: Vec<(u32, PathBuf)> = names
+        .iter()
+        .filter_map(|name| {
+            let n = agency_core::record::prior_ordinal(run_id, name)?;
+            Some((n, dir.join(name)))
         })
         .collect();
     out.sort_by_key(|(n, _)| *n);
     out
+}
+
+/// Every name in the project's record directory, which holds the records and
+/// rescued transcripts of all its runs. Anything asked of every archived run
+/// in turn lists it once and passes it down: asked per run, listing the
+/// archive and searching it each read that one directory once per run, and a
+/// search twice (its records, then its transcripts), so the work grew with the
+/// square of the archive.
+fn record_dir_names(repo: &Path) -> Vec<String> {
+    std::fs::read_dir(agency_core::record::dir(repo))
+        .map(|entries| entries.flatten().filter_map(|e| e.file_name().into_string().ok()).collect())
+        .unwrap_or_default()
+}
+
+/// A run's record, as markdown: the account of the stint it has just
+/// finished, followed by the ones it was restored out of, newest first. See
+/// [`AppState::read_run_record`].
+fn record_text(repo: &Path, run_id: &str, names: &[String]) -> Result<Option<String>> {
+    let read = |path: &Path| match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(anyhow::Error::from(e)),
+    };
+    let mut parts: Vec<String> =
+        read(&agency_core::record::path(repo, run_id))?.into_iter().collect();
+    for (_, prior) in prior_records_in(repo, run_id, names).into_iter().rev() {
+        parts.extend(read(&prior)?);
+    }
+    // A blank line between them, always: each record opens on its own `---`
+    // frontmatter, and `---` on the line straight after a paragraph is a
+    // setext heading rather than a rule, so a file that happened not to end
+    // in a newline would turn the one above it into a title.
+    Ok((!parts.is_empty())
+        .then(|| parts.iter().map(|p| p.trim_end()).collect::<Vec<_>>().join("\n\n") + "\n"))
 }
 
 /// Set a run's record aside as the account of the stint that just ended, so
@@ -8829,21 +8868,26 @@ impl AppState {
         run: &agency_core::registry::Run,
         repo: &Path,
     ) -> Vec<PathBuf> {
+        self.rescued_transcript_dirs_in(run, repo, &record_dir_names(repo))
+    }
+
+    /// [`Self::rescued_transcript_dirs`] from a listing of the record
+    /// directory already taken (see [`record_dir_names`]).
+    fn rescued_transcript_dirs_in(
+        &self,
+        run: &agency_core::registry::Run,
+        repo: &Path,
+        names: &[String],
+    ) -> Vec<PathBuf> {
         let mut out = Vec::new();
         let own = agency_core::record::transcript_dir(repo, &run.id);
         if own.exists() {
             out.push(own);
         }
-        if let Ok(entries) = std::fs::read_dir(agency_core::record::dir(repo)) {
-            for entry in entries.flatten() {
-                let name = entry.file_name();
-                let is_tab = name
-                    .to_str()
-                    .and_then(|n| agency_core::record::transcript_dir_agent(&run.id, n))
-                    .is_some();
-                if is_tab {
-                    out.push(entry.path());
-                }
+        let dir = agency_core::record::dir(repo);
+        for name in names {
+            if agency_core::record::transcript_dir_agent(&run.id, name).is_some() {
+                out.push(dir.join(name));
             }
         }
         out
@@ -9073,6 +9117,12 @@ impl AppState {
     /// `AGE-149` for a run dispatched from an issue, so the record can link
     /// back to it the way a note does. `None` if the issue has since gone.
     fn issue_label(&self, issue_id: &str) -> Option<String> {
+        self.issue_names(issue_id).map(|(label, _)| label)
+    }
+
+    /// [`Self::issue_label`] and the issue's title, the two things a person
+    /// might remember a run's issue by.
+    fn issue_names(&self, issue_id: &str) -> Option<(String, String)> {
         let reg = self.registry.lock().unwrap();
         let issue = reg.get_issue(issue_id).ok().flatten()?;
         let key = reg
@@ -9081,7 +9131,7 @@ impl AppState {
             .flatten()
             .and_then(|p| p.issue_key)
             .unwrap_or_else(|| "ISSUE".into());
-        Some(format!("{key}-{}", issue.seq))
+        Some((format!("{key}-{}", issue.seq), issue.title))
     }
 
     /// The archive record for a run, as markdown: the account of the stint it
@@ -9098,22 +9148,7 @@ impl AppState {
     pub fn read_run_record(&self, id: &str) -> Result<Option<String>> {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
-        let read = |path: &Path| match std::fs::read_to_string(path) {
-            Ok(text) => Ok(Some(text)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(anyhow::Error::from(e)),
-        };
-        let mut parts: Vec<String> =
-            read(&agency_core::record::path(&repo, &run.id))?.into_iter().collect();
-        for (_, prior) in prior_records(&repo, &run.id).into_iter().rev() {
-            parts.extend(read(&prior)?);
-        }
-        // A blank line between them, always: each record opens on its own `---`
-        // frontmatter, and `---` on the line straight after a paragraph is a
-        // setext heading rather than a rule, so a file that happened not to end
-        // in a newline would turn the one above it into a title.
-        Ok((!parts.is_empty())
-            .then(|| parts.iter().map(|p| p.trim_end()).collect::<Vec<_>>().join("\n\n") + "\n"))
+        record_text(&repo, &run.id, &record_dir_names(&repo))
     }
 
     /// The run's conversation, parsed from its transcript: the rescued copy
@@ -9126,27 +9161,31 @@ impl AppState {
     pub fn read_run_conversation(&self, id: &str) -> Result<ConversationInfo> {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
-        Ok(match self.run_conversation(&run, &repo) {
+        Ok(match self.run_conversation(&run, &repo, &record_dir_names(&repo)) {
             Some(sessions) => ConversationInfo { supported: true, sessions: (*sessions).clone() },
             None => ConversationInfo { supported: false, sessions: Vec::new() },
         })
     }
 
     /// [`Self::conversation_files`], parsed, or `None` where the run's agent
-    /// is one we cannot read.
+    /// is one we cannot read. `names` is the record directory's listing (see
+    /// [`record_dir_names`]).
     ///
     /// Cached per run against every file's length and mtime. Search reads
     /// every archived run's conversation on each query, and the transcripts
     /// behind one project's archive here came to 268 MB of JSONL; parsing
     /// that per keystroke is seconds. The parse keeps only what renders, a
     /// small fraction of the file, and an archived run's files do not change,
-    /// so after the first search the rest are a stat per file.
+    /// so after the first search what is left per run is finding its files
+    /// (two registry queries and a few stats) and a stat per file. A discard
+    /// drops the run's entry.
     fn run_conversation(
         &self,
         run: &agency_core::registry::Run,
         repo: &Path,
+        names: &[String],
     ) -> Option<Arc<Vec<agency_core::transcript::Conversation>>> {
-        let files = self.conversation_files(run, repo)?;
+        let files = self.conversation_files(run, repo, names)?;
         let stamped: Vec<(PathBuf, agency_core::usage::FileStamp)> = files
             .iter()
             .filter_map(|(p, _)| {
@@ -9169,7 +9208,8 @@ impl AppState {
 
     /// Every transcript file this run's conversation is read from, each with
     /// the dialect to parse it in. `None` when the run's own agent writes one
-    /// we cannot read.
+    /// we cannot read. `names` is the record directory's listing (see
+    /// [`record_dir_names`]).
     ///
     /// Worktree runs read the stores keyed by the worktree's path; a checkout
     /// run's directory holds every conversation the user ever had in that
@@ -9180,6 +9220,7 @@ impl AppState {
         &self,
         run: &agency_core::registry::Run,
         repo: &Path,
+        names: &[String],
     ) -> Option<Vec<(PathBuf, agency_core::transcript::Dialect)>> {
         use agency_core::transcript::{dialect_for, Dialect};
         let dialect = dialect_for(&self.agent_command(run))?;
@@ -9218,7 +9259,7 @@ impl AppState {
             // An archived run has no session rows left, so its tabs'
             // directories are found by name instead — the same list the
             // discard sweep walks.
-            for dir in self.rescued_transcript_dirs(run, repo) {
+            for dir in self.rescued_transcript_dirs_in(run, repo, names) {
                 let Some(name) = dir.file_name().and_then(|n| n.to_str()) else { continue };
                 let Some(agent) = agency_core::record::transcript_dir_agent(&run.id, name) else {
                     continue;
@@ -9270,24 +9311,26 @@ impl AppState {
         }
         let runs = self.registry.lock().unwrap().list_archived_runs(project_id)?;
         let repo = self.project_repo(project_id)?;
+        let names = record_dir_names(&repo);
         let mut hits = Vec::new();
         for run in &runs {
             // The label as `ArchivedSection` draws it, so "is the match on
             // screen" is asked of the same text the row shows.
             let shown = if run.prompt.is_empty() { &run.branch } else { &run.prompt };
             let label = format!("{}: {shown}", run.agent);
-            let issue = run.issue_id.as_ref().and_then(|id| self.issue_label(id));
+            let issue = run.issue_id.as_ref().and_then(|id| self.issue_names(id));
             let summary: Vec<&str> = [
                 run.title.as_deref(),
                 Some(run.prompt.as_str()),
                 Some(run.branch.as_str()),
-                issue.as_deref(),
+                issue.as_ref().map(|(label, _)| label.as_str()),
+                issue.as_ref().map(|(_, title)| title.as_str()),
             ]
             .into_iter()
             .flatten()
             .collect();
-            let record = self.read_run_record(&run.id).ok().flatten();
-            let sessions = self.run_conversation(run, &repo);
+            let record = record_text(&repo, &run.id, &names).ok().flatten();
+            let sessions = self.run_conversation(run, &repo, &names);
             let turns: Vec<&str> = sessions
                 .iter()
                 .flat_map(|s| s.iter())
@@ -9418,6 +9461,9 @@ impl AppState {
             reg.delete_conversations(id)?;
             reg.delete_run(id)?;
         }
+        // Nothing else ever drops a run's parsed conversation, and it can hold
+        // up to `TURN_CHARS` per turn of a long session.
+        self.conversations.lock().unwrap().remove(id);
         // After the row, so nothing can queue a capture behind the prune.
         if let Ok(repo) = self.project_repo(&run.project_id) {
             self.prune_checkpoints(&repo, &run.id);
@@ -9753,6 +9799,7 @@ impl AppState {
         let runs = self.registry.lock().unwrap().list_archived_runs(project_id)?;
         let live = self.term.read().unwrap().list().unwrap_or_default();
         let repo = self.project_repo(project_id).ok();
+        let names = repo.as_deref().map(record_dir_names).unwrap_or_default();
         Ok(runs
             .iter()
             .map(|r| {
@@ -9779,7 +9826,7 @@ impl AppState {
                     // The same files the dialog reads, so the row offers to
                     // open a conversation exactly when there is one to show.
                     has_conversation: repo.as_ref().is_some_and(|repo| {
-                        self.conversation_files(r, repo).is_some_and(|f| !f.is_empty())
+                        self.conversation_files(r, repo, &names).is_some_and(|f| !f.is_empty())
                     }),
                 });
                 info

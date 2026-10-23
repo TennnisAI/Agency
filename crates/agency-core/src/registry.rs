@@ -1313,6 +1313,19 @@ impl Registry {
         }
     }
 
+    /// Every conversation a run and its tabs own, in launch order. Archiving
+    /// keeps these rows (only a discard drops them), which is what lets an
+    /// archived run's conversation be found in a store keyed by id alone, as
+    /// copilot's is, after its session rows have gone.
+    pub fn list_conversations(&self, run_id: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT conversation_id FROM conversations WHERE run_id = ?1
+             ORDER BY updated_at, session_id",
+        )?;
+        let rows = stmt.query_map([run_id], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Drop a run's conversation record and its tabs' — the cascade for
     /// discard. The agent's own transcripts are removed separately, by the
     /// caller that knows where that agent keeps them.
@@ -2464,6 +2477,7 @@ mod tests {
         assert_eq!(reg.get_conversation("agent-3f9c").unwrap().as_deref(), Some("uuid-two"));
         assert_eq!(reg.get_conversation("agent-3f9c--2").unwrap().as_deref(), Some("uuid-tab"));
         assert_eq!(reg.get_conversation("never-launched").unwrap(), None);
+        assert_eq!(reg.list_conversations("agent-3f9c").unwrap(), vec!["uuid-tab", "uuid-two"]);
 
         reg.delete_conversations("agent-3f9c").unwrap();
         assert_eq!(reg.get_conversation("agent-3f9c").unwrap(), None);

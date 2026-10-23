@@ -1,3 +1,4 @@
+pub mod archive_search;
 pub mod branchname;
 pub mod briefing;
 pub mod buildlog;

@@ -21,10 +21,11 @@ import Markdown from "./Markdown";
  * sibling file the way a folder can.
  *
  * The conversation is the other half of the same question, "what did it say",
- * rendered read-only from the transcript the archive rescued (AGE-152). Only
- * two agents' transcript formats have been read for real, so for the rest
- * this tab says it cannot see the conversation, which is a different claim
- * from there not being one.
+ * rendered read-only from the transcript the archive rescued (AGE-152), or
+ * from the agent's own store where that is keyed by conversation id and so
+ * outlives the worktree (copilot's). Only three agents' transcript formats
+ * have been read for real, so for the rest this tab says it cannot see the
+ * conversation, which is a different claim from there not being one.
  *
  * Reading the conversation is usually the moment someone decides to pick it
  * back up, and Restore used to exist only as the ↺ on the archive row behind
@@ -34,11 +35,15 @@ import Markdown from "./Markdown";
  */
 export default function RunRecordDialog({
   run,
+  initialTab,
   onClose,
   onRestore,
   busy = false,
 }: {
   run: RunInfo;
+  /** The tab to open on, when the caller knows where the reader is headed:
+   *  an archive search hit opens on the tab its match is in. */
+  initialTab?: "record" | "conversation";
   onClose: () => void;
   /** Omitted where the run is not archived, and the footer goes with it. */
   onRestore?: () => void;
@@ -47,9 +52,10 @@ export default function RunRecordDialog({
   // A run archived before records existed can still have a conversation, and
   // opening it on an empty record pane would read as "nothing here".
   const [tab, setTab] = useState<"record" | "conversation">(
-    run.archived && !run.archived.hasRecord && run.archived.hasConversation
-      ? "conversation"
-      : "record",
+    initialTab ??
+      (run.archived && !run.archived.hasRecord && run.archived.hasConversation
+        ? "conversation"
+        : "record"),
   );
   const [text, setText] = useState<string | null>(null);
   const [convo, setConvo] = useState<RunConversation | null>(null);

@@ -770,6 +770,22 @@ pub struct ConversationInfo {
     pub sessions: Vec<agency_core::transcript::Conversation>,
 }
 
+/// One run's parsed conversation, and the files it was parsed from as they
+/// were then. Any file changing, appearing or going makes it stale.
+struct CachedConversation {
+    files: Vec<(PathBuf, agency_core::usage::FileStamp)>,
+    sessions: Arc<Vec<agency_core::transcript::Conversation>>,
+}
+
+/// One archived run a search matched (see `agency_core::archive_search`).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveHit {
+    pub id: String,
+    #[serde(flatten)]
+    pub hit: agency_core::archive_search::Hit,
+}
+
 /// One message the send queue is holding, as shown by the run's marker.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -3121,6 +3137,9 @@ pub struct AppState {
     /// See [`AppState::curl_on`]: per PATH, whether it had a `curl`, and when
     /// that was looked up.
     curl_found: Mutex<HashMap<String, (bool, Instant)>>,
+    /// See [`AppState::run_conversation`]: each run's parsed conversation,
+    /// with the stamp of every file it was parsed from.
+    conversations: Mutex<HashMap<String, CachedConversation>>,
     /// Runs with a Codex in them that was launched with state hooks, and so
     /// posts to the run's server for as long as it lives, whatever the
     /// setting says now. Read off the setting instead, turning it off took
@@ -3413,6 +3432,7 @@ impl AppState {
             state_token: Arc::from(state_token),
             state_headers,
             curl_found: Mutex::new(HashMap::new()),
+            conversations: Mutex::new(HashMap::new()),
             codex_hooked: Mutex::new(agency_core::state_hooks::codex_marked(data_dir)),
             mcp_named: Mutex::new(HashSet::new()),
             usage: Mutex::new(HashMap::new()),
@@ -9102,68 +9122,188 @@ impl AppState {
     ///
     /// `supported: false` when the agent's transcript format is not one we
     /// read; the UI must present that as "cannot see", never as "said
-    /// nothing". Worktree runs only, like the rescue: a checkout run's
-    /// session directory holds every conversation the user ever had in that
-    /// folder, and this call cannot tell which of them was this run's.
+    /// nothing".
     pub fn read_run_conversation(&self, id: &str) -> Result<ConversationInfo> {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
-        let Some(format) = agency_core::usage::format_for(&self.agent_command(&run)) else {
-            return Ok(ConversationInfo { supported: false, sessions: Vec::new() });
-        };
-        if !run.worktree {
-            return Ok(ConversationInfo { supported: true, sessions: Vec::new() });
+        Ok(match self.run_conversation(&run, &repo) {
+            Some(sessions) => ConversationInfo { supported: true, sessions: (*sessions).clone() },
+            None => ConversationInfo { supported: false, sessions: Vec::new() },
+        })
+    }
+
+    /// [`Self::conversation_files`], parsed, or `None` where the run's agent
+    /// is one we cannot read.
+    ///
+    /// Cached per run against every file's length and mtime. Search reads
+    /// every archived run's conversation on each query, and the transcripts
+    /// behind one project's archive here came to 268 MB of JSONL; parsing
+    /// that per keystroke is seconds. The parse keeps only what renders, a
+    /// small fraction of the file, and an archived run's files do not change,
+    /// so after the first search the rest are a stat per file.
+    fn run_conversation(
+        &self,
+        run: &agency_core::registry::Run,
+        repo: &Path,
+    ) -> Option<Arc<Vec<agency_core::transcript::Conversation>>> {
+        let files = self.conversation_files(run, repo)?;
+        let stamped: Vec<(PathBuf, agency_core::usage::FileStamp)> = files
+            .iter()
+            .filter_map(|(p, _)| {
+                let meta = std::fs::metadata(p).ok()?;
+                Some((p.clone(), agency_core::usage::FileStamp::of(&meta)))
+            })
+            .collect();
+        if let Some(hit) = self.conversations.lock().unwrap().get(&run.id) {
+            if hit.files == stamped {
+                return Some(hit.sessions.clone());
+            }
         }
+        let sessions = Arc::new(agency_core::transcript::read_files(&files));
+        self.conversations.lock().unwrap().insert(
+            run.id.clone(),
+            CachedConversation { files: stamped, sessions: sessions.clone() },
+        );
+        Some(sessions)
+    }
+
+    /// Every transcript file this run's conversation is read from, each with
+    /// the dialect to parse it in. `None` when the run's own agent writes one
+    /// we cannot read.
+    ///
+    /// Worktree runs read the stores keyed by the worktree's path; a checkout
+    /// run's directory holds every conversation the user ever had in that
+    /// folder, and this cannot tell which of them was this run's. A store
+    /// keyed by conversation id has no such problem, so copilot's is read for
+    /// both kinds.
+    fn conversation_files(
+        &self,
+        run: &agency_core::registry::Run,
+        repo: &Path,
+    ) -> Option<Vec<(PathBuf, agency_core::transcript::Dialect)>> {
+        use agency_core::transcript::{dialect_for, Dialect};
+        let dialect = dialect_for(&self.agent_command(run))?;
         // The run's own agent first, then one directory per extra tab that ran
         // a different agent (AGE-184). Each is parsed in its own dialect: a
         // pi tab's file read as claude renders as nothing said, which is the
         // one thing this view must never claim.
-        let mut dirs: Vec<(PathBuf, agency_core::usage::Format)> = Vec::new();
-        let rescued = agency_core::record::transcript_dir(&repo, &run.id);
-        if rescued.exists() {
-            dirs.push((rescued, format));
-        } else if let Some(d) = self.agent_session_dir(&run, &repo).filter(|d| d.exists()) {
-            dirs.push((d, format));
-        }
-        for agent in self.workspace_agents(&run).into_iter().filter(|a| *a != run.agent) {
-            let Some(tab_format) = agency_core::usage::format_for(&self.profile_command(&agent))
-            else {
-                continue;
-            };
-            let archived = agency_core::record::transcript_dir_for(&repo, &run.id, &agent)
-                .filter(|d| d.exists());
-            let dir = archived.or_else(|| {
-                let home = self.agent_home()?;
-                agency_core::usage::session_dir(
-                    &home,
-                    &self.profile_command(&agent),
-                    &workspace_dir(&repo, &run),
-                )
-                .filter(|d| d.exists())
-            });
-            if let Some(dir) = dir {
-                dirs.push((dir, tab_format));
+        let mut dirs: Vec<(PathBuf, Dialect)> = Vec::new();
+        if run.worktree {
+            let rescued = agency_core::record::transcript_dir(repo, &run.id);
+            if rescued.exists() {
+                dirs.push((rescued, dialect));
+            } else if let Some(d) = self.agent_session_dir(run, repo).filter(|d| d.exists()) {
+                dirs.push((d, dialect));
+            }
+            for agent in self.workspace_agents(run).into_iter().filter(|a| *a != run.agent) {
+                let Some(format) = agency_core::usage::format_for(&self.profile_command(&agent))
+                else {
+                    continue;
+                };
+                let archived = agency_core::record::transcript_dir_for(repo, &run.id, &agent)
+                    .filter(|d| d.exists());
+                let dir = archived.or_else(|| {
+                    let home = self.agent_home()?;
+                    agency_core::usage::session_dir(
+                        &home,
+                        &self.profile_command(&agent),
+                        &workspace_dir(repo, run),
+                    )
+                    .filter(|d| d.exists())
+                });
+                if let Some(dir) = dir {
+                    dirs.push((dir, format.into()));
+                }
+            }
+            // An archived run has no session rows left, so its tabs'
+            // directories are found by name instead — the same list the
+            // discard sweep walks.
+            for dir in self.rescued_transcript_dirs(run, repo) {
+                let Some(name) = dir.file_name().and_then(|n| n.to_str()) else { continue };
+                let Some(agent) = agency_core::record::transcript_dir_agent(&run.id, name) else {
+                    continue;
+                };
+                if dirs.iter().any(|(d, _)| *d == dir) {
+                    continue;
+                }
+                if let Some(f) = agency_core::usage::format_for(&self.profile_command(&agent)) {
+                    dirs.push((dir, f.into()));
+                }
             }
         }
-        // An archived run has no session rows left, so its tabs' directories
-        // are found by name instead — the same list the discard sweep walks.
-        for dir in self.rescued_transcript_dirs(&run, &repo) {
-            let Some(name) = dir.file_name().and_then(|n| n.to_str()) else { continue };
-            let Some(agent) = agency_core::record::transcript_dir_agent(&run.id, name) else {
-                continue;
-            };
-            if dirs.iter().any(|(d, _)| *d == dir) {
-                continue;
-            }
-            if let Some(f) = agency_core::usage::format_for(&self.profile_command(&agent)) {
-                dirs.push((dir, f));
-            }
-        }
-        let sessions = dirs
+        let mut files: Vec<(PathBuf, Dialect)> = dirs
             .into_iter()
-            .flat_map(|(d, f)| agency_core::transcript::read_sessions(&d, f))
+            .flat_map(|(d, f)| agency_core::usage::transcripts(&d).into_iter().map(move |p| (p, f)))
             .collect();
-        Ok(ConversationInfo { supported: true, sessions })
+        // Copilot's store is keyed by conversation id, not by worktree, so
+        // nothing above can find it and archiving never orphans it: a copilot
+        // session's transcript stays where its id says. The ids are asked of
+        // every row the run kept rather than of the copilot tabs alone, since
+        // an archived run's tab rows (and with them which agent each tab ran)
+        // are gone; another agent's id is never a directory in copilot's store.
+        // The worktree argument is unused for copilot.
+        if let Some(home) = self.agent_home() {
+            let ids = self.registry.lock().unwrap().list_conversations(&run.id).unwrap_or_default();
+            for id in ids {
+                let path = agency_core::sessionstore::conversation_path(
+                    &home,
+                    "copilot",
+                    Path::new(""),
+                    &id,
+                );
+                if let Some(path) = path.filter(|p| p.exists()) {
+                    files.push((path, Dialect::Copilot));
+                }
+            }
+        }
+        Some(files)
+    }
+
+    /// The project's archived runs that `query` matches, each with where it
+    /// matched and the text that shows it. Empty for an empty query; the UI
+    /// lists the whole archive then, without asking.
+    pub fn search_archived_runs(&self, project_id: &str, query: &str) -> Result<Vec<ArchiveHit>> {
+        use agency_core::archive_search::{search, terms, Haystack};
+        let terms = terms(query);
+        if terms.is_empty() {
+            return Ok(Vec::new());
+        }
+        let runs = self.registry.lock().unwrap().list_archived_runs(project_id)?;
+        let repo = self.project_repo(project_id)?;
+        let mut hits = Vec::new();
+        for run in &runs {
+            // The label as `ArchivedSection` draws it, so "is the match on
+            // screen" is asked of the same text the row shows.
+            let shown = if run.prompt.is_empty() { &run.branch } else { &run.prompt };
+            let label = format!("{}: {shown}", run.agent);
+            let issue = run.issue_id.as_ref().and_then(|id| self.issue_label(id));
+            let summary: Vec<&str> = [
+                run.title.as_deref(),
+                Some(run.prompt.as_str()),
+                Some(run.branch.as_str()),
+                issue.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            let record = self.read_run_record(&run.id).ok().flatten();
+            let sessions = self.run_conversation(run, &repo);
+            let turns: Vec<&str> = sessions
+                .iter()
+                .flat_map(|s| s.iter())
+                .flat_map(|c| c.turns.iter().map(|t| t.text.as_str()))
+                .collect();
+            let hay = Haystack {
+                label: &label,
+                summary: &summary,
+                record: record.as_deref(),
+                conversation: &turns,
+            };
+            if let Some(hit) = search(&terms, &hay) {
+                hits.push(ArchiveHit { id: run.id.clone(), hit });
+            }
+        }
+        Ok(hits)
     }
 
     pub fn discard_run(&self, id: &str) -> Result<()> {
@@ -9636,15 +9776,11 @@ impl AppState {
                     has_record: repo
                         .as_ref()
                         .is_some_and(|repo| agency_core::record::path(repo, &r.id).exists()),
-                    // Worktree runs only, like the rescue: a checkout run's
-                    // session directory is every conversation the user ever
-                    // had in that folder, not this run's.
-                    has_conversation: r.worktree
-                        && repo.as_ref().is_some_and(|repo| {
-                            agency_core::usage::format_for(&self.agent_command(r)).is_some()
-                                && (agency_core::record::transcript_dir(repo, &r.id).exists()
-                                    || self.agent_session_dir(r, repo).is_some_and(|d| d.exists()))
-                        }),
+                    // The same files the dialog reads, so the row offers to
+                    // open a conversation exactly when there is one to show.
+                    has_conversation: repo.as_ref().is_some_and(|repo| {
+                        self.conversation_files(r, repo).is_some_and(|f| !f.is_empty())
+                    }),
                 });
                 info
             })

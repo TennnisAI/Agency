@@ -2454,6 +2454,18 @@ pub async fn read_run_conversation(
     state.read_run_conversation(&id).map_err(|e| e.to_string())
 }
 
+/// The archived runs a query matches in their summary, record or
+/// conversation. async for the same reason as `read_run_conversation`: the
+/// first search parses every archived run's transcript.
+#[tauri::command]
+pub async fn search_archived_runs(
+    state: State<'_, AppState>,
+    project_id: String,
+    query: String,
+) -> Result<Vec<crate::state::ArchiveHit>, String> {
+    state.search_archived_runs(&project_id, &query).map_err(|e| e.to_string())
+}
+
 use crate::notifier::NotifSettings;
 
 /// Sync the native menu's context-dependent items with the current selection:

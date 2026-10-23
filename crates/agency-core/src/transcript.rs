@@ -9,16 +9,54 @@
 //! it on restore), and a parser that renders the two transcript dialects we
 //! actually know as a read-only conversation.
 //!
-//! The dialect list is [`crate::usage::format_for`]'s, deliberately: `claude`
-//! and `pi`, the two whose files have been read for real. Every parse rule
-//! here was checked against live transcripts, not documentation — the sample
-//! sizes are in the comments. For any other agent the caller must say "we
-//! cannot see this agent's transcript", never "this agent said nothing"; that
-//! is the same distinction `usage.rs` keeps for tokens.
+//! The dialect list is [`dialect_for`]'s: [`crate::usage::format_for`]'s two,
+//! `claude` and `pi`, plus `copilot`, whose conversation can be read although
+//! its tokens cannot (its records carry output tokens only, never input).
+//! Every parse rule here was checked against live transcripts, not
+//! documentation — the sample sizes are in the comments. For any other agent
+//! the caller must say "we cannot see this agent's transcript", never "this
+//! agent said nothing"; that is the same distinction `usage.rs` keeps for
+//! tokens.
 
 use crate::usage::Format;
 use anyhow::{bail, Context, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// The transcript dialects a conversation can be rendered from. A superset of
+/// [`Format`], which is the list for token accounting: reading what an agent
+/// said needs less of its file than pricing what it spent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dialect {
+    Claude,
+    Pi,
+    /// Copilot's `events.jsonl`. Not keyed by worktree like the other two:
+    /// one directory per conversation id under `~/.copilot/session-state/`
+    /// (see [`crate::sessionstore::conversation_path`]), so its transcript is
+    /// found from the id Agency recorded at launch rather than from a path.
+    Copilot,
+}
+
+impl From<Format> for Dialect {
+    fn from(f: Format) -> Dialect {
+        match f {
+            Format::Claude => Dialect::Claude,
+            Format::Pi => Dialect::Pi,
+        }
+    }
+}
+
+/// Which dialect this agent's conversation is written in, or `None` if
+/// Agency cannot read it. Default-deny, like `usage::format_for`, and only
+/// the basename is matched.
+pub fn dialect_for(command: &str) -> Option<Dialect> {
+    if let Some(f) = crate::usage::format_for(command) {
+        return Some(f.into());
+    }
+    match Path::new(command).file_name().and_then(|s| s.to_str()).unwrap_or(command) {
+        "copilot" => Some(Dialect::Copilot),
+        _ => None,
+    }
+}
 
 /// Who a rendered line belongs to. `Tool` lines are the agent acting rather
 /// than speaking: one per tool call, so the conversation keeps its shape
@@ -57,10 +95,11 @@ const TURN_CHARS: usize = 8_000;
 /// Tool lines are one-liners by contract.
 const TOOL_CHARS: usize = 160;
 
-pub fn parse_conversation(text: &str, format: Format) -> Conversation {
-    match format {
-        Format::Claude => parse_claude(text),
-        Format::Pi => parse_pi(text),
+pub fn parse_conversation(text: &str, dialect: impl Into<Dialect>) -> Conversation {
+    match dialect.into() {
+        Dialect::Claude => parse_claude(text),
+        Dialect::Pi => parse_pi(text),
+        Dialect::Copilot => parse_copilot(text),
     }
 }
 
@@ -270,17 +309,73 @@ fn parse_pi(text: &str) -> Conversation {
     convo
 }
 
+/// Copilot's dialect, from the 11 `events.jsonl` files on this machine
+/// (copilot 1.0.78 to 1.0.83). Every record is `{type, data, timestamp}`:
+/// `user.message` carries what the user typed in `data.content`, beside a
+/// `transformedContent` that wraps it in the injected datetime and reminders
+/// (so that one is not the user speaking); `assistant.message` carries the
+/// reply in `data.content` and its tool calls in `data.toolRequests`, each
+/// `{name, arguments}`. `system.message` is copilot's own system prompt, and
+/// the `tool.execution_*` records are the calls' results; neither is the
+/// conversation.
+///
+/// An assistant record can say `chunkCount`; every one in the sample said 1,
+/// so how a multi-chunk reply splits its content has not been seen. Each
+/// record's content goes through the same merge as claude's streamed blocks,
+/// which keeps every word even if it would join chunks with a paragraph break.
+fn parse_copilot(text: &str) -> Conversation {
+    let mut convo = Conversation::default();
+    for line in text.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        if convo.started.is_none() {
+            if let Some(ts) = v.get("timestamp").and_then(|t| t.as_str()) {
+                convo.started = Some(ts.to_string());
+            }
+        }
+        let Some(data) = v.get("data") else { continue };
+        match v.get("type").and_then(|t| t.as_str()) {
+            Some("user.message") => {
+                if let Some(content) = data.get("content") {
+                    push_user_text(&mut convo.turns, content);
+                }
+            }
+            Some("assistant.message") => {
+                if let Some(t) = data.get("content").and_then(|t| t.as_str()) {
+                    push_assistant_text(&mut convo.turns, t);
+                }
+                let requests = data.get("toolRequests").and_then(|r| r.as_array());
+                for r in requests.into_iter().flatten() {
+                    let name = r.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
+                    convo
+                        .turns
+                        .push(Turn { role: Role::Tool, text: tool_line(name, r.get("arguments")) });
+                }
+            }
+            _ => {}
+        }
+    }
+    convo
+}
+
 /// Every session in a transcript directory, oldest first. Sessions where
 /// nothing renderable was said are dropped — within a format we can read,
 /// an empty parse really does mean nothing was said, unlike the unsupported
 /// case the caller must keep distinct.
-pub fn read_sessions(dir: &Path, format: Format) -> Vec<Conversation> {
-    let mut sessions: Vec<(String, String, Conversation)> = Vec::new();
+pub fn read_sessions(dir: &Path, dialect: impl Into<Dialect>) -> Vec<Conversation> {
+    let dialect = dialect.into();
     // The directory's own files and its per-session stores below it; see
     // `usage::transcripts` for why one level and no further.
-    for path in crate::usage::transcripts(dir) {
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
-        let convo = parse_conversation(&text, format);
+    let files: Vec<_> = crate::usage::transcripts(dir).into_iter().map(|p| (p, dialect)).collect();
+    read_files(&files)
+}
+
+/// [`read_sessions`] over named files, each in its own dialect, so sessions
+/// from several agents' stores read as one list, oldest first.
+pub fn read_files(files: &[(PathBuf, Dialect)]) -> Vec<Conversation> {
+    let mut sessions: Vec<(String, String, Conversation)> = Vec::new();
+    for (path, dialect) in files {
+        let Ok(text) = std::fs::read_to_string(path) else { continue };
+        let convo = parse_conversation(&text, *dialect);
         if convo.turns.is_empty() {
             continue;
         }
@@ -552,6 +647,118 @@ mod tests {
         let bare = r#"{"type":"message","id":"a","message":{"role":"assistant","content":[{"type":"somethingNew"}]}}"#;
         let c = parse_conversation(bare, Format::Pi);
         assert_eq!(c.turns[0].text, "somethingNew");
+    }
+
+    /// A copilot record as `events.jsonl` writes it: `{type, data, id,
+    /// timestamp, parentId}`, trimmed to the fields the parse reads.
+    fn cp(kind: &str, data: serde_json::Value) -> String {
+        serde_json::json!({
+            "type": kind,
+            "data": data,
+            "id": "61371ccc-e094-49e7-bd91-8983cb93d998",
+            "timestamp": "2026-08-08T18:43:27.277Z",
+            "parentId": null,
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn a_copilot_exchange_reads_in_order_with_its_tool_calls() {
+        let text = [
+            cp("session.start", serde_json::json!({"sessionId": "f225c7ca", "version": 1})),
+            cp("system.message", serde_json::json!({"role": "system", "content": "You are the GitHub Copilot CLI"})),
+            cp(
+                "user.message",
+                serde_json::json!({
+                    "content": "Create a file named probe.txt containing the word done, then stop.",
+                    "transformedContent": "<current_datetime>2026-08-08T20:43:29.484+02:00</current_datetime>\n\nCreate a file",
+                    "attachments": [],
+                }),
+            ),
+            cp("assistant.turn_start", serde_json::json!({"turnId": "0"})),
+            cp(
+                "assistant.message",
+                serde_json::json!({
+                    "content": "Creating probe.txt in the repository root.",
+                    "toolRequests": [{
+                        "toolCallId": "call_3nud",
+                        "name": "create",
+                        "arguments": {"path": "/w/probe.txt", "file_text": "done"},
+                        "type": "function",
+                    }],
+                    "chunkIndex": 0,
+                    "chunkCount": 1,
+                }),
+            ),
+            cp(
+                "tool.execution_complete",
+                serde_json::json!({"toolCallId": "call_3nud", "success": true, "result": {"content": "Created file /w/probe.txt"}}),
+            ),
+            cp("assistant.message", serde_json::json!({"content": "probe.txt created.", "toolRequests": []})),
+            cp("session.shutdown", serde_json::json!({})),
+        ]
+        .join("\n");
+        let c = parse_conversation(&text, Dialect::Copilot);
+        assert_eq!(c.started.as_deref(), Some("2026-08-08T18:43:27.277Z"));
+        assert_eq!(
+            c.turns,
+            vec![
+                Turn {
+                    role: Role::User,
+                    text: "Create a file named probe.txt containing the word done, then stop."
+                        .into(),
+                },
+                Turn {
+                    role: Role::Assistant,
+                    text: "Creating probe.txt in the repository root.".into()
+                },
+                Turn { role: Role::Tool, text: "create: /w/probe.txt".into() },
+                Turn { role: Role::Assistant, text: "probe.txt created.".into() },
+            ]
+        );
+    }
+
+    #[test]
+    fn copilot_system_prompt_and_tool_results_are_not_the_conversation() {
+        let text = [
+            cp(
+                "system.message",
+                serde_json::json!({"role": "system", "content": "You are copilot"}),
+            ),
+            cp(
+                "tool.execution_start",
+                serde_json::json!({"toolName": "bash", "arguments": {"command": "ls"}}),
+            ),
+            cp("tool.execution_complete", serde_json::json!({"result": {"content": "a.txt"}})),
+            "not json".to_string(),
+        ]
+        .join("\n");
+        assert!(parse_conversation(&text, Dialect::Copilot).turns.is_empty());
+    }
+
+    #[test]
+    fn copilot_is_read_for_its_conversation_but_not_its_tokens() {
+        assert_eq!(dialect_for("copilot"), Some(Dialect::Copilot));
+        assert_eq!(dialect_for("/opt/homebrew/bin/copilot"), Some(Dialect::Copilot));
+        assert_eq!(crate::usage::format_for("copilot"), None);
+        assert_eq!(dialect_for("claude"), Some(Dialect::Claude));
+        assert_eq!(dialect_for("pi"), Some(Dialect::Pi));
+        assert_eq!(dialect_for("cursor-agent"), None);
+    }
+
+    #[test]
+    fn files_from_several_stores_read_as_one_list_oldest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let claude = dir.path().join("a.jsonl");
+        std::fs::write(&claude, c_user("claude speaking")).unwrap();
+        let copilot = dir.path().join("events.jsonl");
+        let earlier = cp("user.message", serde_json::json!({"content": "copilot speaking"}))
+            .replace("2026-08-08", "2026-08-01");
+        std::fs::write(&copilot, earlier).unwrap();
+        let sessions = read_files(&[(claude, Dialect::Claude), (copilot, Dialect::Copilot)]);
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].turns[0].text, "copilot speaking");
+        assert_eq!(sessions[1].turns[0].text, "claude speaking");
     }
 
     #[test]

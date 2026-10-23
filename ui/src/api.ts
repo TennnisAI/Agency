@@ -782,6 +782,18 @@ export const readRunConversation = (id: string) =>
   invoke<RunConversation>("read_run_conversation", { id });
 export const listArchivedRuns = (projectId: string) =>
   invoke<RunInfo[]>("list_archived_runs", { projectId });
+/**
+ * An archived run a search matched, and where. The snippet is the matched
+ * text with a little context, split so the match can be marked; there is none
+ * for a summary match, since the row's own title already shows it.
+ */
+export type ArchiveHit = {
+  id: string;
+  field: "summary" | "record" | "conversation";
+  snippet: { before: string; hit: string; after: string } | null;
+};
+export const searchArchivedRuns = (projectId: string, query: string) =>
+  invoke<ArchiveHit[]>("search_archived_runs", { projectId, query });
 /** Result of a bulk discard: some runs can fail while the rest still go. */
 export type DiscardSummary = { discarded: number; failed: string[] };
 export function discardArchivedRuns(

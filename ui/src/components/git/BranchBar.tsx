@@ -96,6 +96,13 @@ export default function BranchBar({ taskId, info, busy = false, onAct, onPush, o
           )}
         </span>
       )}
+      {/* Its commits landed on main under new hashes (cherry-pick, rebase,
+          squash merge). Said outright, so a finished branch reads as finished
+          rather than as one with nothing on it. */}
+      {info.landedOn && (
+        <span className="git-aheadbehind"
+          title={`Every commit on this branch is already on ${info.landedOn}`}>on {info.landedOn}</span>
+      )}
       <span className="spacer" style={{ flex: 1 }} />
       {/* Pull (fast-forward) only when there is an upstream with commits behind. */}
       {info.upstream && info.behind > 0 && (

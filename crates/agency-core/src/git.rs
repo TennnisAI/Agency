@@ -1042,6 +1042,13 @@ pub struct BranchInfo {
     /// the tree identical to HEAD, so the panel must not read "no changes" as
     /// "nothing to commit" while this is set (AGE-205).
     pub merging: bool,
+    /// The local default branch (`main`) when every commit this branch would
+    /// otherwise count as ahead is already on it by its change: cherry-picked,
+    /// rebased or squash-merged there. `ahead` is then 0, and the UI says
+    /// "already on main" rather than showing nothing, so a finished branch reads
+    /// as finished. Only weighed for a feature branch with no upstream; with one,
+    /// `ahead` is about pushing and stays so.
+    pub landed_on: Option<String>,
 }
 
 /// HEAD ancestry, newest first. Fields are unit-separated (\x1f); parents and
@@ -1115,9 +1122,10 @@ pub fn branch_info(worktree: &Path) -> Result<BranchInfo> {
     // commits into every branch and show the same count on all of them.
     // On the default branch itself there is no fork point, so fall back to
     // origin's copy — there, "ahead of base" does mean "not pushed yet".
-    let base_candidates: Vec<String> = match local_default_branch(worktree) {
-        Some(d) if d != branch => vec![d.to_string()],
-        _ => {
+    let default = local_default_branch(worktree).filter(|d| *d != branch);
+    let base_candidates: Vec<String> = match default {
+        Some(d) => vec![d.to_string()],
+        None => {
             ["origin/HEAD", "origin/main", "origin/master"].iter().map(|c| c.to_string()).collect()
         }
     };
@@ -1128,6 +1136,7 @@ pub fn branch_info(worktree: &Path) -> Result<BranchInfo> {
             .filter(|s| !s.is_empty())
     });
     let (mut ahead, mut behind) = (0, 0);
+    let mut landed_on = None;
     if upstream.is_some() {
         if let Ok(counts) = git(worktree, &["rev-list", "--left-right", "--count", "@{u}...HEAD"]) {
             let mut p = counts.split_whitespace();
@@ -1153,6 +1162,21 @@ pub fn branch_info(worktree: &Path) -> Result<BranchInfo> {
         if ahead > 0 && upstream_gone(worktree, &branch) && merged_on_origin(worktree) {
             ahead = 0;
         }
+        // Nor does "not on the base" mean "not on the base" by hash alone. A
+        // commit cherry-picked onto a main that had moved ahead is on main under
+        // a new hash, and this went on reading "1 ahead" while `git cherry` marked
+        // the commit as upstream (AGE-271). Keep only the unpublished commits
+        // whose change main does not have yet.
+        if let Some(d) = default.filter(|_| ahead > 0) {
+            let unlanded = unlanded_commits(worktree, d);
+            let unpublished =
+                git(worktree, &["rev-list", "HEAD", "--not", base, "--remotes=origin"])
+                    .unwrap_or_default();
+            ahead = unpublished.lines().filter(|c| unlanded.contains(*c)).count() as u32;
+            if unlanded.is_empty() {
+                landed_on = Some(d.to_string());
+            }
+        }
     } else {
         // No upstream and nothing to measure against: a repo with no `origin`
         // at all, or one whose remote-tracking refs were never fetched. None of
@@ -1168,7 +1192,22 @@ pub fn branch_info(worktree: &Path) -> Result<BranchInfo> {
     // Per-worktree state, so `rev-parse` rather than a path under `.git`: in a
     // linked worktree `.git` is a file and MERGE_HEAD lives beside its own HEAD.
     let merging = git(worktree, &["rev-parse", "--verify", "--quiet", "MERGE_HEAD"]).is_ok();
-    Ok(BranchInfo { branch, upstream, ahead, behind, base, has_remote, merging })
+    Ok(BranchInfo { branch, upstream, ahead, behind, base, has_remote, merging, landed_on })
+}
+
+/// The hashes of HEAD's commits whose change `base` does not have yet: the commits
+/// `crate::merge::commits_ahead` counts. Empty when merging HEAD into `base`
+/// would change nothing, which is how a squash merge shows. A failed probe
+/// answers every commit unlanded, the direction that keeps work counted.
+fn unlanded_commits(worktree: &Path, base: &str) -> std::collections::HashSet<String> {
+    if crate::merge::adds_nothing(worktree, "HEAD", base) {
+        return Default::default();
+    }
+    let range = format!("{base}...HEAD");
+    let listed = git(worktree, &["rev-list", "--cherry-pick", "--right-only", &range])
+        .or_else(|_| git(worktree, &["rev-list", "HEAD", "--not", base]))
+        .unwrap_or_default();
+    listed.lines().map(str::to_string).collect()
 }
 
 /// Whether `branch` is configured to track a remote branch that no longer
@@ -1189,19 +1228,10 @@ fn upstream_gone(worktree: &Path, branch: &str) -> bool {
 /// which keeps the commits counted: the safe direction for a count the user
 /// reads before deleting a worktree.
 fn merged_on_origin(worktree: &Path) -> bool {
-    let Some(target) = ["origin/HEAD", "origin/main", "origin/master"]
+    ["origin/HEAD", "origin/main", "origin/master"]
         .into_iter()
         .find(|r| git(worktree, &["rev-parse", "--verify", "--quiet", r]).is_ok())
-    else {
-        return false;
-    };
-    let Ok(merged) = git(worktree, &["merge-tree", "--write-tree", target, "HEAD"]) else {
-        return false;
-    };
-    let Ok(tree) = git(worktree, &["rev-parse", &format!("{target}^{{tree}}")]) else {
-        return false;
-    };
-    merged.lines().next().map(str::trim) == Some(tree.trim())
+        .is_some_and(|target| crate::merge::adds_nothing(worktree, "HEAD", target))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

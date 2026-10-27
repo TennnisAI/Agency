@@ -736,6 +736,33 @@ fn branch_info_still_counts_unmerged_work_when_the_branch_is_deleted() {
     assert_eq!(info.ahead, 2);
 }
 
+/// AGE-271: an agent worktree's commit cherry-picked onto a main that had moved
+/// ahead still read "1 ahead of the base branch". It is on main by its change,
+/// so the branch is 0 ahead and says where its work already is.
+#[test]
+fn branch_info_does_not_count_work_cherry_picked_onto_main() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let wt = dir.path().join("wt");
+    run(&repo, &["worktree", "add", "-q", "-b", "agent/c", wt.to_str().unwrap()]);
+    commit_file(&wt, "work.txt", "w", "work");
+    commit_file(&repo, "other.txt", "o", "main moves on");
+    let info = git::branch_info(&wt).unwrap();
+    assert_eq!((info.ahead, info.landed_on), (1, None));
+
+    run(&repo, &["cherry-pick", "agent/c"]);
+    let info = git::branch_info(&wt).unwrap();
+    assert_eq!(info.ahead, 0);
+    assert_eq!(info.landed_on.as_deref(), Some("main"));
+
+    // New work on top is counted again, and the branch is no longer "on main".
+    commit_file(&wt, "more.txt", "m", "more");
+    let info = git::branch_info(&wt).unwrap();
+    assert_eq!((info.ahead, info.landed_on), (1, None));
+}
+
 /// Which tree holds a branch, not just whether one does. A review that cannot
 /// check a PR's branch out has to say where the branch already is, and the
 /// answer is usually the user's own checkout rather than an agent worktree.

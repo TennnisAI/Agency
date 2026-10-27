@@ -163,14 +163,42 @@ pub fn owns_merge(repo: &Path, branch: &str) -> bool {
     }
 }
 
-/// Number of commits on `branch` that are not yet on `base` (i.e. what a merge
-/// would actually integrate). Zero means the branch carries no new work and a
-/// merge would be a no-op — surfaced in the UI as "nothing to merge" so a clean
+/// Number of commits on `branch` whose change is not yet on `base` (i.e. what a
+/// merge would actually integrate). Zero means the branch carries no new work and
+/// a merge would be a no-op — surfaced in the UI as "nothing to merge" so a clean
 /// no-op isn't mistaken for a successful integration.
+///
+/// Counted by change, not by hash. A commit cherry-picked or rebased onto a base
+/// that had moved ahead lands there under a new hash, and `base..branch` went on
+/// counting it: "1 ahead" on a branch whose only commit `git cherry` marked as
+/// upstream (AGE-271), which invites merging the same work twice. `--cherry-pick`
+/// drops every commit whose patch is already on `base`. A squash merge matches no
+/// single commit's patch, so [`adds_nothing`] catches that one by content, and
+/// only while the branch holds nothing else: one new commit on top brings the
+/// squashed ones back into the count, which errs the safe way.
 pub fn commits_ahead(repo: &Path, branch: &str, base: &str) -> Result<usize> {
-    let range = format!("{base}..{branch}");
-    let out = git_ok(repo, &["rev-list", "--count", &range])?;
-    Ok(out.trim().parse().unwrap_or(0))
+    let range = format!("{base}...{branch}");
+    let out = git_ok(repo, &["rev-list", "--count", "--cherry-pick", "--right-only", &range])?;
+    let ahead = out.trim().parse().unwrap_or(0);
+    if ahead > 0 && adds_nothing(repo, branch, base) {
+        return Ok(0);
+    }
+    Ok(ahead)
+}
+
+/// Whether merging `rev` into `base` would change nothing: the merged tree is
+/// `base`'s own. A conflict, a ref that does not resolve, or a git without
+/// `merge-tree --write-tree` (2.38) all answer false, which keeps the commits
+/// counted: the safe direction for a count read before deleting a branch.
+pub fn adds_nothing(repo: &Path, rev: &str, base: &str) -> bool {
+    let merged = match git(repo, &["merge-tree", "--write-tree", base, rev]) {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).to_string(),
+        _ => return false,
+    };
+    let Ok(tree) = git_ok(repo, &["rev-parse", &format!("{base}^{{tree}}")]) else {
+        return false;
+    };
+    merged.lines().next().map(str::trim) == Some(tree.trim())
 }
 
 /// Number of commits on `base` that `branch` doesn't have — how far the base

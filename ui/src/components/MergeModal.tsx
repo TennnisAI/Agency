@@ -720,7 +720,12 @@ export default function MergeModal({
                   ? <>Merge pull request #{pr.number} → <code>{prBase}</code></>
                   : <>Merge <code>{preview.branch}</code> → <code>{preview.base}</code></>}
               </p>
-              {nothingToMerge ? (
+              {nothingToMerge && preview.alreadyOnBase ? (
+                <p className="merge-warn">
+                  Already on <code>{preview.base}</code>: every commit on this branch landed there, by
+                  cherry-pick, rebase or squash merge. Merging it again adds nothing.
+                </p>
+              ) : nothingToMerge ? (
                 <p className="merge-warn">
                   Nothing to merge: this agent has no committed changes on top of <code>{preview.base}</code>.
                 </p>

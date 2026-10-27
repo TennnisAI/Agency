@@ -969,6 +969,11 @@ pub struct MergePreview {
     pub branch: String,
     pub commits_ahead: usize,
     pub commits_behind: usize,
+    /// The branch has commits of its own, and `commits_ahead` is 0 because every
+    /// change in them is already on the base: cherry-picked, rebased or
+    /// squash-merged there. The window says "already on main" rather than "no
+    /// committed changes", which would be false.
+    pub already_on_base: bool,
     /// Commits no remote has yet. Only counted for a published branch: it is
     /// what merging the branch's pull request would leave out, so the window
     /// pushes them first.
@@ -8551,7 +8556,11 @@ impl AppState {
             cut_branch: on_own_branch(&repo, run),
             commits_ahead: ahead.unwrap_or(0),
             commits_known: ahead.is_some(),
+            // A branch whose every change is on the base by cherry-pick, rebase
+            // or squash merge has landed too, though its tip is no ancestor of
+            // the base: `commits_ahead` counts by change, so its zero says so.
             merged: agency_core::merge::is_merged(&repo, &run.branch, &base)
+                || ahead == Some(0)
                 || run.pr_merged_at(agency_core::merge::rev(&repo, &run.branch).as_deref()),
             pushed: agency_core::merge::is_pushed(&repo, &run.branch),
             gone: false,
@@ -11534,6 +11543,8 @@ impl AppState {
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
         let commits_ahead = agency_core::merge::commits_ahead(&repo, &run.branch, &base)?;
         let commits_behind = agency_core::merge::commits_behind(&repo, &run.branch, &base)?;
+        let already_on_base =
+            commits_ahead == 0 && !agency_core::merge::is_merged(&repo, &run.branch, &base);
         let worktree = workspace_dir(&repo, &run);
         let dirty_files: Vec<String> = if worktree.exists() {
             agency_core::git::status(&worktree)
@@ -11553,6 +11564,7 @@ impl AppState {
             branch: run.branch,
             commits_ahead,
             commits_behind,
+            already_on_base,
             commits_unpushed,
             worktree_dirty: !dirty_files.is_empty(),
             dirty_files,

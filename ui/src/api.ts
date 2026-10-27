@@ -1381,6 +1381,9 @@ export interface MergePreview {
   branch: string;
   commitsAhead: number;
   commitsBehind: number;
+  /** The branch has commits of its own, all already on `base` by their change
+   *  (cherry-picked, rebased or squash-merged), so `commitsAhead` is 0. */
+  alreadyOnBase: boolean;
   /** Commits no remote has yet: what merging the branch's PR would leave out,
    *  so the window pushes them first. Zero for a branch never published. */
   commitsUnpushed: number;
@@ -1745,6 +1748,12 @@ export interface BranchInfo {
    * mean there is nothing to commit.
    */
   merging: boolean;
+  /**
+   * The local default branch when every commit this branch would count as ahead
+   * is already on it by its change (cherry-picked, rebased or squash-merged).
+   * `ahead` is 0 then. Null otherwise, and always null with an upstream.
+   */
+  landedOn: string | null;
 }
 
 export const gitLogGraph = (taskId: string, limit: number) =>

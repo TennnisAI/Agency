@@ -126,6 +126,60 @@ fn commits_ahead_counts_new_branch_work() {
     assert_eq!(merge::commits_ahead(dir.path(), "agent/a", "main").unwrap(), 2);
 }
 
+/// AGE-271: a commit cherry-picked onto a main that had moved ahead lands under
+/// a new hash, and `main..branch` went on reading "1 ahead" while `git cherry`
+/// marked the commit as upstream.
+#[test]
+fn commits_ahead_ignores_work_cherry_picked_onto_the_base() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    run(dir.path(), &["checkout", "-q", "-b", "agent/c"]);
+    std::fs::write(dir.path().join("work.txt"), "w\n").unwrap();
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-q", "-m", "work"]);
+    run(dir.path(), &["checkout", "-q", "main"]);
+    std::fs::write(dir.path().join("other.txt"), "o\n").unwrap();
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-q", "-m", "main moves on"]);
+    assert_eq!(merge::commits_ahead(dir.path(), "agent/c", "main").unwrap(), 1);
+
+    run(dir.path(), &["cherry-pick", "agent/c"]);
+    assert_eq!(merge::commits_ahead(dir.path(), "agent/c", "main").unwrap(), 0);
+    assert!(!merge::is_merged(dir.path(), "agent/c", "main"), "landed by change, not ancestry");
+
+    // Reverted on main, the commit still matches main's copy by patch, but its
+    // change is gone from main and merging would bring it back.
+    run(dir.path(), &["revert", "--no-edit", "HEAD"]);
+    assert_eq!(merge::commits_ahead(dir.path(), "agent/c", "main").unwrap(), 1);
+}
+
+/// A squash merge matches no single commit's patch, so only the content shows
+/// the work is on the base, and that check is all or nothing.
+#[test]
+fn commits_ahead_ignores_squash_merged_work_but_counts_what_is_left() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    run(dir.path(), &["checkout", "-q", "-b", "agent/s"]);
+    for name in ["one", "two"] {
+        std::fs::write(dir.path().join(format!("{name}.txt")), "x\n").unwrap();
+        run(dir.path(), &["add", "-A"]);
+        run(dir.path(), &["commit", "-q", "-m", name]);
+    }
+    run(dir.path(), &["checkout", "-q", "main"]);
+    run(dir.path(), &["merge", "-q", "--squash", "agent/s"]);
+    run(dir.path(), &["commit", "-q", "-m", "squashed"]);
+    assert_eq!(merge::commits_ahead(dir.path(), "agent/s", "main").unwrap(), 0);
+
+    run(dir.path(), &["checkout", "-q", "agent/s"]);
+    std::fs::write(dir.path().join("three.txt"), "x\n").unwrap();
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-q", "-m", "three"]);
+    // One commit new to main brings the squashed two back into the count with
+    // it: nothing matches them by patch. Overcounting is the safe direction for
+    // a number read before deleting a branch.
+    assert_eq!(merge::commits_ahead(dir.path(), "agent/s", "main").unwrap(), 3);
+}
+
 #[test]
 fn detect_base_finds_main() {
     let dir = tempfile::tempdir().unwrap();

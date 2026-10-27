@@ -55,7 +55,8 @@ pub struct BranchFacts {
     /// treated as safe unless it was proved safe, so an unresolvable range
     /// keeps the branch.
     pub commits_known: bool,
-    /// The branch tip is contained in the base: the work landed.
+    /// The work landed: the branch tip is contained in the base, or every
+    /// change on the branch is (a cherry-pick, rebase or squash merge).
     pub merged: bool,
     /// The branch tip is contained in some remote branch, so the commits
     /// survive the local branch going away. True for a pushed branch and for

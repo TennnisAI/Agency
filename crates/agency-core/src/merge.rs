@@ -176,14 +176,23 @@ pub fn owns_merge(repo: &Path, branch: &str) -> bool {
 /// single commit's patch, so [`adds_nothing`] catches that one by content, and
 /// only while the branch holds nothing else: one new commit on top brings the
 /// squashed ones back into the count, which errs the safe way.
+///
+/// Zero only when the content agrees. A commit cherry-picked onto the base and
+/// then reverted there still matches by patch, so `--cherry-pick` alone read 0:
+/// "already on main" with the merge button disabled, and teardown deleting the
+/// branch as merged, while merging it would have brought the change back. A
+/// by-change count of 0 that [`adds_nothing`] does not confirm falls back to
+/// counting by hash.
 pub fn commits_ahead(repo: &Path, branch: &str, base: &str) -> Result<usize> {
-    let range = format!("{base}...{branch}");
-    let out = git_ok(repo, &["rev-list", "--count", "--cherry-pick", "--right-only", &range])?;
-    let ahead = out.trim().parse().unwrap_or(0);
-    if ahead > 0 && adds_nothing(repo, branch, base) {
+    let count =
+        |args: &[&str]| -> Result<usize> { Ok(git_ok(repo, args)?.trim().parse().unwrap_or(0)) };
+    let by_hash = count(&["rev-list", "--count", &format!("{base}..{branch}")])?;
+    if by_hash == 0 || adds_nothing(repo, branch, base) {
         return Ok(0);
     }
-    Ok(ahead)
+    let range = format!("{base}...{branch}");
+    let by_change = count(&["rev-list", "--count", "--cherry-pick", "--right-only", &range])?;
+    Ok(if by_change == 0 { by_hash } else { by_change })
 }
 
 /// Whether merging `rev` into `base` would change nothing: the merged tree is

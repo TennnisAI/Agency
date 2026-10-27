@@ -146,6 +146,11 @@ fn commits_ahead_ignores_work_cherry_picked_onto_the_base() {
     run(dir.path(), &["cherry-pick", "agent/c"]);
     assert_eq!(merge::commits_ahead(dir.path(), "agent/c", "main").unwrap(), 0);
     assert!(!merge::is_merged(dir.path(), "agent/c", "main"), "landed by change, not ancestry");
+
+    // Reverted on main, the commit still matches main's copy by patch, but its
+    // change is gone from main and merging would bring it back.
+    run(dir.path(), &["revert", "--no-edit", "HEAD"]);
+    assert_eq!(merge::commits_ahead(dir.path(), "agent/c", "main").unwrap(), 1);
 }
 
 /// A squash merge matches no single commit's patch, so only the content shows

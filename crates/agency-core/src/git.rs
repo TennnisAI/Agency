@@ -1043,8 +1043,9 @@ pub struct BranchInfo {
     /// "nothing to commit" while this is set (AGE-205).
     pub merging: bool,
     /// The local default branch (`main`) when every commit this branch would
-    /// otherwise count as ahead is already on it by its change: cherry-picked,
-    /// rebased or squash-merged there. `ahead` is then 0, and the UI says
+    /// otherwise count as ahead is already on it, cherry-picked, rebased or
+    /// squash-merged there, so merging the branch would change nothing. `ahead`
+    /// is then 0, and the UI says
     /// "already on main" rather than showing nothing, so a finished branch reads
     /// as finished. Only weighed for a feature branch with no upstream; with one,
     /// `ahead` is about pushing and stays so.
@@ -1154,11 +1155,9 @@ pub fn branch_info(worktree: &Path) -> Result<BranchInfo> {
         // and measured against the local default branch (which a fetch never
         // moves) its 4 merged commits read as "Publish ↑4": unpublished work,
         // on a worktree the user was about to clean up.
-        if let Ok(count) =
-            git(worktree, &["rev-list", "--count", "HEAD", "--not", base, "--remotes=origin"])
-        {
-            ahead = count.trim().parse().unwrap_or(0);
-        }
+        let unpublished = git(worktree, &["rev-list", "HEAD", "--not", base, "--remotes=origin"])
+            .unwrap_or_default();
+        ahead = unpublished.lines().count() as u32;
         if ahead > 0 && upstream_gone(worktree, &branch) && merged_on_origin(worktree) {
             ahead = 0;
         }
@@ -1166,15 +1165,14 @@ pub fn branch_info(worktree: &Path) -> Result<BranchInfo> {
         // commit cherry-picked onto a main that had moved ahead is on main under
         // a new hash, and this went on reading "1 ahead" while `git cherry` marked
         // the commit as upstream (AGE-271). Keep only the unpublished commits
-        // whose change main does not have yet.
+        // whose change main does not have yet. A probe that fails leaves the
+        // count by hash standing.
         if let Some(d) = default.filter(|_| ahead > 0) {
-            let unlanded = unlanded_commits(worktree, d);
-            let unpublished =
-                git(worktree, &["rev-list", "HEAD", "--not", base, "--remotes=origin"])
-                    .unwrap_or_default();
-            ahead = unpublished.lines().filter(|c| unlanded.contains(*c)).count() as u32;
-            if unlanded.is_empty() {
-                landed_on = Some(d.to_string());
+            if let Some(unlanded) = unlanded_commits(worktree, d) {
+                ahead = unpublished.lines().filter(|c| unlanded.contains(*c)).count() as u32;
+                if unlanded.is_empty() {
+                    landed_on = Some(d.to_string());
+                }
             }
         }
     } else {
@@ -1196,18 +1194,23 @@ pub fn branch_info(worktree: &Path) -> Result<BranchInfo> {
 }
 
 /// The hashes of HEAD's commits whose change `base` does not have yet: the commits
-/// `crate::merge::commits_ahead` counts. Empty when merging HEAD into `base`
-/// would change nothing, which is how a squash merge shows. A failed probe
-/// answers every commit unlanded, the direction that keeps work counted.
-fn unlanded_commits(worktree: &Path, base: &str) -> std::collections::HashSet<String> {
+/// `crate::merge::commits_ahead` counts, by the same rules. Empty only when
+/// merging HEAD into `base` would change nothing, which is how a squash merge
+/// shows; a patch match the content does not confirm (a cherry-pick reverted on
+/// `base`) falls back to the commits by hash. `None` when git fails, and the
+/// caller then keeps its own count: an empty set here would read as "landed".
+fn unlanded_commits(worktree: &Path, base: &str) -> Option<std::collections::HashSet<String>> {
     if crate::merge::adds_nothing(worktree, "HEAD", base) {
-        return Default::default();
+        return Some(Default::default());
     }
     let range = format!("{base}...HEAD");
-    let listed = git(worktree, &["rev-list", "--cherry-pick", "--right-only", &range])
-        .or_else(|_| git(worktree, &["rev-list", "HEAD", "--not", base]))
-        .unwrap_or_default();
-    listed.lines().map(str::to_string).collect()
+    let by_change = git(worktree, &["rev-list", "--cherry-pick", "--right-only", &range]).ok()?;
+    let listed = if by_change.trim().is_empty() {
+        git(worktree, &["rev-list", "HEAD", "--not", base]).ok()?
+    } else {
+        by_change
+    };
+    Some(listed.lines().map(str::to_string).collect())
 }
 
 /// Whether `branch` is configured to track a remote branch that no longer

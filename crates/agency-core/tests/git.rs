@@ -763,6 +763,24 @@ fn branch_info_does_not_count_work_cherry_picked_onto_main() {
     assert_eq!((info.ahead, info.landed_on), (1, None));
 }
 
+/// A cherry-pick main later reverted still matches the branch's commit by
+/// patch, but main no longer has the change: the branch is not "on main".
+#[test]
+fn branch_info_counts_work_whose_cherry_pick_main_reverted() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let wt = dir.path().join("wt");
+    run(&repo, &["worktree", "add", "-q", "-b", "agent/c", wt.to_str().unwrap()]);
+    commit_file(&wt, "work.txt", "w", "work");
+    commit_file(&repo, "other.txt", "o", "main moves on");
+    run(&repo, &["cherry-pick", "agent/c"]);
+    run(&repo, &["revert", "--no-edit", "HEAD"]);
+    let info = git::branch_info(&wt).unwrap();
+    assert_eq!((info.ahead, info.landed_on), (1, None));
+}
+
 /// Which tree holds a branch, not just whether one does. A review that cannot
 /// check a PR's branch out has to say where the branch already is, and the
 /// answer is usually the user's own checkout rather than an agent worktree.

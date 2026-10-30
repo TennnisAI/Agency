@@ -97,14 +97,6 @@ export function reconcileFlow(
   return flow && !state.merged ? "end" : "keep";
 }
 
-// How often the card asks git. Each ask is several git processes against the
-// project's checkout, and the card is mounted for every focused worktree agent,
-// merging or not. With no entry the only thing to catch is a merge started outside
-// the app, since the window creates an entry for its own.
-export function mergePollMs(tracked: boolean): number {
-  return tracked ? 3000 : 15000;
-}
-
 export type MergeCardPhase = "hidden" | "conflicted" | "ready";
 
 export function mergeCardPhase(flow: MergeFlow | null, state: MergeState | null): MergeCardPhase {

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import type { MergeState } from "../../api";
 import {
   MergeFlow, clearMergeFlows, endMergeFlow, handoffNote, mergeCardPhase, mergeFlow,
-  mergePollMs, patchMergeFlow, pickTarget, reconcileFlow,
+  patchMergeFlow, pickTarget, reconcileFlow,
 } from "./mergeFlow";
 
 const state = (over: Partial<MergeState> = {}): MergeState => ({
@@ -60,12 +60,6 @@ describe("reconcileFlow", () => {
   it("ends when the merge was aborted elsewhere", () => {
     expect(reconcileFlow(flow, state())).toBe("end");
     expect(reconcileFlow(flow, state({ blockedBy: "agent/other" }))).toBe("end");
-  });
-});
-
-describe("mergePollMs", () => {
-  it("asks less often when no merge is being tracked", () => {
-    expect(mergePollMs(false)).toBeGreaterThan(mergePollMs(true));
   });
 });
 

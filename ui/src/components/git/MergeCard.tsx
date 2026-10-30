@@ -6,8 +6,7 @@ import { useRuns } from "../../store/runs";
 import ConfirmDialog from "../ConfirmDialog";
 import PillSelect from "../PillSelect";
 import {
-  endMergeFlow, handoffNote, mergeCardPhase, mergeFlow, mergePollMs, patchMergeFlow, reconcileFlow,
-  useMergeFlows,
+  endMergeFlow, handoffNote, mergeCardPhase, mergeFlow, patchMergeFlow, reconcileFlow, useMergeFlows,
 } from "./mergeFlow";
 import { useMergeHandoff } from "./useMergeHandoff";
 
@@ -50,7 +49,7 @@ export default function MergeCard({
   // to learn of a resolution is to look. A failed read keeps the last answer: a
   // blip here (the index locked while the agent commits, say) clears itself on
   // the next tick. Asked again the moment an entry appears or goes, so a merge
-  // the window just started shows here without waiting out the slower pace.
+  // the window just started shows here without waiting for the next tick.
   const tracked = !!flow;
   useEffect(() => {
     let live = true;
@@ -71,7 +70,7 @@ export default function MergeCard({
         .catch(() => {});
     };
     poll();
-    const timer = window.setInterval(poll, mergePollMs(tracked));
+    const timer = window.setInterval(poll, 3000);
     return () => { live = false; window.clearInterval(timer); };
   }, [run.id, tracked]);
 

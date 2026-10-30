@@ -43,6 +43,21 @@ export function saveFocusTab(
   }
 }
 
+// The per-project memory of the focused run after a focus change. A run is
+// remembered against its project and a null forgets that project's alone, since
+// the others are still waiting to be come back to (AGE-276). With no project
+// selected there is nothing to file it under.
+export function nextRunMemory(
+  memory: Record<string, string>,
+  projectId: string | null,
+  runId: string | null,
+): Record<string, string> {
+  if (!projectId) return memory;
+  if (runId) return { ...memory, [projectId]: runId };
+  const { [projectId]: _forgotten, ...rest } = memory;
+  return rest;
+}
+
 // The tab to land on when the remembered one cannot be drawn. Normally the
 // primary agent; once that tab has been closed (AGE-184) the run is carried by
 // its extra tabs, so it is the leftmost of those. With none, the primary

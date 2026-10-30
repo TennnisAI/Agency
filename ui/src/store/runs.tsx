@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { CloneProgress, RunInfo, createRun, createTerminal as createTerminalApi, getSettings, listRuns, projectTarget, rememberedModel, runScriptsLive } from "../api";
 import { launchModel } from "../lib/launchModel";
 import { loadFold, saveFold } from "../hooks/usePaneWidth";
+import { nextRunMemory } from "../lib/focusTab";
 import { Tab, openingTab } from "../lib/projectTab";
 import { pinnedFirst } from "../lib/runstate";
 import { toastError } from "../lib/toast";
@@ -40,6 +41,13 @@ interface RunStore {
   setView: (v: View) => void;
   focusedRunId: string | null;
   setFocusedRun: (id: string | null) => void;
+  // The run last focused in a project, kept through a visit elsewhere so the
+  // agents side panel can come back to it (AGE-276). Forgotten when something
+  // clears the focus on purpose, which leaving a project does not count as.
+  rememberedRun: (projectId: string) => string | null;
+  // Open a run just created, unless its project has been left while it was being
+  // created: then it is only remembered there. True when it was opened.
+  focusNewRun: (run: RunInfo) => boolean;
   // The run whose working tree the app is actually in: source control, the
   // status bar's branch and the Files tab follow this, not `focusedRunId`.
   // The grid selects nothing — every tile is an equal there — so it goes null
@@ -111,7 +119,7 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
   const [projectRunLive, setProjectRunLive] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [view, setView] = useState<View>("grid");
-  const [focusedRunId, setFocusedRun] = useState<string | null>(null);
+  const [focusedRunId, setFocusedRunState] = useState<string | null>(null);
   const [onScreenRunId, setOnScreenRun] = useState<string | null>(null);
   const [tab, setTabState] = useState<Tab>("agents");
   const [approveRunId, setApproveRun] = useState<string | null>(null);
@@ -137,6 +145,9 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
   // restores where you left off. A ref (not state) because it only needs to be
   // read on project switch — the visible `tab` state drives rendering.
   const tabByProject = useRef<Record<string, Tab>>({});
+  // The same for the focused run, for a visit elsewhere and not a restart, so it
+  // is not persisted.
+  const runByProject = useRef<Record<string, string>>({});
 
   const setSourcePanelOpen = useCallback((open: boolean) => {
     setSourcePanelOpenState(open);
@@ -146,6 +157,31 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
       // ignore quota / security errors
     }
   }, []);
+
+  // A null here is a decision that nothing is focused (the run was removed, a
+  // race went to the grid), so the memory goes with it: the removed run is still
+  // in `runs` until the refresh that follows, long enough for the panel to put
+  // it back. setSelectedProject clears the focus without coming through here.
+  const setFocusedRun = useCallback((id: string | null) => {
+    setFocusedRunState(id);
+    runByProject.current = nextRunMemory(runByProject.current, projectRef.current, id);
+  }, []);
+
+  const rememberedRun = useCallback((projectId: string) => runByProject.current[projectId] ?? null, []);
+
+  // Creating a worktree is the slowest thing a spawn does, and a project can be
+  // left while it runs. Focusing the new run regardless put the project just
+  // entered into a focus view of a run it does not have, filed that run as its
+  // memory, and left the project it belongs to remembering an older one.
+  const focusNewRun = useCallback((run: RunInfo) => {
+    if (projectRef.current !== run.projectId) {
+      runByProject.current = nextRunMemory(runByProject.current, run.projectId, run.id);
+      return false;
+    }
+    setFocusedRun(run.id);
+    setView("focus");
+    return true;
+  }, [setFocusedRun]);
 
   const setTab = useCallback((t: Tab) => {
     setTabState(t);
@@ -218,13 +254,12 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
       });
       if (!run) return;
       await refreshRuns();
-      setFocusedRun(run.id);
-      setView("focus");
+      focusNewRun(run);
     } finally {
       setSpawnCount((c) => c - 1);
       setSpawnProgress(null);
     }
-  }, [refreshRuns]);
+  }, [refreshRuns, focusNewRun]);
 
   const createTerminal = useCallback(async () => {
     const pid = projectRef.current;
@@ -237,12 +272,11 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
       });
       if (!run) return;
       await refreshRuns();
-      setFocusedRun(run.id);
-      setView("focus");
+      focusNewRun(run);
     } finally {
       setSpawnCount((c) => c - 1);
     }
-  }, [refreshRuns]);
+  }, [refreshRuns, focusNewRun]);
 
   function setSelectedProject(id: string | null, kind?: string | null) {
     setSelectedProjectId(id);
@@ -252,7 +286,7 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
     // the one being left, whose remembered tab would otherwise be overwritten.
     projectRef.current = id;
     setView("grid");
-    setFocusedRun(null);
+    setFocusedRunState(null);
     // The dot belongs to the project we just left; the next tick sets this
     // project's own.
     setProjectRunLive(false);
@@ -279,7 +313,7 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <Ctx.Provider
-      value={{ runs, projectRunLive, selectedProjectId, setSelectedProject, view, setView, focusedRunId, setFocusedRun, selectedRunId, sourcePanelOpen, setSourcePanelOpen, onScreenRunId, setOnScreenRun, refreshRuns, applyPinRanks, tab, setTab, createAgent, createTerminal, spawning: spawnCount > 0, spawnProgress, approveRunId, setApproveRun, pendingSessionId, setPendingSession, shownTab, setShownTab, agentViewRunId, requestAgentView }}
+      value={{ runs, projectRunLive, selectedProjectId, setSelectedProject, view, setView, focusedRunId, setFocusedRun, rememberedRun, focusNewRun, selectedRunId, sourcePanelOpen, setSourcePanelOpen, onScreenRunId, setOnScreenRun, refreshRuns, applyPinRanks, tab, setTab, createAgent, createTerminal, spawning: spawnCount > 0, spawnProgress, approveRunId, setApproveRun, pendingSessionId, setPendingSession, shownTab, setShownTab, agentViewRunId, requestAgentView }}
     >
       {children}
     </Ctx.Provider>

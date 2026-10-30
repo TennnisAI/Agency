@@ -215,3 +215,30 @@ export function sidePanelTab(run: RunInfo, panel: string | null, now: number = D
   const tabs = runTabs(run, now);
   return tabs.find((t) => t.panel === panel) ?? tabs[0] ?? null;
 }
+
+// The run the agents side panel should go back to: the one the project last had
+// focused, once nothing else is and it is really in the list. Switching projects
+// clears the focus, so the panel came back to "Pick an agent…" after every visit
+// elsewhere (AGE-276). The list check matters twice over: `runs` still holds the
+// project just left until the next refresh, and the run may have been archived
+// while we were away.
+//
+// Not when the session the panel would attach is gone. Mounting the terminal
+// respawns a gone session (ensure_run_active), and with no conversation to resume
+// that is a fresh start on the run's prompt: an agent that had exited while we
+// were away would start its task over because a panel was left open. It stays in
+// the picker, where bringing it back is a choice. `panelOf` is the tab the panel
+// would show for a run, the same one it hands sidePanelTab.
+export function restorableRun(
+  remembered: string | null,
+  runs: RunInfo[],
+  focusedRunId: string | null,
+  panelOf: (runId: string) => string | null,
+): string | null {
+  if (focusedRunId || !remembered) return null;
+  const run = runs.find((r) => r.id === remembered);
+  if (!run) return null;
+  const session = sidePanelTab(run, panelOf(run.id))?.session;
+  const status = session === run.id ? run.status : run.sessions.find((s) => s.id === session)?.status;
+  return status?.state === "gone" ? null : run.id;
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agentViewTab, loadFocusTab, saveFocusTab, resolveFocusTab, PRIMARY_TAB, RUN_TAB, LOG_TAB } from "./focusTab";
+import { agentViewTab, loadFocusTab, nextRunMemory, saveFocusTab, resolveFocusTab, PRIMARY_TAB, RUN_TAB, LOG_TAB } from "./focusTab";
 
 function makeStorage(): Pick<Storage, "getItem" | "setItem"> {
   const map = new Map<string, string>();
@@ -119,5 +119,26 @@ describe("agentViewTab", () => {
     expect(agentViewTab("run-1--2", PRIMARY_TAB)).toBe("run-1--2");
     expect(agentViewTab(PRIMARY_TAB, "run-1--2")).toBe(PRIMARY_TAB);
     expect(agentViewTab(LOG_TAB, PRIMARY_TAB)).toBe(LOG_TAB);
+  });
+});
+
+describe("nextRunMemory", () => {
+  it("files a focused run under its project, replacing the last one", () => {
+    expect(nextRunMemory({}, "p1", "a")).toEqual({ p1: "a" });
+    expect(nextRunMemory({ p1: "a" }, "p1", "b")).toEqual({ p1: "b" });
+  });
+
+  it("forgets only that project's run on a null", () => {
+    expect(nextRunMemory({ p1: "a", p2: "b" }, "p1", null)).toEqual({ p2: "b" });
+  });
+
+  it("leaves the other projects alone when one remembers a run", () => {
+    expect(nextRunMemory({ p1: "a" }, "p2", "b")).toEqual({ p1: "a", p2: "b" });
+  });
+
+  it("has nowhere to file a run with no project selected", () => {
+    const memory = { p1: "a" };
+    expect(nextRunMemory(memory, null, "b")).toBe(memory);
+    expect(nextRunMemory(memory, null, null)).toBe(memory);
   });
 });

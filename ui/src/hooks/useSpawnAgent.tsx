@@ -45,7 +45,7 @@ export const gitlessOpts = (opts?: SpawnOpts): SpawnOpts => ({
  * setup dialog fixed the repo, for hosts that cache readiness themselves.
  */
 export function useSpawnAgent(project: Project | null, onRepoResolved?: () => void) {
-  const { createAgent, refreshRuns, setFocusedRun, setView, setTab } = useRuns();
+  const { createAgent, refreshRuns, setFocusedRun, setView, setTab, focusNewRun } = useRuns();
   const [error, setError] = useState("");
   const [pending, setPending] = useState<Pending | null>(null);
   const [missingAgent, setMissingAgent] = useState<string | null>(null);
@@ -56,9 +56,7 @@ export function useSpawnAgent(project: Project | null, onRepoResolved?: () => vo
     const model = await launchModel(opts?.model, () => rememberedModel(agentId));
     const run = await startIssueRun(issue.id, agentId, model, opts?.base, opts?.mergeTarget, opts?.customAgent);
     await refreshRuns();
-    setFocusedRun(run.id);
-    setView("focus");
-    setTab("agents");
+    if (focusNewRun(run)) setTab("agents");
   }
 
   async function spawn(agentId: string, opts?: SpawnOpts, issue?: Issue) {

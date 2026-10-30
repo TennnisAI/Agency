@@ -289,7 +289,7 @@ pub fn emit_for_agent(agent: &str, ws: &Workspace) -> Result<bool> {
 
 /// Whether git tracks anything under `rel` in this worktree. A tracked path is
 /// the repo's own; see [`crate::briefing`], which skips on the same test.
-pub(crate) fn tracked(worktree: &Path, rel: &str) -> bool {
+fn tracked(worktree: &Path, rel: &str) -> bool {
     std::process::Command::new("git")
         .args(["ls-files", "--", rel])
         .current_dir(worktree)

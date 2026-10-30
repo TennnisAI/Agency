@@ -68,7 +68,7 @@ export default function CustomAgentsSection({ projectId }: { projectId: string |
       </p>
       <div className="settings-card-list">
         {data.agents.map((a) => (
-          <div key={a.id} className="settings-profile-card">
+          <div key={a.selection} className="settings-profile-card">
             <div className="settings-profile-head">
               <span className="settings-profile-name">{a.name}</span>
               <span className="settings-scope-tag" data-scope={a.scope === "project" ? "project" : "global"}>

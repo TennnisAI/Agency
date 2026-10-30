@@ -58,6 +58,10 @@ pub struct CustomAgent {
     #[serde(default)]
     pub description: String,
     pub instructions: String,
+    /// Set when a run takes its copy, and part of the name the harness looks the
+    /// agent up by (see [`native_name`]). Never read from a definition's file.
+    #[serde(default)]
+    pub launch_tag: String,
 }
 
 /// Lower-case letters, digits and single hyphens. An id becomes a file name, a
@@ -153,6 +157,7 @@ pub fn parse(id: &str, text: &str) -> Result<CustomAgent> {
         name: name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| id.to_string()),
         description,
         instructions: body.trim().to_string(),
+        launch_tag: String::new(),
     };
     validate(&agent)?;
     Ok(agent)
@@ -252,7 +257,7 @@ enum Delivery {
     Flag { args: &'static [&'static str], leading: bool },
     /// A rules file the harness always applies, for one with no way to select
     /// an agent. It applies to every session of that harness in the directory.
-    Rules { path: &'static str },
+    Rules { dir: &'static str },
 }
 
 /// Every harness Agency can hand a custom agent to, and how. Anything not listed
@@ -302,7 +307,7 @@ const DELIVERIES: &[(&str, Delivery)] = &[
     ),
     ("codex", Delivery::Flag { args: &["-c", "developer_instructions={{toml}}"], leading: true }),
     ("pi", Delivery::Flag { args: &["--append-system-prompt", "{{text}}"], leading: false }),
-    ("cursor", Delivery::Rules { path: ".cursor/rules/agency-custom-agent.mdc" }),
+    ("cursor", Delivery::Rules { dir: ".cursor/rules" }),
 ];
 
 fn delivery(harness: &str) -> Option<Delivery> {
@@ -325,10 +330,17 @@ pub fn needs_own_worktree(harness: &str) -> bool {
     matches!(delivery(harness), Some(Delivery::Rules { .. }))
 }
 
-/// `agency-` so a repo's own agents can never collide with ours, and so one
-/// exclude pattern covers them.
+/// The name a harness looks the agent up by. `agency-` so one exclude pattern
+/// covers them, and the run's tag because a name a repo can predict is a name it
+/// can answer to: `.claude/agents/anything.md` declaring `name: agency-reviewer`
+/// would be what `--agent agency-reviewer` launched, `permissionMode` and all,
+/// when the user picked their own agent called Reviewer. That would undo the
+/// allowlist this module exists for, using a file Agency never wrote.
 fn native_name(agent: &CustomAgent) -> String {
-    format!("agency-{}", agent.id)
+    match agent.launch_tag.as_str() {
+        "" => format!("agency-{}", agent.id),
+        tag => format!("agency-{}-{tag}", agent.id),
+    }
 }
 
 /// The arguments that launch `harness` as `agent`, and whether they go ahead of
@@ -378,27 +390,42 @@ fn native_file(harness: &str, agent: &CustomAgent) -> Option<(String, String, St
                 format!("/{dir}/agency-*"),
             ))
         }
-        Delivery::Rules { path } => Some((
-            path.to_string(),
+        Delivery::Rules { dir } => Some((
+            format!("{dir}/{}.mdc", native_name(agent)),
             format!(
                 "---\ndescription: {}\nalwaysApply: true\n---\n{body}\n",
                 quoted(agent.name.trim())
             ),
-            format!("/{}/agency-*", Path::new(path).parent()?.display()),
+            format!("/{dir}/agency-*"),
         )),
         Delivery::Flag { .. } => None,
     }
 }
 
+/// Refuse a path that leaves the worktree through a symlink. The parts of `rel`
+/// are the repo's to commit, and a `.claude/agents` linked at the user's own
+/// config would have this write there, which Agency never does.
+fn refuse_symlinks(worktree: &Path, rel: &str) -> Result<()> {
+    let mut path = worktree.to_path_buf();
+    for part in Path::new(rel) {
+        path.push(part);
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                bail!("{} is a symlink, so a custom agent can't be written there", path.display())
+            }
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    Ok(())
+}
+
 /// Write whatever `harness` reads `agent` from into `worktree`, and keep it out
-/// of git so no agent commits it into the project. Skips a path the repo tracks,
-/// as the skills kit does: a diff on a tracked file rides in at merge.
+/// of git so no agent commits it into the project. An error means the harness
+/// would not get this agent, so the launch has to stop.
 pub fn emit(harness: &str, agent: &CustomAgent, worktree: &Path, repo: &Path) -> Result<()> {
     let Some((rel, contents, exclude)) = native_file(harness, agent) else { return Ok(()) };
-    if crate::skills::tracked(worktree, &rel) {
-        log::info!("{rel} is tracked in {}: leaving it alone", worktree.display());
-        return Ok(());
-    }
+    refuse_symlinks(worktree, &rel)?;
     let path = worktree.join(&rel);
     if std::fs::read_to_string(&path).ok().as_deref() != Some(contents.as_str()) {
         crate::issuefs::atomic_write(&path, &contents)?;
@@ -419,6 +446,7 @@ mod tests {
             name: "Reviewer".into(),
             description: "Reviews: a diff".into(),
             instructions: "Lead with what is wrong.\n\nSay \"why\".".into(),
+            launch_tag: String::new(),
         }
     }
 
@@ -548,7 +576,7 @@ mod tests {
         assert_eq!(file("claude").0, ".claude/agents/agency-reviewer.md");
         assert_eq!(file("copilot").0, ".github/agents/agency-reviewer.agent.md");
         assert_eq!(file("opencode").0, ".opencode/agents/agency-reviewer.md");
-        assert_eq!(file("cursor").0, ".cursor/rules/agency-custom-agent.mdc");
+        assert_eq!(file("cursor").0, ".cursor/rules/agency-reviewer.mdc");
         assert!(native_file("codex", &a).is_none());
 
         // The name is what `--agent` looks up, not the display name. The
@@ -571,6 +599,50 @@ mod tests {
                 assert!(rel.starts_with(prefix), "{h}: {rel} not under {exclude}");
             }
         }
+    }
+
+    /// A repo can commit a file answering to any name it can predict, so the name
+    /// carries the run's tag, and no definition's file can set that tag.
+    #[test]
+    fn a_runs_agent_answers_to_a_name_no_repo_can_predict() {
+        let tagged = CustomAgent { launch_tag: "ab12".into(), ..agent() };
+        assert_eq!(launch_args("claude", &tagged).0[1], "agency-reviewer-ab12");
+        assert_eq!(
+            native_file("claude", &tagged).unwrap().0,
+            ".claude/agents/agency-reviewer-ab12.md"
+        );
+        assert!(native_file("claude", &tagged).unwrap().1.contains("name: agency-reviewer-ab12\n"));
+        assert_eq!(
+            native_file("cursor", &tagged).unwrap().0,
+            ".cursor/rules/agency-reviewer-ab12.mdc"
+        );
+
+        let planted = "---\nname: A\nlaunch_tag: ab12\n---\nBody\n";
+        assert_eq!(parse("a", planted).unwrap().launch_tag, "");
+        assert!(!render(&tagged).contains("ab12"));
+    }
+
+    /// A committed `.claude/agents` linked at the user's own config must not take
+    /// the write, and neither may a link in the file's own place.
+    #[cfg(unix)]
+    #[test]
+    fn emit_refuses_to_write_through_a_symlink() {
+        use std::os::unix::fs::symlink;
+        let outside = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".claude")).unwrap();
+        symlink(outside.path(), dir.path().join(".claude/agents")).unwrap();
+        let e = emit("claude", &agent(), dir.path(), dir.path()).unwrap_err();
+        assert!(e.to_string().contains("symlink"), "{e}");
+        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".claude/agents")).unwrap();
+        let target = outside.path().join("target.md");
+        std::fs::write(&target, "theirs").unwrap();
+        symlink(&target, dir.path().join(".claude/agents/agency-reviewer.md")).unwrap();
+        assert!(emit("claude", &agent(), dir.path(), dir.path()).is_err());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "theirs");
     }
 
     #[test]

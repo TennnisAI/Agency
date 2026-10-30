@@ -7,7 +7,7 @@ import { effectiveMergeTarget } from "../lib/branchTargets";
 import { useDismissOnResize } from "../hooks/useDismissOnResize";
 import { useMenuAnchor } from "../hooks/useMenuAnchor";
 import { useAgentModels } from "../hooks/useAgentModels";
-import { useCustomAgents } from "../hooks/useCustomAgents";
+import { customAgentLabel, useCustomAgents } from "../hooks/useCustomAgents";
 import BranchSelect from "./BranchSelect";
 import ModelSelect from "./ModelSelect";
 import PillSelect from "./PillSelect";
@@ -233,7 +233,7 @@ export default function AgentAddMenu({
                     title="Custom agent"
                     options={[
                       { value: "", label: "No custom agent" },
-                      ...customAgents.map((c) => ({ value: c.id, label: c.name })),
+                      ...customAgents.map((c) => ({ value: c.selection, label: customAgentLabel(c) })),
                     ]}
                     onChange={setCustomAgent}
                   />

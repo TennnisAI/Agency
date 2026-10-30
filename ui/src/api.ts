@@ -1238,6 +1238,9 @@ export interface CustomAgentInfo {
   description: string;
   instructions: string;
   scope: "user" | "project";
+  // What a spawn sends to pick this one: `scope:id`. The scope is part of the
+  // pick, so a project's agent can't stand in for yours of the same name.
+  selection: string;
 }
 export interface CustomAgents {
   agents: CustomAgentInfo[];

@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
-import { CustomAgents, listCustomAgents } from "../api";
+import { CustomAgentInfo, CustomAgents, listCustomAgents } from "../api";
+
+/**
+ * How a spawn picker names an agent. A project's agents arrive through git, so
+ * the one that came from the repo says so, and it can't pass for one of yours
+ * with the same name.
+ */
+export const customAgentLabel = (a: CustomAgentInfo) =>
+  a.scope === "project" ? `${a.name} (this project)` : a.name;
 
 /**
  * The custom agents a spawn in this project can pick, and the harnesses that can

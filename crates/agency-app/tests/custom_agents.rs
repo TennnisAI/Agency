@@ -51,6 +51,14 @@ fn argv_of(state: &AppState, id: &str) -> String {
     panic!("the stub never printed its arguments");
 }
 
+/// The one file in `dir`, as (name, contents).
+fn only_file_in(dir: &Path) -> (String, String) {
+    let mut files: Vec<_> = std::fs::read_dir(dir).unwrap().flatten().collect();
+    assert_eq!(files.len(), 1, "{}", dir.display());
+    let file = files.pop().unwrap();
+    (file.file_name().into_string().unwrap(), std::fs::read_to_string(file.path()).unwrap())
+}
+
 fn worktree_of(repo: &Path, id: &str) -> std::path::PathBuf {
     repo.join(".agency/worktrees").join(id)
 }
@@ -84,7 +92,7 @@ fn a_run_starts_as_the_agent_it_was_given_and_keeps_it() {
             "review it",
             "claude",
             None,
-            Some("code-reviewer"),
+            Some("project:code-reviewer"),
             "HEAD",
             None,
             true,
@@ -93,12 +101,14 @@ fn a_run_starts_as_the_agent_it_was_given_and_keeps_it() {
         .unwrap();
     assert_eq!(info.custom_agent.as_deref(), Some("Code Reviewer"));
 
-    let argv = argv_of(&state, &info.id);
-    assert!(argv.contains("--agent agency-code-reviewer"), "{argv}");
-
+    // The harness looks it up by a name with a tag in it, which no file already
+    // in the repo could have been written to answer to.
     let worktree = worktree_of(&repo, &info.id);
-    let written =
-        std::fs::read_to_string(worktree.join(".claude/agents/agency-code-reviewer.md")).unwrap();
+    let (name, written) = only_file_in(&worktree.join(".claude/agents"));
+    let name = name.strip_suffix(".md").unwrap().to_string();
+    assert!(name.starts_with("agency-code-reviewer-") && name.len() > 21, "{name}");
+    let argv = argv_of(&state, &info.id);
+    assert!(argv.contains(&format!("--agent {name}")), "{argv}");
     assert!(written.contains("Lead with what is wrong."), "{written}");
 
     // Not offered to git, or it lands in the project at merge.
@@ -122,7 +132,7 @@ fn a_run_starts_as_the_agent_it_was_given_and_keeps_it() {
 }
 
 #[test]
-fn a_project_agent_shadows_a_user_one_of_the_same_id() {
+fn a_project_agent_never_stands_in_for_a_user_one_of_the_same_id() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
     init_repo(&repo);
@@ -136,11 +146,29 @@ fn a_project_agent_shadows_a_user_one_of_the_same_id() {
         .save_custom_agent("project", Some(&project.id), None, "Reviewer", "", "From the project")
         .unwrap();
 
+    // Both offered, each its own pick, so a `git pull` adding the project's one
+    // cannot change what picking the user's one starts.
     let listed = state.list_custom_agents(Some(&project.id)).unwrap();
-    assert_eq!(listed.agents.len(), 1);
-    assert_eq!(listed.agents[0].scope, "project");
-    assert_eq!(listed.agents[0].instructions, "From the project");
+    let selections: Vec<_> = listed.agents.iter().map(|a| a.selection.as_str()).collect();
+    assert_eq!(selections, ["project:reviewer", "user:reviewer"]);
     assert!(listed.harnesses.iter().any(|h| h == "claude"));
+    stub(&state, "claude");
+    let picked = state
+        .create_run_as(
+            &project.id,
+            "go",
+            "claude",
+            None,
+            Some("user:reviewer"),
+            "HEAD",
+            None,
+            true,
+            |_| {},
+        )
+        .unwrap();
+    let (_, written) = only_file_in(&worktree_of(&repo, &picked.id).join(".claude/agents"));
+    assert!(written.contains("From the user"), "{written}");
+    let _ = state.discard_run(&picked.id);
 
     // Creating over an existing one is refused; editing it by id is not.
     let dup = state.save_custom_agent("user", None, None, "Reviewer", "", "Again");
@@ -179,15 +207,34 @@ fn a_spawn_that_cannot_honour_the_agent_refuses() {
         )
     };
 
-    let e = start("claude", "gone", true).unwrap_err().to_string();
+    let e = start("claude", "user:gone", true).unwrap_err().to_string();
     assert!(e.contains("no custom agent"), "{e}");
-    let e = start("claude", "../../etc/passwd", true).unwrap_err().to_string();
+    let e = start("claude", "user:../../etc/passwd", true).unwrap_err().to_string();
     assert!(e.contains("not a valid agent id"), "{e}");
-    let e = start("crush", "reviewer", true).unwrap_err().to_string();
+    let e = start("claude", "reviewer", true).unwrap_err().to_string();
+    assert!(e.contains("not a custom agent selection"), "{e}");
+    let e = start("crush", "user:reviewer", true).unwrap_err().to_string();
     assert!(e.contains("no way to be given a custom agent"), "{e}");
     // A rules file in the checkout would apply to everything else running there.
-    let e = start("cursor", "reviewer", false).unwrap_err().to_string();
+    let e = start("cursor", "user:reviewer", false).unwrap_err().to_string();
     assert!(e.contains("own worktree"), "{e}");
+
+    // A repo that links the agents directory out of the worktree: refused, the
+    // user's folder untouched, and the worktree it was refused in taken away.
+    #[cfg(unix)]
+    {
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::fs::create_dir(repo.join(".claude")).unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), repo.join(".claude/agents")).unwrap();
+        let git = |args: &[&str]| {
+            assert!(Command::new("git").args(args).current_dir(&repo).status().unwrap().success());
+        };
+        git(&["add", "-f", ".claude/agents"]);
+        git(&["commit", "-q", "-m", "link"]);
+        let e = format!("{:#}", start("claude", "user:reviewer", true).unwrap_err());
+        assert!(e.contains("symlink"), "{e}");
+        assert_eq!(std::fs::read_dir(elsewhere.path()).unwrap().count(), 0);
+    }
 
     assert!(state.list_runs(&project.id).unwrap().is_empty());
     let worktrees = repo.join(".agency/worktrees");
@@ -195,9 +242,8 @@ fn a_spawn_that_cannot_honour_the_agent_refuses() {
     assert_eq!(left, 0, "a refused spawn left a worktree behind");
 
     // In its own worktree cursor gets the always-on rule, and no flag.
-    let info = start("cursor", "reviewer", true).unwrap();
-    let rule = worktree_of(&repo, &info.id).join(".cursor/rules/agency-custom-agent.mdc");
-    let rule = std::fs::read_to_string(rule).unwrap();
+    let info = start("cursor", "user:reviewer", true).unwrap();
+    let (_, rule) = only_file_in(&worktree_of(&repo, &info.id).join(".cursor/rules"));
     assert!(rule.contains("alwaysApply: true") && rule.contains("Instructions"), "{rule}");
     assert!(!argv_of(&state, &info.id).contains("--agent"));
     let _ = state.discard_run(&info.id);

@@ -898,11 +898,14 @@ pub struct CustomAgentInfo {
     pub description: String,
     pub instructions: String,
     pub scope: String,
+    /// What a spawn sends to pick this one: `scope:id`.
+    pub selection: String,
 }
 
 impl CustomAgentInfo {
     fn new(agent: agency_core::custom_agents::CustomAgent, scope: &str) -> Self {
         Self {
+            selection: format!("{scope}:{}", agent.id),
             id: agent.id,
             name: agent.name,
             description: agent.description,
@@ -935,7 +938,7 @@ pub struct RaceAttempt {
     /// None = whatever that agent defaults to.
     #[serde(default)]
     pub model: Option<String>,
-    /// The custom agent this attempt runs as, by id. None = the plain harness.
+    /// The custom agent this attempt runs as, as `scope:id`. None = the plain harness.
     #[serde(default)]
     pub custom_agent: Option<String>,
 }
@@ -3668,8 +3671,8 @@ impl AppState {
     }
 
     /// The custom agents a spawn in this project can pick, and which harnesses
-    /// can be given one. A project's agent shadows a user one of the same id, so
-    /// the id a spawn sends means one thing.
+    /// can be given one. Both scopes are listed even under one id: each is its
+    /// own pick (see [`Self::custom_agent`]).
     pub fn list_custom_agents(&self, project_id: Option<&str>) -> Result<CustomAgents> {
         use agency_core::custom_agents as ca;
         let mut agents: Vec<CustomAgentInfo> = Vec::new();
@@ -3677,11 +3680,9 @@ impl AppState {
             let dir = self.project_repo(id)?.join(ca::PROJECT_DIR);
             agents.extend(ca::list(&dir).into_iter().map(|a| CustomAgentInfo::new(a, "project")));
         }
-        for agent in ca::list(&self.user_agents_dir()) {
-            if !agents.iter().any(|a| a.id == agent.id) {
-                agents.push(CustomAgentInfo::new(agent, "user"));
-            }
-        }
+        agents.extend(
+            ca::list(&self.user_agents_dir()).into_iter().map(|a| CustomAgentInfo::new(a, "user")),
+        );
         agents.sort_by_key(|a| a.name.to_lowercase());
         let harnesses = ca::supported_harnesses().into_iter().map(String::from).collect();
         Ok(CustomAgents { agents, harnesses })
@@ -3719,6 +3720,7 @@ impl AppState {
             name: name.trim().to_string(),
             description: description.trim().to_string(),
             instructions: instructions.trim().to_string(),
+            launch_tag: String::new(),
         };
         ca::save(&dir, &agent)?;
         Ok(CustomAgentInfo::new(agent, scope))
@@ -3733,40 +3735,43 @@ impl AppState {
         agency_core::custom_agents::delete(&self.custom_agents_dir(scope, project_id)?, id)
     }
 
-    /// Read the agent a spawn asked for, in the order [`Self::list_custom_agents`]
-    /// shows them. An id that no longer resolves fails the spawn: starting the
-    /// plain harness instead would look exactly like starting the agent asked for.
+    /// Read the agent a spawn asked for, by its `scope:id` selection, as the copy
+    /// the run will keep. The scope is part of the pick and nothing falls back to
+    /// the other one: with a project's agent shadowing a user's of the same id, a
+    /// `git pull` could change whose instructions "Reviewer" meant between the
+    /// menu and the launch. A pick that no longer resolves fails the spawn, since
+    /// starting the plain harness would look exactly like starting the agent.
     fn custom_agent(
         &self,
         project_id: &str,
-        id: Option<&str>,
+        selection: Option<&str>,
     ) -> Result<Option<agency_core::custom_agents::CustomAgent>> {
         use agency_core::custom_agents as ca;
-        let Some(id) = id else {
+        let Some(selection) = selection else {
             return Ok(None);
         };
-        let project = self.project_repo(project_id)?.join(ca::PROJECT_DIR);
-        match ca::load(&project, id)? {
-            Some(agent) => Ok(Some(agent)),
-            None => ca::load(&self.user_agents_dir(), id)?
-                .map(Some)
-                .ok_or_else(|| anyhow!("there is no custom agent called '{id}' any more")),
-        }
+        let (scope, id) = selection
+            .split_once(':')
+            .ok_or_else(|| anyhow!("'{selection}' is not a custom agent selection"))?;
+        let dir = self.custom_agents_dir(scope, Some(project_id))?;
+        let mut agent = ca::load(&dir, id)?
+            .ok_or_else(|| anyhow!("there is no custom agent called '{id}' any more"))?;
+        agent.launch_tag = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
+        Ok(Some(agent))
     }
 
     /// Put what `harness` reads `custom` from into the worktree. On every launch,
-    /// since an agent may have edited or deleted it. Best-effort like the skills
-    /// kit: a harness told `--agent` fails loudly in its own pane without it.
+    /// since an agent may have edited or deleted it. An error stops the launch: a
+    /// harness that never got the file might start as a plain agent.
     fn emit_custom_agent(
         &self,
         harness: &str,
         custom: &agency_core::custom_agents::CustomAgent,
         worktree: &Path,
         repo: &Path,
-    ) {
-        if let Err(e) = agency_core::custom_agents::emit(harness, custom, worktree, repo) {
-            log::warn!("writing agent {} into {}: {e:#}", custom.id, worktree.display());
-        }
+    ) -> Result<()> {
+        agency_core::custom_agents::emit(harness, custom, worktree, repo)
+            .with_context(|| format!("starting {} as {}", harness, custom.name))
     }
 
     pub fn register_profile(&self, profile: AgentProfile) -> Result<()> {
@@ -4971,8 +4976,15 @@ impl AppState {
         // Outside the worktree test above, unlike MCP: a file under our own
         // name is inert until a launch selects it, so it dirties nothing even in
         // the user's checkout, and a harness told `--agent` needs it to be there.
+        // The run row does not exist yet, so a refusal takes the worktree with it.
         if let Some(custom) = &spec.custom_agent {
-            self.emit_custom_agent(spec.agent, custom, &workspace.path, &repo);
+            if let Err(e) = self.emit_custom_agent(spec.agent, custom, &workspace.path, &repo) {
+                if spec.worktree {
+                    let cut = spec.existing_branch.is_none().then_some(workspace.branch.as_str());
+                    let _ = manager.remove(&id, cut);
+                }
+                return Err(e);
+            }
         }
 
         // The workspace as the agent is handed it. Taken here, before the
@@ -10569,7 +10581,7 @@ impl AppState {
             );
         }
         if let Some(custom) = run.custom_agent.as_ref().filter(|_| agent == run.agent) {
-            self.emit_custom_agent(agent, custom, &worktree, &repo);
+            self.emit_custom_agent(agent, custom, &worktree, &repo)?;
         }
         // Same env recipe as the run itself, ports included: extra sessions are
         // collaborators in the same workspace, not new workspaces. The
@@ -10925,7 +10937,7 @@ impl AppState {
             with_web_ui(&profile, gui_port_for(&config, run.port_base, &run.agent), &self.data_dir)
         };
         if let Some(custom) = &run.custom_agent {
-            self.emit_custom_agent(&run.agent, custom, &worktree, &repo);
+            self.emit_custom_agent(&run.agent, custom, &worktree, &repo)?;
         }
         let env = self.agent_env(&mut profile, &worktree, &repo, &run.id, id, run.port_base)?;
         let setup = config.scripts.setup.as_deref();
@@ -11044,7 +11056,7 @@ impl AppState {
             with_web_ui(&profile, gui_port_for(&config, run.port_base, &run.agent), &self.data_dir)
         };
         if let Some(custom) = &run.custom_agent {
-            self.emit_custom_agent(&run.agent, custom, &worktree, &repo);
+            self.emit_custom_agent(&run.agent, custom, &worktree, &repo)?;
         }
         let env = self.agent_env(&mut profile, &worktree, &repo, &run.id, id, run.port_base)?;
         // A rerun is a fresh launch by definition, so it takes the fresh argv
@@ -11112,7 +11124,7 @@ impl AppState {
             )
         };
         if let Some(custom) = &run.custom_agent {
-            self.emit_custom_agent(&run.agent, custom, &worktree, &repo);
+            self.emit_custom_agent(&run.agent, custom, &worktree, &repo)?;
         }
         // Re-emit into the existing worktree on every attempt. A headless
         // attempt is a fresh agent process with no memory of the last one, and
@@ -14449,6 +14461,7 @@ mod tests {
             name: "Reviewer".into(),
             description: String::new(),
             instructions: "Lead with what is wrong.".into(),
+            launch_tag: String::new(),
         };
         let profile = |name: &str| AgentProfile {
             name: name.into(),

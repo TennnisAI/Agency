@@ -21,7 +21,8 @@ You review diffs. Lead with what is wrong, and say why.
 - `.agency/agents/<id>.md` is one project's. The directory stays trackable, so
   commit it to share the agent with your team.
 - `custom-agents/<id>.md` in the app's data directory is available in every
-  project. A project's agent shadows a user one with the same id.
+  project. Both are offered even under one id, and a project's is labelled as
+  such in the picker, so a `git pull` can't change what picking yours starts.
 
 Only `name`, `description` and the body are read. Anything else in the
 frontmatter is dropped, on purpose: a project's agents arrive through `git pull`,
@@ -36,12 +37,16 @@ was probed against which version.
 
 | Harness | Delivery |
 | --- | --- |
-| Claude Code | `.claude/agents/agency-<id>.md`, `--agent` |
-| Copilot | `.github/agents/agency-<id>.agent.md`, `--agent` |
-| OpenCode | `.opencode/agents/agency-<id>.md`, `--agent` |
+| Claude Code | `.claude/agents/agency-<id>-<tag>.md`, `--agent` |
+| Copilot | `.github/agents/agency-<id>-<tag>.agent.md`, `--agent` |
+| OpenCode | `.opencode/agents/agency-<id>-<tag>.md`, `--agent` |
 | Codex | `-c developer_instructions=...` |
 | pi | `--append-system-prompt` |
-| Cursor | `.cursor/rules/agency-custom-agent.mdc`, always applied |
+| Cursor | `.cursor/rules/agency-<id>-<tag>.mdc`, always applied |
+
+`<tag>` is random and set per run. A name a repo could predict is a name a file
+it commits could answer to, and `--agent` would launch that file instead. A path
+that leaves the worktree through a symlink is refused, and the spawn with it.
 
 Generated files are excluded from git. Any other harness refuses at spawn rather
 than starting a plain agent that looks like the one you asked for. So does Cursor

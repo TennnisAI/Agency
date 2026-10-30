@@ -21,7 +21,7 @@ export type SpawnOpts = {
   // last ran on is used (the same shape `worktree` uses for its Settings
   // default).
   model?: string | null;
-  // Custom agent to launch as, by id. Absent is the plain harness: unlike a
+  // Custom agent to launch as, by its `selection`. Absent is the plain harness: unlike a
   // model, one is never carried over from an earlier run without being picked.
   customAgent?: string | null;
 };

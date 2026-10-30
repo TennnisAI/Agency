@@ -6,7 +6,7 @@ import { useRuns } from "../store/runs";
 import { useModalKeys } from "../hooks/useModalKeys";
 import { useBackdropDismiss } from "../hooks/useBackdropDismiss";
 import { useAgentModels } from "../hooks/useAgentModels";
-import { useCustomAgents } from "../hooks/useCustomAgents";
+import { customAgentLabel, useCustomAgents } from "../hooks/useCustomAgents";
 import ModelSelect from "./ModelSelect";
 
 // One row of the race: an agent and the model it runs on. `model` absent (as
@@ -165,7 +165,7 @@ export default function RaceDialog({ onClose, issue, issueLabel }: {
             <select className="settings-input" value={customAgent} onChange={(e) => setCustomAgent(e.target.value)}>
               <option value="">No custom agent</option>
               {customAgents.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
+                <option key={c.selection} value={c.selection}>{customAgentLabel(c)}</option>
               ))}
             </select>
           </label>

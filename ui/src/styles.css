@@ -1937,6 +1937,56 @@ button.diff-path:hover { color: var(--text); text-decoration: underline; }
 .git-section-history { border-top: 1px solid var(--line); }
 .git-section-history.folded { flex-shrink: 0; }
 
+/* ── A merge in progress (AGE-273) ───────────────────────────── */
+/* Above the sections, not one of them: it is about the project's checkout, and
+   they are about the tree this panel shows. Tinted by where the merge stands, so
+   the change from conflicted to ready reads from across the screen. */
+.merge-card {
+  --merge-tone: var(--yellow);
+  flex-shrink: 0; display: flex; flex-direction: column; gap: 8px;
+  margin: 8px 8px 6px; padding: 10px;
+  background: color-mix(in srgb, var(--merge-tone) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--merge-tone) 28%, transparent);
+  border-radius: var(--r-md);
+  transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.merge-card.ready { --merge-tone: var(--green); }
+.merge-card-head { display: flex; align-items: center; gap: 7px; }
+.merge-card-glyph { color: var(--merge-tone); font-size: var(--fs-md); line-height: 1; }
+.merge-card-title { flex: 1; min-width: 0; color: var(--text); font-size: var(--fs-md); font-weight: 600; }
+.merge-card-count {
+  min-width: 18px; padding: 1px 6px; border-radius: var(--r-full); text-align: center;
+  background: color-mix(in srgb, var(--merge-tone) 18%, transparent);
+  color: var(--merge-tone); font-size: var(--fs-xs); font-weight: 600;
+}
+.merge-card-route {
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  color: var(--o1); font-size: var(--fs-xs);
+}
+.merge-card-route code { font-size: inherit; color: var(--sub0); }
+.merge-card-note { margin: 0; color: var(--sub0); font-size: var(--fs-sm); line-height: 1.45; }
+.merge-card-who { color: var(--text); }
+.merge-card-hint { display: block; margin-top: 4px; color: var(--o1); }
+/* Capped so a merge that conflicts in forty files scrolls here rather than
+   pushing Changes off the bottom of the panel. */
+.merge-card-files {
+  margin: 0 -4px; padding: 0; list-style: none;
+  display: flex; flex-direction: column; max-height: 132px; overflow-y: auto;
+}
+.merge-card-file {
+  display: flex; align-items: baseline; gap: 6px; width: 100%; min-width: 0;
+  padding: 3px 4px; border: none; border-radius: var(--r-xs); background: none;
+  font-family: var(--sans); font-size: var(--fs-sm); font-weight: 400; text-align: left; cursor: pointer;
+}
+.merge-card-file:hover:not(:disabled) { background: color-mix(in srgb, var(--merge-tone) 12%, transparent); }
+.merge-card-file.on { background: color-mix(in srgb, var(--merge-tone) 18%, transparent); }
+.merge-card-name { flex-shrink: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.merge-card-dir { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--o1); font-size: var(--fs-xs); }
+.merge-card-error { color: var(--red); font-size: var(--fs-sm); line-height: 1.45; word-break: break-word; }
+.merge-card-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+/* Set apart from the buttons that move the merge forward. */
+.merge-card-abort { margin-left: auto; }
+
 /* ── Workspace checkpoints (AGE-140) ─────────────────────────── */
 /* A short list between Changes and History: capped so a long day of turns
    scrolls inside it instead of squeezing the two sections either side. */

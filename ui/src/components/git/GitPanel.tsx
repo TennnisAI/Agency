@@ -16,6 +16,8 @@ import CheckpointDetail from "./CheckpointDetail";
 import { useRuns } from "../../store/runs";
 import DiffViewer from "./DiffViewer";
 import ConflictView from "./ConflictView";
+import MergeCard from "./MergeCard";
+import { useMergeFlows } from "./mergeFlow";
 import ReviewComments from "./ReviewComments";
 import BranchBar from "./BranchBar";
 import GitSections from "./GitSections";
@@ -32,6 +34,10 @@ export type GitSelection =
   | { kind: "commit"; item: HistoryItem }
   // The diff is from `prev` to `cp`: what changed that turn.
   | { kind: "checkpoint"; cp: Checkpoint; prev: Checkpoint | null }
+  // A conflict from the merge card. Not a `file`: that names a path in this
+  // panel's tree, and a merge is in the project's checkout whichever worktree
+  // the panel is showing.
+  | { kind: "conflict"; projectId: string; path: string; code?: string }
   | null;
 
 type Props = {
@@ -474,9 +480,27 @@ function GitRepoPanel({
       selectedHash={selection?.kind === "commit" ? selection.item.hash : null}
       onSelectCommit={(item) => onSelect({ kind: "commit", item })} />
   );
+  const { runs } = useRuns();
+  const run = runs.find((r) => r.id === taskId);
+  // An agent with a worktree watches its own merge. Everything else in this panel
+  // is the project's checkout, which is where merges happen, so there it shows
+  // whichever run has one open.
+  const mergeFlows = useMergeFlows();
+  const ownMerge = run?.kind === "agent" && run.worktree;
+  const mergeRun = ownMerge
+    ? run
+    : runs.find((r) => r.kind === "agent" && r.worktree && mergeFlows.has(r.id));
+  const mergeCard = mergeRun && (
+    <MergeCard
+      run={mergeRun}
+      own={!!ownMerge}
+      selectedPath={selection?.kind === "conflict" ? selection.path : null}
+      onSelectFile={(sel) => onSelect(sel && { kind: "conflict", projectId: mergeRun.projectId, ...sel })}
+      onChanged={refresh}
+    />
+  );
   // Checkpoints are an agent run's (AGE-140): the project checkout and a
   // terminal have no turns to bracket.
-  const run = useRuns().runs.find((r) => r.id === taskId);
   const checkpointRun = run?.kind === "agent" && run.branch ? run : null;
   const checkpointsPanel = checkpointRun && (
     <CheckpointsPanel runId={checkpointRun.id} checkout={!checkpointRun.worktree} reloadKey={historyKey}
@@ -493,6 +517,7 @@ function GitRepoPanel({
         {branchBar}
         {progress}
         {errorBanner}
+        {mergeCard}
         {sections}
         {allowComments && <ReviewComments key={commentsKey} taskId={taskId} />}
         {syncFixDialog}
@@ -513,6 +538,7 @@ function GitRepoPanel({
           {branchBar}
           {progress}
           {errorBanner}
+          {mergeCard}
           {sections}
           {allowComments && <ReviewComments key={commentsKey} taskId={taskId} />}
         </div>
@@ -525,6 +551,12 @@ function GitRepoPanel({
               Keyed by path: the pane holds the file it read, so a different
               file gets a fresh pane rather than inheriting the last one's
               error or in-flight write. */}
+          {/* No reveal in Files here: that tab shows this panel's tree, and the
+              file being resolved is in the project's checkout. */}
+          {selection?.kind === "conflict" && (
+            <ConflictView key={`conflict:${selection.path}`} taskId={`project:${selection.projectId}`}
+              path={selection.path} code={selection.code} onChanged={refresh} />
+          )}
           {selection?.kind === "file" && paneGroup(selection) === "merge" && (
             <ConflictView key={selection.path} taskId={taskId} path={selection.path}
               code={conflictCode(selection.path)}

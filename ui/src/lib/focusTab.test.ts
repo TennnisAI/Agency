@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agentViewTab, loadFocusTab, saveFocusTab, resolveFocusTab, PRIMARY_TAB, RUN_TAB, LOG_TAB } from "./focusTab";
+import { agentViewTab, loadFocusTab, restorableRun, saveFocusTab, resolveFocusTab, PRIMARY_TAB, RUN_TAB, LOG_TAB } from "./focusTab";
 
 function makeStorage(): Pick<Storage, "getItem" | "setItem"> {
   const map = new Map<string, string>();
@@ -119,5 +119,30 @@ describe("agentViewTab", () => {
     expect(agentViewTab("run-1--2", PRIMARY_TAB)).toBe("run-1--2");
     expect(agentViewTab(PRIMARY_TAB, "run-1--2")).toBe(PRIMARY_TAB);
     expect(agentViewTab(LOG_TAB, PRIMARY_TAB)).toBe(LOG_TAB);
+  });
+});
+
+describe("restorableRun", () => {
+  const runs = [{ id: "a" }, { id: "b" }];
+
+  it("goes back to the remembered run when nothing is focused", () => {
+    expect(restorableRun("a", runs, null)).toBe("a");
+  });
+
+  it("leaves a focused run alone, even one that differs from the memory", () => {
+    expect(restorableRun("a", runs, "b")).toBeNull();
+  });
+
+  it("has nothing to restore without a memory", () => {
+    expect(restorableRun(null, runs, null)).toBeNull();
+  });
+
+  it("waits while the list still holds the project just left", () => {
+    expect(restorableRun("c", runs, null)).toBeNull();
+    expect(restorableRun("c", [...runs, { id: "c" }], null)).toBe("c");
+  });
+
+  it("does not bring back a run removed while away", () => {
+    expect(restorableRun("gone", runs, null)).toBeNull();
   });
 });

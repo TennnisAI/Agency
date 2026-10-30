@@ -439,8 +439,16 @@ alternative costs a tab. "New agent" is the last option in the picker;
 `spawn_merge_conflict_agent` runs the same two checks (a merge is in progress,
 and it is this run's), then opens a tab with the conflict as its *opening
 argv*. Nothing can be queued behind a session that did not exist a moment ago,
-so that hand-off cannot wait. The tab is selected in the picker afterwards and
-set as the run's pending session, so "Close and watch" lands on it.
+so that hand-off cannot wait. The tab is set as the run's pending session, so
+the hand-off lands on it.
+
+**The hand-off closes the window (AGE-273).** Every hand-off takes you to the
+agent's tab and closes the Approve window. A card above the sections in the
+source control panel carries the merge from there: the conflicted files, who has
+them, the picker, Finish and Abort. Finish reopens the window, which lands the
+merge and offers the cleanup. What the window decided before it closed (the
+remote-branch tick and the PR probe's answer) is kept per run in
+`git/mergeFlow.ts`, because a window reopened mid-merge cannot re-ask the probe.
 
 **A conflict can be resolved by hand.** It could not be, and the way it failed
 was expensive: a row under "Merge Changes" opened the ordinary diff viewer,

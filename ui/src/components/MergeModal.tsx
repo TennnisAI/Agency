@@ -9,26 +9,22 @@ import {
   PrInfo,
   PrMergeResult,
   RunCleanup,
-  RunSessionInfo,
   abortMergeTask,
   archiveRun,
   deleteRunRemoteBranch,
   discardRun,
   finishMergeTask,
   gitPush,
-  listRunSessions,
   mergePreview,
   mergeRunPr,
   mergeStatus,
   mergeTask,
   prMergeMethods,
   runCleanup,
-  sendMergeConflict,
-  spawnMergeConflictAgent,
 } from "../api";
 import { mergeTidyCopy, removalCopy } from "../lib/runRemoval";
-import { loadFocusTab, PRIMARY_TAB } from "../lib/focusTab";
-import { agentLabel } from "../agents";
+import { endMergeFlow, handoffNote, mergeFlow, patchMergeFlow, reconcileFlow } from "./git/mergeFlow";
+import { useMergeHandoff } from "./git/useMergeHandoff";
 import PillSelect from "./PillSelect";
 import { prMergeError } from "../lib/prMergeError";
 import PrSection from "./PrSection";
@@ -53,14 +49,6 @@ function refList(refs: string[]) {
     </span>
   ));
 }
-
-// The picker's last option: not an agent that exists, but one to start. Every
-// agent already in the worktree may be mid-turn on something else, and a
-// prompt handed to one of those waits for it; a tab opened for the conflict
-// takes it as its opening prompt and begins at once (AGE-199). The space in
-// the value is what keeps it apart from every real session id, which is either
-// a run id or `<run id>--<n>` and can hold neither a space nor this word.
-const NEW_AGENT = "new agent";
 
 const METHOD_LABEL: Record<MergeMethod, string> = {
   merge: "Merge commit",
@@ -87,10 +75,6 @@ function saveMethod(projectId: string, method: MergeMethod) {
   }
 }
 
-// How an extra tab is named in the picker and in the sentence that follows:
-// the agent, then the tab number the strip draws.
-const tabLabel = (agent: string, id: string) => `${agentLabel(agent)} · ${id.split("--").pop()}`;
-
 // `onRemoved` fires after a post-merge cleanup action (archive or delete) so
 // the host view can drop focus and refresh its rail.
 export default function MergeModal({
@@ -110,29 +94,11 @@ export default function MergeModal({
   const [outcome, setOutcome] = useState<MergeOutcome | null>(null);
   const [merging, setMerging] = useState(false);
   const [error, setError] = useState("");
-  // "Fix with agent": the prompt is typed into this run's own agent session and
-  // submitted there, so there is nothing to stream here, only whether the
-  // hand-off has happened.
-  const [sending, setSending] = useState(false);
-  const [sent, setSent] = useState(false);
-  const [queued, setQueued] = useState(false);
-  // The hand-off opened a new agent tab rather than typing into one that was
-  // already there, which is a different sentence afterwards: nothing waited.
-  const [spawned, setSpawned] = useState(false);
-  // The agent tabs sharing this run's worktree, so the conflict can be handed
-  // to the one whose context has something to do with it (AGE-184). This used
-  // to go to the run's own agent every time, which after a day's work is
-  // routinely the one that has been doing something else entirely.
-  const [tabs, setTabs] = useState<RunSessionInfo[]>([]);
-  // The tabs have been asked for and answered. The default below has to wait
-  // for this: the run itself is in the store already, so without it the
-  // default would settle on the run's own agent one render before the tabs
-  // that might hold the remembered one arrived.
-  const [tabsLoaded, setTabsLoaded] = useState(false);
-  // Null until the tabs load, then the tab this run was last looked at on —
-  // "the one I was just using" is what the user means by "this agent", and the
-  // focus view already remembers it per run.
-  const [target, setTarget] = useState<string | null>(null);
+  // Status is still out on a window reopened over a merge this app knows about.
+  // The review step has to wait for it: the section it mounts runs the PR probe
+  // again, and the answer kept from before the merge is the better one.
+  const [resuming, setResuming] = useState(() => !!mergeFlow(taskId));
+  const hand = useMergeHandoff(taskId);
   // Whether the merge takes the branch's remote copy with it. Ticked by
   // default, as GitHub's own delete-branch box is, and offered only for a
   // branch that has actually been published. Before AGE-201 nothing in this
@@ -140,11 +106,11 @@ export default function MergeModal({
   // worktree and the local branch, and every locally merged agent branch
   // stayed on the remote for good. With an open PR it is the PR merge's
   // delete-branch option instead, which is the same promise kept by GitHub.
-  const [deleteRemote, setDeleteRemote] = useState(true);
+  const [deleteRemote, setDeleteRemote] = useState(() => mergeFlow(taskId)?.deleteRemote ?? true);
   // The branch's PR, probed once by the section below and reported up here.
   // Null both before the probe answers and when there is no PR; only an
   // explicitly open one changes anything above.
-  const [pr, setPr] = useState<PrInfo | null>(null);
+  const [pr, setPr] = useState<PrInfo | null>(() => mergeFlow(taskId)?.pr ?? null);
   // Read when the local merge lands. The section reporting `pr` unmounts as
   // the merge starts, but a probe it already had out can still answer after
   // that, and the `tidyRemoteBranch` that runs then is the one from the render
@@ -165,7 +131,7 @@ export default function MergeModal({
   // Whether that probe is still out. It is two IPC round-trips, the second of
   // which shells out to `gh`, and until it lands `pr` is null and reads as "no
   // PR". See `prUnknown` below for what waits on it.
-  const [prProbing, setPrProbing] = useState(true);
+  const [prProbing, setPrProbing] = useState(() => !mergeFlow(taskId)?.prSettled);
   const prProbingRef = useRef(prProbing);
   prProbingRef.current = prProbing;
   // The probe has been out long enough that the merge stops waiting for it.
@@ -225,7 +191,7 @@ export default function MergeModal({
   const [hushConfirm, setHushConfirm] = useHushed("merge-delete");
   // Ticked inside the confirm; only applied if the delete goes ahead.
   const [hushNext, setHushNext] = useState(false);
-  const { runs, setPendingSession } = useRuns();
+  const { runs } = useRuns();
   const me = runs.find((r) => r.id === taskId);
   const projectId = me?.projectId ?? null;
   // Losing race attempts: siblings sharing this run's race_id. Offered for
@@ -233,29 +199,6 @@ export default function MergeModal({
   const losers = me?.raceId
     ? runs.filter((r) => r.raceId === me.raceId && r.id !== taskId && r.kind === "agent")
     : [];
-  // Who "Fix with agent" can hand the conflict to: the same tabs the run's
-  // strip draws, in the same order. A shell tab is left out — it is a login
-  // shell, not something that reads a prompt. A fresh agent goes last, after
-  // the ones that exist: it is what to reach for when none of them is free,
-  // not the first choice (AGE-199).
-  const targets: { value: string; label: string }[] = [
-    ...(me && !me.primaryClosed ? [{ value: me.id, label: agentLabel(me.agent) }] : []),
-    ...tabs
-      .filter((t) => t.status.state !== "gone" && t.agent !== "shell")
-      .map((t) => ({ value: t.id, label: tabLabel(t.agent, t.id) })),
-    { value: NEW_AGENT, label: "New agent" },
-  ];
-  // Default to the tab this run was last open on, which is the app's best
-  // record of "the agent I was just working with". Falls back to the leftmost
-  // tab when that one is gone (or when the run has never been opened).
-  useEffect(() => {
-    if (target !== null || !tabsLoaded || targets.length === 0) return;
-    const remembered = typeof localStorage !== "undefined"
-      ? loadFocusTab(localStorage, taskId)
-      : PRIMARY_TAB;
-    const wanted = remembered === PRIMARY_TAB ? taskId : remembered;
-    setTarget(targets.some((t) => t.value === wanted) ? wanted : targets[0].value);
-  }, [target, targets, tabsLoaded, taskId]);
   // Cleanup in flight: archiving or deleting. Both tear the run down, so the
   // modal's cancel affordances stay disabled until they land.
   const busy = archiving || deleting;
@@ -282,12 +225,22 @@ export default function MergeModal({
     // A merge left in progress by an earlier visit (the modal was closed
     // mid-resolution) resumes where it stopped instead of offering a fresh
     // merge that can only fail while the old one is unfinished.
+    //
+    // A merge the agent has already committed resumes too, or it reads as
+    // "nothing to merge" with the checkout still left on the base branch and no
+    // way to finish. Nothing but the flow can tell that from a branch with no
+    // commits of its own, which also reports as merged.
     mergeStatus(taskId)
       .then((s) => {
         setState(s);
-        if (s.merging) setOutcome({ kind: "conflicts", files: s.unresolved });
+        const flow = mergeFlow(taskId);
+        const step = reconcileFlow(flow, s);
+        if (step === "start") patchMergeFlow(taskId, {});
+        if (step === "end") endMergeFlow(taskId);
+        if (s.merging || (flow && s.merged)) setOutcome({ kind: "conflicts", files: s.unresolved });
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setResuming(false));
   }, [taskId]);
 
   // The merge methods the repo allows, asked once an open PR turns up. The
@@ -313,17 +266,6 @@ export default function MergeModal({
       });
     return () => { live = false; };
   }, [prOpen, projectId]);
-
-  // The run's agent tabs, loaded once: "Fix with agent" needs to know whether
-  // there is a choice to offer before it offers one.
-  useEffect(() => {
-    let live = true;
-    listRunSessions(taskId)
-      .then((s) => { if (live) setTabs(s); })
-      .catch(() => {})
-      .finally(() => { if (live) setTabsLoaded(true); });
-    return () => { live = false; };
-  }, [taskId]);
 
   // Losers are torn down one at a time before the winner, so their progress is
   // labelled with their position: otherwise a five-attempt race looks like one
@@ -381,6 +323,7 @@ export default function MergeModal({
     setGitStep(null);
     try {
       await abortMergeTask(taskId, setGitStep);
+      endMergeFlow(taskId);
       onClose();
     } catch (e) {
       setError(String(e));
@@ -428,6 +371,20 @@ export default function MergeModal({
       const result = await mergeTask(taskId, setGitStep);
       setOutcome(result);
       landed = result.kind === "clean";
+      // git writes MERGE_HEAD during a clean merge too, for as long as commit-msg
+      // runs, so the panel's poll can catch one and start an entry for it. Left
+      // behind, that entry read as "Ready to finish" on a merge that was done.
+      if (landed) endMergeFlow(taskId);
+      // This window closes on the hand-off, and the end of the merge still needs
+      // what was decided here. `prRef` over `pr`: see where they are declared.
+      if (result.kind === "conflicts") {
+        patchMergeFlow(taskId, {
+          deleteRemote,
+          prSettled: !prProbingRef.current,
+          pr: prRef.current,
+          handoff: null,
+        });
+      }
     } catch (e) {
       setError(String(e));
       // Re-read rather than leave the failure as a bare string: if another run
@@ -477,47 +434,13 @@ export default function MergeModal({
     }
   }
 
-  // Hand the conflict to one of the workspace's agents: it already has the
-  // context for the change, and it is a session the user can watch and talk to.
-  // The backend submits the prompt, so this really does start the agent working
-  // rather than leaving a composed message sitting in its prompt box.
-  //
-  // "New agent" is the other shape of the same gesture: a tab opened for this
-  // job, with the conflict as its opening prompt. Nothing can be queued behind
-  // a session that did not exist a moment ago, so that one usually never waits
-  // — except for a CLI that takes no prompt on the command line, where the
-  // backend falls back to the queue and says so, because a brand-new agent has
-  // no activity entry yet and the queue reads that as working: the prompt is
-  // held for at least ten seconds, and "Started it on the conflict" would be
-  // the modal talking about work that had not begun.
+  // Hand the conflict to one of the workspace's agents, then get out of the way:
+  // this window has nothing left to do until the conflict is settled, and the
+  // agent's tab with the panel beside it says everything it did (AGE-273). A
+  // refused hand-off keeps it open, with the reason on screen.
   async function fixWithAgent() {
     setError("");
-    setSending(true);
-    try {
-      if (target === NEW_AGENT) {
-        const { session, queued } = await spawnMergeConflictAgent(taskId);
-        // Into the picker and selected, so the sentence below names the agent
-        // that got it and the strip behind this window has it too. Pending, so
-        // "Close and watch" lands on it rather than on the tab you came from.
-        setTabs((prev) => [...prev, session]);
-        setTarget(session.id);
-        setPendingSession(session.id);
-        setSpawned(true);
-        setQueued(queued);
-      } else {
-        // False means the agent is not free — mid-turn, or with something
-        // half-typed on its prompt line — and the prompt is held behind that;
-        // saying "sent" then would have the user watching for work that has
-        // not started yet.
-        setQueued(!(await sendMergeConflict(taskId, target ?? undefined)));
-        setSpawned(false);
-      }
-      setSent(true);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setSending(false);
-    }
+    if (await hand.send()) onClose();
   }
 
   // Commit the resolved merge (or accept the one the agent committed) and
@@ -531,6 +454,7 @@ export default function MergeModal({
       const result = await finishMergeTask(taskId, setGitStep);
       setOutcome(result);
       landed = result.kind === "clean";
+      if (landed) endMergeFlow(taskId);
     } catch (e) {
       setError(String(e));
       // The failure is usually "still conflicted"; re-read so the file list
@@ -564,31 +488,6 @@ export default function MergeModal({
   }, [taskId, outcome?.kind, state?.merged, prMerged]);
 
   const conflicts = outcome?.kind === "conflicts";
-  // The hand-off's own wording, which the sentinel changes: a new agent is
-  // started, an existing one is sent to.
-  const newAgent = target === NEW_AGENT;
-  const sendLabel = newAgent ? "Start a new agent" : "Fix with agent";
-  const sendingLabel = newAgent ? "Starting…" : "Sending…";
-  const targetLabel = targets.find((t) => t.value === target)?.label ?? "this agent";
-  // A tab created a moment ago can open on the agent's own first-run gate
-  // rather than on the prompt it was launched with. All three of the agents
-  // checked ask before reading their argv: cursor-agent draws "Workspace Trust
-  // Required", copilot "Do you trust the files in this folder?", and Claude
-  // Code "Is this a project you created or one you trust?" (verified in a
-  // fresh worktree against cursor-agent 2026.09.02, copilot 1.0.78 and Claude
-  // Code). So it is the agent's habit, not one CLI's quirk. Answering is one
-  // keystroke, and cursor's answer then covers the whole project tree,
-  // worktrees included. But this window said "Started X on it" and sent you
-  // off to watch an agent that was sitting on a question, which is the one
-  // case where "close and watch" is the wrong advice (AGE-199).
-  //
-  // Only for a tab this window opened: anything already in the strip is long
-  // past its own first run.
-  const firstRunNote = spawned
-    ? "A tab this new can open on the agent's own first-run question, like whether it "
-      + "trusts this folder; it waits there until you answer, so look at the tab if "
-      + "nothing starts. "
-    : "";
   // The same sentences the tile and rail teardown dialogs use, so the merge
   // window and the ✕ menu describe one action rather than two that sound
   // different. `me` is missing only for the frame between a teardown landing
@@ -632,6 +531,21 @@ export default function MergeModal({
   // finish: either uncommitted (we commit it) or already committed by the agent
   // (we just record it and restore the branch).
   const canFinish = !!state && state.unresolved.length === 0 && (state.merging || state.merged);
+  // The panel's Finish merge opens this window to land the merge here, where the
+  // cleanup choices that follow already are. Waits for the preview, which says
+  // whether there is a remote copy to tidy. Taken once at open, so a merge that
+  // has gone back to conflicted by then is just shown as it is.
+  const autoFinish = useRef(false);
+  useEffect(() => {
+    if (!mergeFlow(taskId)?.finishOnOpen) return;
+    autoFinish.current = true;
+    patchMergeFlow(taskId, { finishOnOpen: false });
+  }, [taskId]);
+  useEffect(() => {
+    if (!autoFinish.current || !preview || !state) return;
+    autoFinish.current = false;
+    if (canFinish) void finish();
+  }, [preview, state, canFinish]); // eslint-disable-line react-hooks/exhaustive-deps
   const step = outcome?.kind === "clean" || prMerged
     ? "done"
     : conflicts
@@ -707,11 +621,11 @@ export default function MergeModal({
             <span key={s.key} className={`mt-step ${s.key === step ? "on" : ""}`}>{s.label}</span>
           ))}
         </div>
-        {error && <div className="git-error">{error}</div>}
+        {(error || hand.error) && <div className="git-error">{error || hand.error}</div>}
 
         {/* Review: explain what will happen before merging. */}
         {!outcome && !merging && (
-          !preview && !error ? (
+          resuming || (!preview && !error) ? (
             <p>Checking…</p>
           ) : preview ? (
             <div className="merge-review">
@@ -1020,54 +934,28 @@ export default function MergeModal({
                     </li>
                   ))}
                 </ul>
-                {sent ? (
-                  <p className="merge-note">
-                    {spawned && !queued
-                      ? `Started ${targetLabel} on it, with git's status of the merge. `
-                      : spawned
-                        ? `Started ${targetLabel}, with git's status of the merge. That agent's CLI takes no prompt on the command line, so the conflict goes in as soon as it's up at its prompt. `
-                        : queued
-                          ? `Queued for ${targetLabel}, with git's status of the merge. That agent isn't free yet (mid-turn, or with something half-typed on its prompt line), so the prompt goes in as soon as it is. `
-                          : `Sent to ${targetLabel}, with git's status of the merge. `}
-                    {firstRunNote}
-                    Close this window to watch it work; the merge is in the project's checkout, not
-                    the agent's worktree, so the prompt points git there. Reopen this window when
-                    it's done, or leave it open: it rechecks git every few seconds either way.
-                  </p>
-                ) : (
-                  <p className="merge-note">
-                    Nothing has been committed. Hand the conflict to one of this workspace's
-                    agents, or to a fresh one started for the job, or resolve it yourself: the
-                    merge is in the project's checkout, so open the file under that project's
-                    Source Control, pick a side on each conflict, then come back here to finish.
-                  </p>
-                )}
+                <p className="merge-note">
+                  {hand.handoff
+                    ? `${handoffNote(hand.handoff)} You can follow it in Source Control, which rechecks git every few seconds.`
+                    : "Nothing has been committed. Hand the conflict to one of this workspace's agents, or to a fresh one started for the job. Or resolve it yourself: pick a file under Source Control, choose a side on each conflict, and finish there."}
+                </p>
                 <div className="git-actions">
                   {/* Which agent, before the button that sends to it. Always
                       offered: the run's own is not usually the one that has
                       been near this branch lately (AGE-184), and even in a
                       workspace with one agent, starting a fresh one is a real
                       answer when that one is busy (AGE-199). */}
-                  {target && (
+                  {hand.target && (
                     <PillSelect
-                      value={target}
-                      options={targets}
-                      onChange={(v) => { setTarget(v); setSent(false); }}
+                      value={hand.target}
+                      options={hand.targets}
+                      onChange={hand.setTarget}
                       title="Which agent in this workspace gets the conflict"
                     />
                   )}
-                  {sent ? (
-                    <button autoFocus onClick={onClose}>Close and watch</button>
-                  ) : (
-                    <button autoFocus disabled={sending} onClick={fixWithAgent}>
-                      {sending ? sendingLabel : sendLabel}
-                    </button>
-                  )}
-                  {sent && (
-                    <button className="ghost" disabled={sending} onClick={fixWithAgent}>
-                      {sending ? sendingLabel : "Send again"}
-                    </button>
-                  )}
+                  <button autoFocus disabled={hand.sending || !hand.target} onClick={fixWithAgent}>
+                    {hand.sending ? hand.sendingLabel : hand.sent ? "Send again" : hand.sendLabel}
+                  </button>
                   <button
                     className="ghost"
                     disabled={aborting}

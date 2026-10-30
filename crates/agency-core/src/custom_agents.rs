@@ -150,23 +150,37 @@ pub fn validate(agent: &CustomAgent) -> Result<()> {
 /// here: its `tools:` list is what gets dropped, not the whole agent.
 pub fn parse(id: &str, text: &str) -> Result<CustomAgent> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let mut lines = text.split_inclusive('\n');
+    let mut lines = text.split_inclusive('\n').peekable();
     if lines.next().map(str::trim_end) != Some("---") {
         bail!("missing frontmatter fence");
     }
     let (mut name, mut description, mut closed) = (None, String::new(), false);
     let mut body = String::new();
-    for line in lines.by_ref() {
+    while let Some(line) = lines.next() {
         let line = line.trim_end();
         if line == "---" {
             closed = true;
             break;
         }
         let Some((key, value)) = line.split_once(':') else { continue };
-        match key {
-            "name" => name = Some(unquote(value)),
-            "description" => description = unquote(value),
-            _ => {}
+        if key != "name" && key != "description" {
+            continue;
+        }
+        let value = if block_scalar(value) {
+            let mut parts = Vec::new();
+            while let Some(next) =
+                lines.next_if(|l| l.trim().is_empty() || l.starts_with([' ', '\t']))
+            {
+                parts.push(next.trim());
+            }
+            parts.join(" ")
+        } else {
+            unquote(value)
+        };
+        if key == "name" {
+            name = Some(value);
+        } else {
+            description = value;
         }
     }
     if !closed {
@@ -179,7 +193,15 @@ pub fn parse(id: &str, text: &str) -> Result<CustomAgent> {
             .map(|n| clean_name(&n))
             .filter(|n| !n.is_empty())
             .unwrap_or_else(|| id.to_string()),
-        description,
+        // Whitespace collapsed because a harness's description can hold `\n`, which
+        // `validate` refuses, and cut short because one carrying routing examples
+        // runs far past the limit. Neither is worth losing the whole agent over.
+        description: clean_name(&description)
+            .chars()
+            .take(MAX_DESCRIPTION_LEN)
+            .collect::<String>()
+            .trim_end()
+            .to_string(),
         instructions: body.trim().to_string(),
         launch_tag: String::new(),
     };
@@ -187,10 +209,22 @@ pub fn parse(id: &str, text: &str) -> Result<CustomAgent> {
     Ok(agent)
 }
 
+/// Whether a frontmatter value is YAML's `>` or `|`, with the text on the indented
+/// lines below. Read as a plain value, `description: >` was listed as a literal
+/// `>`, and that was what got written into the emitted file.
+fn block_scalar(value: &str) -> bool {
+    let value = value.trim();
+    value.starts_with(['>', '|']) && value[1..].chars().all(|c| matches!(c, '+' | '-' | '1'..='9'))
+}
+
 /// A frontmatter value: double-quoted with JSON's escapes, which is what we
-/// write and a subset of YAML's, or plain as a person would type it.
+/// write and a subset of YAML's, single-quoted as YAML has it, or plain as a
+/// person would type it.
 fn unquote(value: &str) -> String {
     let value = value.trim();
+    if let Some(inner) = value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')) {
+        return inner.replace("''", "'");
+    }
     if value.starts_with('"') {
         if let Ok(parsed) = serde_json::from_str::<String>(value) {
             return parsed;
@@ -216,27 +250,51 @@ pub fn render(agent: &CustomAgent) -> String {
     out
 }
 
-/// Every readable definition in `dir`, sorted by name. A malformed file is
-/// logged and left out: one bad file should not hide the rest of the menu, and
-/// it is not ours to fix.
-pub fn list(dir: &Path) -> Vec<CustomAgent> {
-    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
-    let mut out: Vec<CustomAgent> = entries
-        .flatten()
-        .filter_map(|entry| {
-            let path = entry.path();
-            let id = path.file_stem()?.to_str()?.to_string();
-            if path.extension()?.to_str()? != "md" || !valid_id(&id) {
-                return None;
+/// Whether `git status --porcelain --untracked-files=all` output is anything that
+/// should stop a merge or a spawn. An untracked file in [`PROJECT_DIR`] is not:
+/// saving a "This project" agent left `?? .agency/` in the status, and every merge
+/// then refused with "uncommitted changes" until it was committed. The spawn reads
+/// the definition from the checkout, so a worktree cut without it loses nothing.
+/// It stays visible to git, because committing it is how it gets shared. An edit
+/// to one already committed still counts, as any tracked change does.
+pub fn checkout_dirty(porcelain: &str) -> bool {
+    let unshared = format!("?? {PROJECT_DIR}/");
+    porcelain.lines().any(|l| !l.trim().is_empty() && !l.starts_with(&unshared))
+}
+
+/// A definition [`list`] left out, for Settings to say so. An agent missing from
+/// the menu with the reason only in a log looks like the app lost it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SkippedAgent {
+    pub file: String,
+    pub reason: String,
+}
+
+/// Every readable definition in `dir`, sorted by name, and the files that weren't.
+/// One bad file should not hide the rest of the menu, and it is not ours to fix.
+pub fn list(dir: &Path) -> (Vec<CustomAgent>, Vec<SkippedAgent>) {
+    let (mut out, mut skipped) = (Vec::new(), Vec::new());
+    let Ok(entries) = std::fs::read_dir(dir) else { return (out, skipped) };
+    for path in entries.flatten().map(|entry| entry.path()) {
+        let Some(id) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+        if path.extension().and_then(|e| e.to_str()) != Some("md") || !valid_id(id) {
+            continue;
+        }
+        let read = std::fs::read_to_string(&path).map_err(anyhow::Error::from);
+        match read.and_then(|text| parse(id, &text)) {
+            Ok(agent) => out.push(agent),
+            Err(e) => {
+                log::warn!("skipping agent {}: {e:#}", path.display());
+                skipped.push(SkippedAgent {
+                    file: path.display().to_string(),
+                    reason: format!("{e:#}"),
+                });
             }
-            let text = std::fs::read_to_string(&path).ok()?;
-            parse(&id, &text)
-                .inspect_err(|e| log::warn!("skipping agent {}: {e:#}", path.display()))
-                .ok()
-        })
-        .collect();
+        }
+    }
     out.sort_by_key(|a| a.name.to_lowercase());
-    out
+    skipped.sort_by(|a, b| a.file.cmp(&b.file));
+    (out, skipped)
 }
 
 fn path_in(dir: &Path, id: &str) -> Result<PathBuf> {
@@ -377,17 +435,35 @@ pub fn launch_args(harness: &str, agent: &CustomAgent) -> (Vec<String>, bool) {
         Some(Delivery::Rules { .. }) | None => return (Vec::new(), false),
     };
     let text = agent.instructions.trim();
-    let args = recipe
-        .iter()
-        .map(|a| {
-            a.replace("{{name}}", &native_name(agent))
-                // A JSON string is a valid TOML basic string, which is how `-c`
-                // reads a value, and the only reading that keeps a newline.
-                .replace("{{toml}}", &quoted(text))
-                .replace("{{text}}", text)
-        })
-        .collect();
-    (args, leading)
+    let name = native_name(agent);
+    // A JSON string is a valid TOML basic string, which is how `-c` reads a value,
+    // and the only reading that keeps a newline.
+    let toml = quoted(text);
+    let tokens = [("{{name}}", name.as_str()), ("{{toml}}", toml.as_str()), ("{{text}}", text)];
+    (recipe.iter().map(|a| fill(a, &tokens)).collect(), leading)
+}
+
+/// Replace `tokens` in `recipe`, in one pass. Chained `replace` calls expanded a
+/// `{{text}}` written inside instructions a second time on Codex, which put raw
+/// newlines and quotes in the middle of the TOML string and broke the `-c` value.
+fn fill(recipe: &str, tokens: &[(&str, &str)]) -> String {
+    let (mut out, mut rest) = (String::new(), recipe);
+    while let Some(at) = rest.find("{{") {
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        match tokens.iter().find(|(token, _)| rest.starts_with(token)) {
+            Some((token, value)) => {
+                out.push_str(value);
+                rest = &rest[token.len()..];
+            }
+            None => {
+                out.push_str("{{");
+                rest = &rest[2..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// What is written into the worktree for a harness that reads a file: the path
@@ -458,6 +534,18 @@ pub fn emit(harness: &str, agent: &CustomAgent, worktree: &Path, repo: &Path) ->
         log::warn!("excluding {rel} in {}: {e}", repo.display());
     }
     Ok(())
+}
+
+/// Undo [`emit`] once a run is over. The run's tag is in the name, so this can
+/// only ever be the file that run wrote. Refuses a symlink for the reason `emit`
+/// does, and a file already gone is the outcome it wanted.
+pub fn remove_emitted(harness: &str, agent: &CustomAgent, worktree: &Path) -> Result<()> {
+    let Some((rel, _, _)) = native_file(harness, agent) else { return Ok(()) };
+    refuse_symlinks(worktree, &rel)?;
+    match std::fs::remove_file(worktree.join(&rel)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -566,13 +654,115 @@ mod tests {
         // One bad file does not hide the good one, and a stray file is ignored.
         std::fs::write(dir.path().join("broken.md"), "no frontmatter").unwrap();
         std::fs::write(dir.path().join("README.txt"), "not an agent").unwrap();
-        assert_eq!(list(dir.path()), vec![a.clone()]);
+        assert_eq!(list(dir.path()).0, vec![a.clone()]);
         assert_eq!(load(dir.path(), "reviewer").unwrap(), Some(a));
         delete(dir.path(), "reviewer").unwrap();
         assert_eq!(load(dir.path(), "reviewer").unwrap(), None);
         delete(dir.path(), "reviewer").unwrap();
         assert!(load(dir.path(), "../reviewer").is_err());
-        assert!(list(&dir.path().join("missing")).is_empty());
+        assert!(list(&dir.path().join("missing")).0.is_empty());
+    }
+
+    /// The file that couldn't be read is named, and the rest are still listed.
+    #[test]
+    fn a_bad_file_is_reported_without_hiding_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        save(dir.path(), &agent()).unwrap();
+        std::fs::write(dir.path().join("broken.md"), "no frontmatter").unwrap();
+        std::fs::write(dir.path().join("README.md"), "not an agent").unwrap();
+        let (agents, skipped) = list(dir.path());
+        assert_eq!(agents, vec![agent()]);
+        assert_eq!(skipped.len(), 1);
+        assert!(skipped[0].file.ends_with("broken.md"), "{skipped:?}");
+        assert!(skipped[0].reason.contains("frontmatter"), "{skipped:?}");
+    }
+
+    /// Copied in from a harness's own format, which a person is entitled to do.
+    #[test]
+    fn a_harness_format_file_reads_as_what_it_says() {
+        let folded = "---\nname: A\ndescription: >-\n  Reviews a diff\n\n  for bugs\ntools: Bash\n---\nBody\n";
+        let parsed = parse("a", folded).unwrap();
+        assert_eq!(parsed.description, "Reviews a diff for bugs");
+        assert_eq!(parsed.instructions, "Body");
+
+        let literal = "---\nname: |\n  Reviewer\ndescription: x\n---\nBody\n";
+        assert_eq!(parse("a", literal).unwrap().name, "Reviewer");
+
+        let quoted = "---\nname: 'Bob''s reviewer'\ndescription: 'Reviews: a diff'\n---\nBody\n";
+        let parsed = parse("a", quoted).unwrap();
+        assert_eq!(parsed.name, "Bob's reviewer");
+        assert_eq!(parsed.description, "Reviews: a diff");
+
+        // A value that only starts like a block is a value.
+        let plain = "---\nname: A\ndescription: > 3 files\n---\nBody\n";
+        assert_eq!(parse("a", plain).unwrap().description, "> 3 files");
+    }
+
+    #[test]
+    fn a_long_or_multi_line_description_does_not_lose_the_agent() {
+        let long = "x".repeat(MAX_DESCRIPTION_LEN + 50);
+        let parsed = parse("a", &format!("---\ndescription: {long}\n---\nBody\n")).unwrap();
+        assert_eq!(parsed.description.chars().count(), MAX_DESCRIPTION_LEN);
+
+        let text = "---\ndescription: \"one\\ntwo\"\n---\nBody\n";
+        assert_eq!(parse("a", text).unwrap().description, "one two");
+        // The form still says so: this is only for a file someone else wrote.
+        assert!(validate(&CustomAgent { description: long, ..agent() }).is_err());
+    }
+
+    /// A template explained in the instructions is text, not a token. Observed on
+    /// Codex, where `{{text}}` inside them broke the TOML string it landed in.
+    #[test]
+    fn a_token_in_the_instructions_is_not_expanded() {
+        let a = CustomAgent {
+            instructions: "Use {{text}}, {{toml}} and {{name}}.\nDone".into(),
+            ..agent()
+        };
+        assert_eq!(
+            launch_args("codex", &a).0[1],
+            r#"developer_instructions="Use {{text}}, {{toml}} and {{name}}.\nDone""#
+        );
+        assert_eq!(launch_args("pi", &a).0[1], "Use {{text}}, {{toml}} and {{name}}.\nDone");
+        assert_eq!(fill("a{{b}}c{{", &[("{{x}}", "y")]), "a{{b}}c{{");
+    }
+
+    #[test]
+    fn only_an_unshared_agent_is_left_out_of_a_dirty_checkout() {
+        assert!(!checkout_dirty(""));
+        assert!(!checkout_dirty("?? .agency/agents/reviewer.md\n"));
+        assert!(checkout_dirty("?? .agency/agents/reviewer.md\n?? notes.md\n"));
+        // A committed agent's edit is a tracked change like any other.
+        assert!(checkout_dirty(" M .agency/agents/reviewer.md\n"));
+        assert!(checkout_dirty("?? .agency/agents-old/x.md\n"));
+    }
+
+    #[test]
+    fn remove_emitted_takes_the_runs_own_file_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let mine = CustomAgent { launch_tag: "ab12".into(), ..agent() };
+        let other = CustomAgent { launch_tag: "cd34".into(), ..agent() };
+        emit("claude", &mine, dir.path(), dir.path()).unwrap();
+        emit("claude", &other, dir.path(), dir.path()).unwrap();
+
+        remove_emitted("claude", &mine, dir.path()).unwrap();
+        assert!(!dir.path().join(".claude/agents/agency-reviewer-ab12.md").exists());
+        assert!(dir.path().join(".claude/agents/agency-reviewer-cd34.md").exists());
+        // Already gone, and a harness that wrote nothing, are both fine.
+        remove_emitted("claude", &mine, dir.path()).unwrap();
+        remove_emitted("codex", &mine, dir.path()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_emitted_does_not_follow_a_symlink_out() {
+        let outside = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mine = CustomAgent { launch_tag: "ab12".into(), ..agent() };
+        std::fs::write(outside.path().join("agency-reviewer-ab12.md"), "theirs").unwrap();
+        std::fs::create_dir(dir.path().join(".claude")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join(".claude/agents")).unwrap();
+        assert!(remove_emitted("claude", &mine, dir.path()).is_err());
+        assert!(outside.path().join("agency-reviewer-ab12.md").exists());
     }
 
     #[test]

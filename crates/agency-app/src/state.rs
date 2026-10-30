@@ -923,6 +923,9 @@ pub struct CustomAgents {
     /// The harnesses that can be given one. The rest are greyed out when one is
     /// picked, for the same reason a model chip is hidden: they have no way in.
     pub harnesses: Vec<String>,
+    /// Definitions that couldn't be read, which Settings names rather than leaving
+    /// them to look lost.
+    pub skipped: Vec<agency_core::custom_agents::SkippedAgent>,
 }
 
 /// One attempt in a race: an agent, and the model that attempt runs on.
@@ -3676,16 +3679,18 @@ impl AppState {
     pub fn list_custom_agents(&self, project_id: Option<&str>) -> Result<CustomAgents> {
         use agency_core::custom_agents as ca;
         let mut agents: Vec<CustomAgentInfo> = Vec::new();
+        let mut skipped = Vec::new();
         if let Some(id) = project_id {
-            let dir = self.project_repo(id)?.join(ca::PROJECT_DIR);
-            agents.extend(ca::list(&dir).into_iter().map(|a| CustomAgentInfo::new(a, "project")));
+            let (found, bad) = ca::list(&self.project_repo(id)?.join(ca::PROJECT_DIR));
+            agents.extend(found.into_iter().map(|a| CustomAgentInfo::new(a, "project")));
+            skipped.extend(bad);
         }
-        agents.extend(
-            ca::list(&self.user_agents_dir()).into_iter().map(|a| CustomAgentInfo::new(a, "user")),
-        );
+        let (found, bad) = ca::list(&self.user_agents_dir());
+        agents.extend(found.into_iter().map(|a| CustomAgentInfo::new(a, "user")));
+        skipped.extend(bad);
         agents.sort_by_key(|a| a.name.to_lowercase());
         let harnesses = ca::supported_harnesses().into_iter().map(String::from).collect();
-        Ok(CustomAgents { agents, harnesses })
+        Ok(CustomAgents { agents, harnesses, skipped })
     }
 
     /// Create an agent (`id` of None, which takes its id from the name) or
@@ -3772,6 +3777,36 @@ impl AppState {
     ) -> Result<()> {
         agency_core::custom_agents::emit(harness, custom, worktree, repo)
             .with_context(|| format!("starting {} as {}", harness, custom.name))
+    }
+
+    /// [`Self::emit_custom_agent`] for a launch of the run's own harness, which
+    /// also refuses a stored copy it can't read. Reading that as "no agent" would
+    /// have this launch quietly come back as the plain harness.
+    fn emit_run_custom_agent(
+        &self,
+        run: &agency_core::registry::Run,
+        worktree: &Path,
+        repo: &Path,
+    ) -> Result<()> {
+        if self.registry.lock().unwrap().custom_agent_unreadable(&run.id)? {
+            bail!("this run's saved custom agent can't be read, so it won't start without it");
+        }
+        match &run.custom_agent {
+            Some(custom) => self.emit_custom_agent(&run.agent, custom, worktree, repo),
+            None => Ok(()),
+        }
+    }
+
+    /// Take a checkout run's emitted file away when the run ends. A worktree's
+    /// goes with the worktree, but nothing else ever removed one from the user's
+    /// checkout, where one was left behind per run. A restored run gets it back,
+    /// since every launch emits. Best-effort: what is left is an excluded file.
+    fn remove_checkout_custom_agent(&self, run: &agency_core::registry::Run, repo: &Path) {
+        let Some(custom) = run.custom_agent.as_ref().filter(|_| !run.worktree) else { return };
+        let worktree = workspace_dir(repo, run);
+        if let Err(e) = agency_core::custom_agents::remove_emitted(&run.agent, custom, &worktree) {
+            log::warn!("removing agent {} from {}: {e:#}", custom.id, worktree.display());
+        }
     }
 
     pub fn register_profile(&self, profile: AgentProfile) -> Result<()> {
@@ -4433,6 +4468,7 @@ impl AppState {
                 let _gate = self.worktree_gate.lock().unwrap();
                 let _ = remove_run_worktree(&repo, &run, Disposal::Delete, true);
             }
+            self.remove_checkout_custom_agent(&run, &repo);
             {
                 let reg = self.registry.lock().unwrap();
                 reg.delete_run_sessions(&run.id)?;
@@ -4973,9 +5009,11 @@ impl AppState {
             );
         }
 
-        // Outside the worktree test above, unlike MCP: a file under our own
-        // name is inert until a launch selects it, so it dirties nothing even in
-        // the user's checkout, and a harness told `--agent` needs it to be there.
+        // Outside the worktree test above, unlike MCP: a harness told `--agent`
+        // needs the file to be there. It is excluded, so it dirties nothing, but
+        // it isn't inert: a harness that scans this directory can offer it to
+        // other sessions in the checkout until the run ends, when
+        // `remove_checkout_custom_agent` takes it away.
         // The run row does not exist yet, so a refusal takes the worktree with it.
         if let Some(custom) = &spec.custom_agent {
             if let Err(e) = self.emit_custom_agent(spec.agent, custom, &workspace.path, &repo) {
@@ -9744,6 +9782,7 @@ impl AppState {
                     }
                 }
             }
+            self.remove_checkout_custom_agent(&run, &repo);
         }
         {
             let reg = self.registry.lock().unwrap();
@@ -9852,6 +9891,7 @@ impl AppState {
         self.shell_attaches.lock().unwrap().remove(id);
         let _ = self.term.read().unwrap().kill(&shell_session_name(id));
         self.kill_extra_sessions(id);
+        self.remove_checkout_custom_agent(&run, &repo);
         {
             let reg = self.registry.lock().unwrap();
             reg.delete_run_sessions(id)?;
@@ -10580,8 +10620,8 @@ impl AppState {
                 run.port_base,
             );
         }
-        if let Some(custom) = run.custom_agent.as_ref().filter(|_| agent == run.agent) {
-            self.emit_custom_agent(agent, custom, &worktree, &repo)?;
+        if agent == run.agent {
+            self.emit_run_custom_agent(&run, &worktree, &repo)?;
         }
         // Same env recipe as the run itself, ports included: extra sessions are
         // collaborators in the same workspace, not new workspaces. The
@@ -10936,9 +10976,7 @@ impl AppState {
             let profile = with_custom_agent(&profile, run.custom_agent.as_ref());
             with_web_ui(&profile, gui_port_for(&config, run.port_base, &run.agent), &self.data_dir)
         };
-        if let Some(custom) = &run.custom_agent {
-            self.emit_custom_agent(&run.agent, custom, &worktree, &repo)?;
-        }
+        self.emit_run_custom_agent(&run, &worktree, &repo)?;
         let env = self.agent_env(&mut profile, &worktree, &repo, &run.id, id, run.port_base)?;
         let setup = config.scripts.setup.as_deref();
         // The conversation this session owns, if it has one to come back to.
@@ -11055,9 +11093,7 @@ impl AppState {
             let profile = with_custom_agent(&profile, run.custom_agent.as_ref());
             with_web_ui(&profile, gui_port_for(&config, run.port_base, &run.agent), &self.data_dir)
         };
-        if let Some(custom) = &run.custom_agent {
-            self.emit_custom_agent(&run.agent, custom, &worktree, &repo)?;
-        }
+        self.emit_run_custom_agent(&run, &worktree, &repo)?;
         let env = self.agent_env(&mut profile, &worktree, &repo, &run.id, id, run.port_base)?;
         // A rerun is a fresh launch by definition, so it takes the fresh argv
         // (prompt and all, never the resume recipe) that `create_run` took, and
@@ -11123,9 +11159,7 @@ impl AppState {
                 run.custom_agent.as_ref(),
             )
         };
-        if let Some(custom) = &run.custom_agent {
-            self.emit_custom_agent(&run.agent, custom, &worktree, &repo)?;
-        }
+        self.emit_run_custom_agent(&run, &worktree, &repo)?;
         // Re-emit into the existing worktree on every attempt. A headless
         // attempt is a fresh agent process with no memory of the last one, and
         // the previous attempt may have edited or deleted the kit; refreshing

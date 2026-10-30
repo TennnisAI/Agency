@@ -181,6 +181,46 @@ fn a_project_agent_never_stands_in_for_a_user_one_of_the_same_id() {
 
 /// Each of these would otherwise start a plain agent that looks exactly like
 /// the one asked for, and none may leave a worktree behind.
+/// Nothing else removes a file from the user's own checkout, where each run used
+/// to leave one behind.
+#[test]
+fn a_checkout_run_takes_its_file_with_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    init_repo(&repo);
+    let state = common::state(&dir);
+    stub(&state, "claude");
+    let project = state.add_project("demo", &repo).unwrap();
+    state.save_custom_agent("user", None, None, "Reviewer", "", "Instructions").unwrap();
+
+    let start = || {
+        state
+            .create_run_as(
+                &project.id,
+                "go",
+                "claude",
+                None,
+                Some("user:reviewer"),
+                "HEAD",
+                None,
+                false,
+                |_| {},
+            )
+            .unwrap()
+    };
+    let agents = repo.join(".claude/agents");
+
+    let archived = start();
+    assert_eq!(std::fs::read_dir(&agents).unwrap().count(), 1);
+    state.archive_run(&archived.id).unwrap();
+    assert_eq!(std::fs::read_dir(&agents).unwrap().count(), 0);
+
+    let discarded = start();
+    assert_eq!(std::fs::read_dir(&agents).unwrap().count(), 1);
+    state.discard_run(&discarded.id).unwrap();
+    assert_eq!(std::fs::read_dir(&agents).unwrap().count(), 0);
+}
+
 #[test]
 fn a_spawn_that_cannot_honour_the_agent_refuses() {
     let dir = tempfile::tempdir().unwrap();

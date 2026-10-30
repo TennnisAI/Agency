@@ -36,8 +36,13 @@ export default function LoopDialog({ onClose, issue, issueLabel }: {
     if (modelTouched) return;
     setModel(remembered(agent));
   }, [agent, remembered, modelTouched]);
-  const { agents: customAgents } = useCustomAgents(selectedProjectId);
+  // From the issue's own project when there is one: that is where the backend
+  // looks the pick up, whichever project happens to be selected.
+  const { agents: customAgents, takes } = useCustomAgents(issue?.projectId ?? selectedProjectId);
   const [customAgent, setCustomAgent] = useState("");
+  // Derived rather than cleared, so trying another harness and coming back keeps
+  // the pick, and a harness that can't take one is never sent it.
+  const pickedCustomAgent = takes(agent) ? customAgent : "";
   const [checkCommand, setCheckCommand] = useState("");
   // Kept as a raw string while editing so the field can be cleared/retyped;
   // clamped to [1,100] only on blur and at submit.
@@ -99,7 +104,7 @@ export default function LoopDialog({ onClose, issue, issueLabel }: {
     try {
       const maxWallSecs = capMinutes === null ? null : capMinutes * 60;
       const run = issue
-        ? await startIssueLoop(issue.id, agent, model, checkCommand.trim(), clampAttempts(maxAttempts), maxWallSecs, capTokens, base || null, mergeTarget, customAgent || null)
+        ? await startIssueLoop(issue.id, agent, model, checkCommand.trim(), clampAttempts(maxAttempts), maxWallSecs, capTokens, base || null, mergeTarget, pickedCustomAgent || null)
         : await createLoop(
             selectedProjectId,
             prompt.trim(),
@@ -111,7 +116,7 @@ export default function LoopDialog({ onClose, issue, issueLabel }: {
             clampAttempts(maxAttempts),
             maxWallSecs,
             capTokens,
-            customAgent || null,
+            pickedCustomAgent || null,
           );
       if (issue) setTab("agents"); // jump from the board to the running loop
       await refreshRuns();
@@ -183,7 +188,13 @@ export default function LoopDialog({ onClose, issue, issueLabel }: {
           {customAgents.length > 0 && (
             <label className="branch-row">
               <span>as</span>
-              <select className="settings-input" value={customAgent} onChange={(e) => setCustomAgent(e.target.value)}>
+              <select
+                className="settings-input"
+                value={pickedCustomAgent}
+                disabled={!takes(agent)}
+                title={takes(agent) ? undefined : `${agentLabel(agent)} can't be given a custom agent`}
+                onChange={(e) => setCustomAgent(e.target.value)}
+              >
                 <option value="">No custom agent</option>
                 {customAgents.map((c) => (
                   <option key={c.selection} value={c.selection}>{customAgentLabel(c)}</option>

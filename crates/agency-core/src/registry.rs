@@ -1011,6 +1011,19 @@ impl Registry {
         Ok(())
     }
 
+    /// Whether this run was stored with a custom agent that no longer reads back.
+    /// [`row_to_run`] gives that run `None`, which looks just like a plain run, so
+    /// a launch has to ask, or it would start as the plain harness.
+    pub fn custom_agent_unreadable(&self, id: &str) -> Result<bool> {
+        let stored: Option<Option<String>> = self
+            .conn
+            .query_row("SELECT custom_agent FROM runs WHERE id = ?1", [id], |r| r.get(0))
+            .optional()?;
+        Ok(stored.flatten().is_some_and(|json| {
+            serde_json::from_str::<crate::custom_agents::CustomAgent>(&json).is_err()
+        }))
+    }
+
     pub fn get_run(&self, id: &str) -> Result<Option<Run>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch, pr_merged_head, custom_agent FROM runs WHERE id = ?1",
@@ -1947,9 +1960,13 @@ fn row_to_run(row: &rusqlite::Row) -> Result<Run> {
         branch_cut: row.get::<_, Option<i64>>(21)?.map(|v| v != 0),
         own_branch: row.get(22)?,
         pr_merged_head: row.get(23)?,
-        custom_agent: row
-            .get::<_, Option<String>>(24)?
-            .and_then(|json| serde_json::from_str(&json).ok()),
+        custom_agent: row.get::<_, Option<String>>(24)?.and_then(|json| {
+            // None, not an error: one bad row must not take the whole run list
+            // with it. A launch asks `custom_agent_unreadable` before it starts.
+            serde_json::from_str(&json)
+                .inspect_err(|e| log::error!("run's saved custom agent is unreadable: {e}"))
+                .ok()
+        }),
     })
 }
 
@@ -2168,6 +2185,34 @@ mod tests {
         reg.insert_run(&sample_run("x-1", Some(5200))).unwrap();
         let got = reg.get_run("x-1").unwrap().unwrap();
         assert_eq!(got.port_base, Some(5200));
+    }
+
+    /// Corrupt data can't be told from a plain run by what `get_run` returns, so a
+    /// launch has this to ask. One bad row must not take the run list down either.
+    #[test]
+    fn an_unreadable_custom_agent_is_reported_and_the_run_still_lists() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("a.db")).unwrap();
+        reg.insert_run(&sample_run("plain", None)).unwrap();
+        reg.insert_run(&Run {
+            custom_agent: Some(crate::custom_agents::CustomAgent {
+                id: "reviewer".into(),
+                name: "Reviewer".into(),
+                description: String::new(),
+                instructions: "Body".into(),
+                launch_tag: "ab12".into(),
+            }),
+            ..sample_run("good", None)
+        })
+        .unwrap();
+        reg.insert_run(&sample_run("bad", None)).unwrap();
+        reg.conn.execute("UPDATE runs SET custom_agent = '{nope' WHERE id = 'bad'", []).unwrap();
+
+        assert!(!reg.custom_agent_unreadable("plain").unwrap());
+        assert!(!reg.custom_agent_unreadable("good").unwrap());
+        assert!(!reg.custom_agent_unreadable("missing").unwrap());
+        assert!(reg.custom_agent_unreadable("bad").unwrap());
+        assert_eq!(reg.get_run("bad").unwrap().unwrap().custom_agent, None);
     }
 
     #[test]

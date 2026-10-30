@@ -1246,6 +1246,8 @@ export interface CustomAgents {
   agents: CustomAgentInfo[];
   // Harnesses that can be given one. Anything else refuses at spawn.
   harnesses: string[];
+  // Definitions that couldn't be read, and why.
+  skipped: { file: string; reason: string }[];
 }
 export const listCustomAgents = (projectId: string | null) =>
   invoke<CustomAgents>("list_custom_agents", { projectId });

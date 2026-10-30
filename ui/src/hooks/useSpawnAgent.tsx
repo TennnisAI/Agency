@@ -76,7 +76,7 @@ export function useSpawnAgent(project: Project | null, onRepoResolved?: () => vo
         if (issue) await startIssue(issue, agentId, opts);
         // base/mergeTarget are ignored for a run that stays in the checkout;
         // they're spelled only because SpawnOpts asks for them.
-        else await createAgent(agentId, { base: "HEAD", mergeTarget: "", worktree: false });
+        else await createAgent(agentId, { ...opts, base: "HEAD", mergeTarget: "", worktree: false });
         return;
       }
       // A dirty checkout only blocks cutting a worktree (the new branch would

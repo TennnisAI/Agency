@@ -455,6 +455,37 @@ fn conflicting_merge_stays_on_base_for_resolution() {
     merge::abort_merge(dir.path(), None).unwrap();
 }
 
+/// Saving a "This project" agent writes an untracked file into the checkout, and
+/// that alone refused every merge with "uncommitted changes".
+#[test]
+fn an_uncommitted_project_agent_does_not_block_a_merge() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    run(dir.path(), &["checkout", "-q", "-b", "agent/p"]);
+    std::fs::write(dir.path().join("new.txt"), "hi\n").unwrap();
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-q", "-m", "add new"]);
+    run(dir.path(), &["checkout", "-q", "main"]);
+
+    std::fs::create_dir_all(dir.path().join(".agency/agents")).unwrap();
+    std::fs::write(dir.path().join(".agency/agents/reviewer.md"), "x").unwrap();
+    let outcome = merge::merge_with_progress(dir.path(), "agent/p", "main", &mut |_| {}).unwrap();
+    assert!(matches!(outcome, MergeOutcome::Clean { .. }));
+    assert!(dir.path().join(".agency/agents/reviewer.md").exists());
+    assert!(matches!(
+        agency_core::setup::repo_readiness(dir.path()),
+        agency_core::setup::RepoReadiness::Ready { dirty: false }
+    ));
+
+    // Anything else in the checkout still stops it.
+    std::fs::write(dir.path().join("notes.md"), "mine").unwrap();
+    assert!(merge::merge_with_progress(dir.path(), "agent/p", "main", &mut |_| {}).is_err());
+    assert!(matches!(
+        agency_core::setup::repo_readiness(dir.path()),
+        agency_core::setup::RepoReadiness::Ready { dirty: true }
+    ));
+}
+
 #[test]
 fn merge_with_progress_names_each_step_it_takes() {
     let dir = tempfile::tempdir().unwrap();

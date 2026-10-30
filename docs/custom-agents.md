@@ -19,7 +19,8 @@ You review diffs. Lead with what is wrong, and say why.
 ```
 
 - `.agency/agents/<id>.md` is one project's. The directory stays trackable, so
-  commit it to share the agent with your team.
+  commit it to share the agent with your team. Until you do, it doesn't count as
+  uncommitted work for a merge or a spawn. An edit to a committed one does.
 - `custom-agents/<id>.md` in the app's data directory is available in every
   project. Both are offered even under one id, and a project's is labelled as
   such in the picker (`Project: Reviewer`), so a `git pull` can't change what picking yours starts.
@@ -29,6 +30,10 @@ frontmatter is dropped, on purpose: a project's agents arrive through `git pull`
 and a native format's `permissionMode`, `tools`, `hooks` or `mcpServers` must not
 change what an agent may do because someone picked it from a menu. A model is
 left out because its ids belong to one CLI; the spawn has its own picker.
+
+A file copied from a harness's own format is fine: a `>` or `|` block and single
+quotes are understood, and a description past 300 characters is cut short. A file
+that still can't be read is named in Settings.
 
 ## How each harness is told
 
@@ -48,7 +53,10 @@ was probed against which version.
 it commits could answer to, and `--agent` would launch that file instead. A path
 that leaves the worktree through a symlink is refused, and the spawn with it.
 
-Generated files are excluded from git. Any other harness refuses at spawn rather
+Generated files are excluded from git. A run in your checkout leaves its file
+there until the run is archived or deleted, and a harness that scans that
+directory can offer it to other sessions in the checkout until then. Any other
+harness refuses at spawn rather
 than starting a plain agent that looks like the one you asked for. So does Cursor
 without its own worktree, because its rules file would apply to everything else
 running in your checkout.

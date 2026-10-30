@@ -583,8 +583,8 @@ pub fn merge_with_progress(
             m.branch
         );
     }
-    let dirty = git_ok(repo, &["status", "--porcelain"])?;
-    if !dirty.trim().is_empty() {
+    let dirty = git_ok(repo, &["status", "--porcelain", "--untracked-files=all"])?;
+    if crate::custom_agents::checkout_dirty(&dirty) {
         bail!("the project's main checkout has uncommitted changes; commit or stash them there before merging");
     }
     // Remember which branch the main checkout was on so a clean merge can put

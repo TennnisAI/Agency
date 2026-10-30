@@ -17,7 +17,7 @@ export const customAgentLabel = (a: CustomAgentInfo) =>
  * the last list standing, and the spawn itself is what reports a bad pick.
  */
 export function useCustomAgents(projectId: string | null) {
-  const [data, setData] = useState<CustomAgents>({ agents: [], harnesses: [] });
+  const [data, setData] = useState<CustomAgents>({ agents: [], harnesses: [], skipped: [] });
   const reload = useCallback(() => {
     listCustomAgents(projectId).then(setData).catch(() => {});
   }, [projectId]);

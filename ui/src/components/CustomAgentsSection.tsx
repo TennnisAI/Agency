@@ -24,7 +24,7 @@ type Draft = {
 // A harness is an "Agent profile" in the section above this one; the two are
 // separate because one says which CLI to launch and this says who it is.
 export default function CustomAgentsSection({ projectId }: { projectId: string | null }) {
-  const [data, setData] = useState<CustomAgents>({ agents: [], harnesses: [] });
+  const [data, setData] = useState<CustomAgents>({ agents: [], harnesses: [], skipped: [] });
   const [draft, setDraft] = useState<Draft | null>(null);
   const [error, setError] = useState("");
   const [deleting, setDeleting] = useState<CustomAgentInfo | null>(null);
@@ -66,6 +66,9 @@ export default function CustomAgentsSection({ projectId }: { projectId: string |
         An agent you write once and start in any of these harnesses:{" "}
         {data.harnesses.map(agentLabel).join(", ")}. Pick one from the add agent menu.
       </p>
+      {data.skipped.map((s) => (
+        <div key={s.file} className="git-error">Couldn't load {s.file}: {s.reason}</div>
+      ))}
       <div className="settings-card-list">
         {data.agents.map((a) => (
           <div key={a.selection} className="settings-profile-card">
@@ -120,7 +123,7 @@ export default function CustomAgentsSection({ projectId }: { projectId: string |
           {!draft.id && projectId && (
             <Field
               label="Available in"
-              hint={<>This project keeps it in <code>.agency/agents/</code>, where you can commit it to share it.</>}
+              hint={<>This project keeps it in <code>.agency/agents/</code>. Commit it to share it; until then it only exists on this machine.</>}
             >
               <select
                 className="settings-input"

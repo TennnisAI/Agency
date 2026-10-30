@@ -1,4 +1,5 @@
 import { IssuePatch, IssueStatus } from "../api";
+import { ASSETS_DIR, Attachment, ISSUES_DIR } from "./attachments";
 import { ISSUE_STATUSES, PRIORITY_LABELS } from "./issues";
 
 // A new issue being written in the composer (AGE-255). The board used to
@@ -19,6 +20,9 @@ export interface IssueDraft {
   // Whether the composer is up. A draft closed without a title is kept but put
   // away, and the board should come back to it closed, not sprung open.
   open: boolean;
+  // Names of the files this draft wrote into the assets dir: the only ones
+  // discarding it may trash.
+  owned: string[];
 }
 
 export const NEW_DRAFT: IssueDraft = {
@@ -29,6 +33,7 @@ export const NEW_DRAFT: IssueDraft = {
   due: null,
   scheduled: null,
   open: true,
+  owned: [],
 };
 
 export function issuesDraftKey(projectId: string): string {
@@ -64,6 +69,7 @@ export function parseDraft(raw: string | null): IssueDraft | null {
     due: date(o.due),
     scheduled: date(o.scheduled),
     open: o.open === true,
+    owned: Array.isArray(o.owned) ? o.owned.filter((n): n is string => typeof n === "string") : [],
   };
 }
 
@@ -109,6 +115,45 @@ export function draftExtras(draft: IssueDraft): IssuePatch | null {
   return Object.keys(p).length > 0 ? p : null;
 }
 
+// A file attached to a draft is named before the issue has a key to name it
+// after. The time keeps it unique: the backend refuses to overwrite and the
+// write gives up after five suffixes, so a bare `draft-image.png` would stop
+// attaching after the fifth one ever dropped in the project.
+const DRAFT_ASSET_PREFIX = "draft-";
+
+export function draftAttachLabel(now: Date = new Date()): string {
+  return `${DRAFT_ASSET_PREFIX}${now.getTime().toString(36)}`;
+}
+
+// What discarding a draft may trash. Recorded rather than read off the name: a
+// filed issue keeps its `draft-` file names, and a project keyed DRAFT names
+// its assets the same way, so a link to either pasted into a draft would have
+// had the discard trash another issue's file. Directly under `assets/` only.
+export function ownedByDraft(draft: IssueDraft, a: Attachment): boolean {
+  return draft.owned.includes(a.name) && a.ref === `${ASSETS_DIR}/${a.name}`;
+}
+
+// The repo paths of every file this draft wrote, linked or not: a file whose
+// link was deleted by hand was left in the assets dir when the draft was
+// discarded, with nothing pointing at it. The names come back out of storage,
+// so anything that is not a plain file name is refused rather than trashed.
+export function draftOwnedPaths(draft: IssueDraft): string[] {
+  return draft.owned
+    .filter((n) => n !== "" && n !== "." && n !== ".." && !/[/\\]/.test(n))
+    .map((n) => `${ISSUES_DIR}/${ASSETS_DIR}/${n}`);
+}
+
+// What Escape does in the composer. It stays on the modal stack while busy, and
+// holds, rather than dropping off: re-registering when an attach ended put the
+// composer above a date picker or preview opened meanwhile, so the next Escape
+// closed the composer and filed a half-written issue instead of closing that.
+export type ComposerEscape = "menu" | "close" | "hold";
+
+export function composerEscape(menuOpen: boolean, busy: boolean): ComposerEscape {
+  if (menuOpen) return "menu";
+  return busy ? "hold" : "close";
+}
+
 type DraftStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 // Every project's draft, and which of them are being saved, shared by every
@@ -123,6 +168,17 @@ export interface DraftStore {
   set(key: string, draft: IssueDraft | null): void;
   saving(key: string): boolean;
   setSaving(key: string, on: boolean): void;
+  // Files being written for a draft. Held here for the same reason as `saving`:
+  // a tab switch mid-write remounts the composer, which must still hold Save
+  // back or the issue is filed without the links.
+  attaching(key: string): boolean;
+  setAttaching(key: string, on: boolean): void;
+  // Where the caret belongs after a paste's links land. Spliced into the body
+  // from outside, the link went in after the caret and the next word typed
+  // landed in front of the image. Held here because the composer that takes it
+  // may not be the one that was mounted when the write began.
+  setCaret(key: string, caret: number): void;
+  takeCaret(key: string): number | null;
   subscribe(notify: () => void): () => void;
 }
 
@@ -132,6 +188,8 @@ export function createDraftStore(storage: () => DraftStorage | null): DraftStore
   // Parsed once per key, so a snapshot is the same object until it changes.
   const cache = new Map<string, IssueDraft | null>();
   const inFlight = new Set<string>();
+  const attachingNow = new Set<string>();
+  const carets = new Map<string, number>();
   const listeners = new Set<() => void>();
   const notify = () => listeners.forEach((l) => l());
   return {
@@ -163,6 +221,20 @@ export function createDraftStore(storage: () => DraftStorage | null): DraftStore
       if (on) inFlight.add(key);
       else inFlight.delete(key);
       notify();
+    },
+    attaching: (key) => attachingNow.has(key),
+    setAttaching(key, on) {
+      if (on) attachingNow.add(key);
+      else attachingNow.delete(key);
+      notify();
+    },
+    setCaret(key, caret) {
+      carets.set(key, caret);
+    },
+    takeCaret(key) {
+      const caret = carets.get(key) ?? null;
+      carets.delete(key);
+      return caret;
     },
     subscribe(l) {
       listeners.add(l);

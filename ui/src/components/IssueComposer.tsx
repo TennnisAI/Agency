@@ -1,15 +1,18 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { FileRoot } from "../api";
 import { CrossRefs } from "../lib/links";
 import { DocsIndex } from "../lib/docsIndex";
-import { IssueDraft, closeOutcome, draftWaiting } from "../lib/issueDraft";
+import { IssueDraft, closeOutcome, composerEscape, draftAttachLabel, draftWaiting } from "../lib/issueDraft";
 import { ISSUE_STATUSES, PRIORITY_LABELS, STATUS_LABELS } from "../lib/issues";
-import { ISSUES_DIR } from "../lib/attachments";
+import { AttachAt, Attachment, ISSUES_DIR, parseAttachments } from "../lib/attachments";
+import { Attached, attachBlob, attachPath } from "../lib/issueAttach";
 import { MenuCoords, anchorMenu } from "../lib/menuAnchor";
 import { useDismissOnResize } from "../hooks/useDismissOnResize";
+import { useFileDrop } from "../hooks/useFileDrop";
 import { useModalKeys } from "../hooks/useModalKeys";
 import { PriorityGlyph, StatusDot } from "./IssueRow";
 import { DateProp } from "./IssueDetail";
+import IssueAttachments from "./IssueAttachments";
 import MarkdownEditor, { MarkdownEditorHandle } from "./MarkdownEditor";
 import ConfirmDialog from "./ConfirmDialog";
 
@@ -30,7 +33,11 @@ export default function IssueComposer({
   index,
   cross,
   saving,
+  attaching,
   onChange,
+  takeCaret,
+  onAttach,
+  onRemoveAttachment,
   onSave,
   onDiscard,
   onClose,
@@ -42,7 +49,13 @@ export default function IssueComposer({
   cross: CrossRefs | null;
   // A save in flight: the buttons hold still so it cannot be sent twice.
   saving: boolean;
+  // Files being written: everything that ends the draft waits for them, or the
+  // links would land on a draft that is already gone.
+  attaching: boolean;
   onChange: (next: IssueDraft) => void;
+  takeCaret: () => number | null;
+  onAttach: (jobs: Array<() => Promise<Attached>>, at: AttachAt | null) => void;
+  onRemoveAttachment: (a: Attachment) => void;
   onSave: () => void;
   onDiscard: () => void;
   onClose: () => void;
@@ -55,7 +68,23 @@ export default function IssueComposer({
   const statusRef = useRef<HTMLButtonElement>(null);
   const priorityRef = useRef<HTMLButtonElement>(null);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
-  const canSave = draft.title.trim() !== "" && !saving;
+  const busy = saving || attaching;
+  const canSave = draft.title.trim() !== "" && !busy;
+  const scrimRef = useRef<HTMLDivElement>(null);
+  const attachments = useMemo(() => parseAttachments(draft.body), [draft.body]);
+
+  // A file dropped here used to vanish without a word: nothing listened, and
+  // the pane's own listener rightly refuses a drop on the composer covering it.
+  // The whole scrim counts, so a near miss on the card still lands. The discard
+  // question sits inside the scrim too, and a drop on it is not an attachment.
+  const dropOver = useFileDrop<true>(
+    (x, y) => {
+      if (busy || confirmDiscard) return null;
+      const el = document.elementFromPoint(x, y);
+      return el && scrimRef.current?.contains(el) ? true : null;
+    },
+    (paths) => onAttach(paths.map((p) => () => attachPath(root, draftAttachLabel(), p)), null),
+  );
 
   // The editor reports keystrokes through a callback it captured once, so the
   // merge has to read the draft as it is now, not as it was at mount.
@@ -65,7 +94,11 @@ export default function IssueComposer({
 
   // The status and priority menus are not on the modal stack (the date picker
   // is), so Escape over one of them closes the menu, not the whole form.
-  useModalKeys(() => (menu ? setMenu(null) : onClose()), !saving);
+  useModalKeys(() => {
+    const action = composerEscape(menu !== null, busy);
+    if (action === "menu") setMenu(null);
+    else if (action === "close") onClose();
+  });
   useDismissOnResize(menu !== null, () => setMenu(null));
 
   // Whatever was being written last gets the caret back: the title for a new
@@ -87,6 +120,16 @@ export default function IssueComposer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // After the mount effect above, so a paste that finished during a tab switch
+  // still parks the caret after its link. The editor has followed `value` by
+  // now: a child's effects run before its parent's.
+  useEffect(() => {
+    const caret = takeCaret();
+    const v = bodyRef.current?.view();
+    if (caret !== null && v) v.dispatch({ selection: { anchor: Math.min(caret, v.state.doc.length) } });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft.body]);
+
   // The title wraps rather than scrolls, as in the detail pane.
   useLayoutEffect(() => {
     const el = titleRef.current;
@@ -103,7 +146,7 @@ export default function IssueComposer({
   };
 
   return (
-    <div className="issue-composer-scrim">
+    <div className="issue-composer-scrim" ref={scrimRef}>
       <section
         className="issue-composer"
         role="dialog"
@@ -124,7 +167,7 @@ export default function IssueComposer({
           <button
             className="icon-btn"
             title={draft.title.trim() ? "Close and save (Esc)" : "Close, keeping the draft (Esc)"}
-            disabled={saving}
+            disabled={busy}
             onClick={onClose}
           >
             ✕
@@ -173,13 +216,13 @@ export default function IssueComposer({
               onChange={(scheduled) => set({ scheduled })}
             />
           </div>
-          {/* No paste-to-attach here: an attachment is filed under the issue's
-              key, and a draft does not have one until it is saved. */}
+          {/* A draft has no issue key to file an attachment under, so these
+              are named for the draft (draftAttachLabel) and keep that name. */}
           <MarkdownEditor
             ref={bodyRef}
             className="issue-detail-body issue-composer-body md-live"
             value={draft.body}
-            placeholder="Add description…  (files can be attached once the issue is saved)"
+            placeholder="Add description…  (paste or drop a file to attach)"
             root={root}
             dir={ISSUES_DIR}
             path="new-issue.md"
@@ -188,13 +231,21 @@ export default function IssueComposer({
             onChange={(body) => set({ body })}
             onNavigate={onFollowLink}
             onTagClick={() => {}}
+            onPasteFiles={(files, at) => {
+              if (busy) return;
+              onAttach(files.map((f) => () => attachBlob(root, draftAttachLabel(), f)), at);
+            }}
           />
+          <IssueAttachments root={root} attachments={attachments} onRemove={onRemoveAttachment} />
+          {(dropOver || attaching) && (
+            <div className="issue-drop-hint">{attaching ? "Attaching…" : "Drop to attach to this issue"}</div>
+          )}
         </div>
         <div className="issue-composer-foot">
           <button
             className="btn-secondary"
             title="Throw this draft away"
-            disabled={saving}
+            disabled={busy}
             // Asked first once anything is typed: Discard sits by itself in
             // the corner, and one click there threw away a whole description.
             onClick={() => (draftWaiting(draft) ? setConfirmDiscard(true) : onDiscard())}
@@ -239,7 +290,7 @@ export default function IssueComposer({
       {confirmDiscard && (
         <ConfirmDialog
           title="Discard this draft?"
-          body="The title and description you have written are thrown away. This can't be undone."
+          body="The title and description you have written are thrown away, and any files you attached go to the trash. You can't get the draft back."
           confirmLabel="Discard"
           danger
           onConfirm={() => { setConfirmDiscard(false); onDiscard(); }}

@@ -2,8 +2,10 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import {
   CloneProgress, FileRoot, Issue, IssuePatch, IssueStatus, IssueSyncMode, Project,
   addIssueComment, createIssue, deleteIssue, deleteIssueComment, getIssueSyncConfig, getWorkspace,
-  syncIssues, updateIssue, updateIssueComment,
+  syncIssues, trashPath, updateIssue, updateIssueComment,
 } from "../api";
+import { AttachAt, Attachment, removeAttachment, spliceAttachments } from "../lib/attachments";
+import { Attached } from "../lib/issueAttach";
 import { planReorder } from "../lib/issueRank";
 import {
   BatchPatch, batchSummary, batchWrites, describeBatch, pruneChecked, rangeChecked, toggleChecked,
@@ -41,7 +43,8 @@ import {
   stepSelection,
 } from "../lib/issues";
 import {
-  IssueDraft, NEW_DRAFT, closeOutcome, createDraftStore, draftExtras, draftWaiting, issuesDraftKey,
+  IssueDraft, NEW_DRAFT, closeOutcome, createDraftStore, draftExtras, draftOwnedPaths, draftWaiting,
+  issuesDraftKey, ownedByDraft,
 } from "../lib/issueDraft";
 import { autoSchedules, shouldSayKeyMismatch } from "../lib/autoSync";
 import { ConflictReport, conflictReports } from "../lib/syncConflicts";
@@ -53,6 +56,7 @@ import IssueRow from "./IssueRow";
 import IssueBatchBar from "./IssueBatchBar";
 import IssueDetail from "./IssueDetail";
 import IssueComposer from "./IssueComposer";
+import { forgetAttachment } from "./IssueAttachments";
 import ConfirmDialog from "./ConfirmDialog";
 import PillSelect from "./PillSelect";
 import ProgressReadout from "./ProgressReadout";
@@ -152,6 +156,7 @@ export default function IssuesView({
   const draftKey = issuesDraftKey(project.id);
   const draft = useSyncExternalStore(issueDrafts.subscribe, () => issueDrafts.get(draftKey));
   const savingDraft = useSyncExternalStore(issueDrafts.subscribe, () => issueDrafts.saving(draftKey));
+  const attachingDraft = useSyncExternalStore(issueDrafts.subscribe, () => issueDrafts.attaching(draftKey));
   // A save that lands after a project switch clears its own project's stored
   // draft, and must leave the one now on screen alone.
   const draftKeyRef = useRef(draftKey);
@@ -706,7 +711,7 @@ export default function IssuesView({
     const d = draft;
     const title = d?.title.trim();
     const key = draftKey;
-    if (!d || !title || issueDrafts.saving(key)) return;
+    if (!d || !title || issueDrafts.saving(key) || issueDrafts.attaching(key)) return;
     issueDrafts.setSaving(key, true);
     try {
       const issue = await createIssue(project.id, title, d.body, d.status);
@@ -743,8 +748,70 @@ export default function IssuesView({
         toastInfo("Draft kept. It needs a title to be saved; press + to finish it.");
         return;
       case "discard":
-        setDraft(null);
+        discardComposer();
     }
+  }
+
+  // Lives here and not in the composer, which a tab switch can unmount while
+  // the bytes are still being written. The links go into the stored draft as it
+  // is when the write ends, so a remounted composer's typing is not overwritten.
+  async function attachToDraft(jobs: Array<() => Promise<Attached>>, at: AttachAt | null) {
+    const key = draftKey;
+    if (jobs.length === 0 || issueDrafts.saving(key) || issueDrafts.attaching(key)) return;
+    issueDrafts.setAttaching(key, true);
+    try {
+      const done: Attached[] = [];
+      for (const job of jobs) {
+        try {
+          done.push(await job());
+        } catch (e) {
+          toastError(e, "Couldn't attach file");
+        }
+      }
+      const cur = issueDrafts.get(key);
+      if (done.length === 0 || !cur) return;
+      const md = done.map((d) => d.markdown).join("\n");
+      const next = spliceAttachments(cur.body, md, at);
+      if (next.cursor !== undefined) issueDrafts.setCaret(key, next.cursor);
+      setDraft({
+        ...cur,
+        body: next.body,
+        owned: [...cur.owned, ...done.map((d) => d.name)],
+      }, key);
+    } finally {
+      issueDrafts.setAttaching(key, false);
+    }
+  }
+
+  async function trashDraftFile(repoPath: string) {
+    forgetAttachment(fileRoot, repoPath);
+    try {
+      await trashPath(fileRoot, repoPath);
+    } catch (e) {
+      toastError(e, "Removed the link, but couldn't delete the file");
+    }
+  }
+
+  function removeDraftAttachment(a: Attachment) {
+    // The save in flight already carries this link: trashing the file now
+    // would file the issue pointing at nothing.
+    if (!draft || issueDrafts.saving(draftKey)) return;
+    const owned = ownedByDraft(draft, a);
+    setDraft({
+      ...draft,
+      body: removeAttachment(draft.body, a),
+      // A nested link sharing an owned name leaves the claim on the real file.
+      owned: owned ? draft.owned.filter((n) => n !== a.name) : draft.owned,
+    });
+    if (owned) void trashDraftFile(a.repoPath);
+  }
+
+  // The files were written as soon as they were dropped, so a discarded draft
+  // would otherwise leave them in the assets dir with nothing linking to them.
+  function discardComposer() {
+    const owned = draft ? draftOwnedPaths(draft) : [];
+    setDraft(null);
+    owned.forEach((p) => { void trashDraftFile(p); });
   }
 
   async function patch(issue: Issue, p: IssuePatch) {
@@ -1267,9 +1334,13 @@ export default function IssuesView({
           index={ownDocs.index}
           cross={cross}
           saving={savingDraft}
+          attaching={attachingDraft}
           onChange={(next) => setDraft(next)}
+          takeCaret={() => issueDrafts.takeCaret(draftKey)}
+          onAttach={(jobs, at) => { void attachToDraft(jobs, at); }}
+          onRemoveAttachment={removeDraftAttachment}
           onSave={() => { void saveComposer(); }}
-          onDiscard={() => setDraft(null)}
+          onDiscard={discardComposer}
           onClose={closeComposer}
           onFollowLink={followLink}
         />

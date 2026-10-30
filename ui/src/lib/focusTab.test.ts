@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agentViewTab, loadFocusTab, restorableRun, saveFocusTab, resolveFocusTab, PRIMARY_TAB, RUN_TAB, LOG_TAB } from "./focusTab";
+import { agentViewTab, loadFocusTab, nextRunMemory, saveFocusTab, resolveFocusTab, PRIMARY_TAB, RUN_TAB, LOG_TAB } from "./focusTab";
 
 function makeStorage(): Pick<Storage, "getItem" | "setItem"> {
   const map = new Map<string, string>();
@@ -122,27 +122,23 @@ describe("agentViewTab", () => {
   });
 });
 
-describe("restorableRun", () => {
-  const runs = [{ id: "a" }, { id: "b" }];
-
-  it("goes back to the remembered run when nothing is focused", () => {
-    expect(restorableRun("a", runs, null)).toBe("a");
+describe("nextRunMemory", () => {
+  it("files a focused run under its project, replacing the last one", () => {
+    expect(nextRunMemory({}, "p1", "a")).toEqual({ p1: "a" });
+    expect(nextRunMemory({ p1: "a" }, "p1", "b")).toEqual({ p1: "b" });
   });
 
-  it("leaves a focused run alone, even one that differs from the memory", () => {
-    expect(restorableRun("a", runs, "b")).toBeNull();
+  it("forgets only that project's run on a null", () => {
+    expect(nextRunMemory({ p1: "a", p2: "b" }, "p1", null)).toEqual({ p2: "b" });
   });
 
-  it("has nothing to restore without a memory", () => {
-    expect(restorableRun(null, runs, null)).toBeNull();
+  it("leaves the other projects alone when one remembers a run", () => {
+    expect(nextRunMemory({ p1: "a" }, "p2", "b")).toEqual({ p1: "a", p2: "b" });
   });
 
-  it("waits while the list still holds the project just left", () => {
-    expect(restorableRun("c", runs, null)).toBeNull();
-    expect(restorableRun("c", [...runs, { id: "c" }], null)).toBe("c");
-  });
-
-  it("does not bring back a run removed while away", () => {
-    expect(restorableRun("gone", runs, null)).toBeNull();
+  it("has nowhere to file a run with no project selected", () => {
+    const memory = { p1: "a" };
+    expect(nextRunMemory(memory, null, "b")).toBe(memory);
+    expect(nextRunMemory(memory, null, null)).toBe(memory);
   });
 });

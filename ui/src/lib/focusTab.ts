@@ -43,19 +43,19 @@ export function saveFocusTab(
   }
 }
 
-// The run the agents side panel should go back to: the one the project last had
-// focused, once nothing else is and it is really in the list. Switching projects
-// clears the focus, so the panel came back to "Pick an agent…" after every visit
-// elsewhere (AGE-276). The list check matters twice over: `runs` still holds the
-// project just left until the next refresh, and the run may have been archived
-// while we were away.
-export function restorableRun(
-  remembered: string | null,
-  runs: { id: string }[],
-  focusedRunId: string | null,
-): string | null {
-  if (focusedRunId || !remembered) return null;
-  return runs.some((r) => r.id === remembered) ? remembered : null;
+// The per-project memory of the focused run after a focus change. A run is
+// remembered against its project and a null forgets that project's alone, since
+// the others are still waiting to be come back to (AGE-276). With no project
+// selected there is nothing to file it under.
+export function nextRunMemory(
+  memory: Record<string, string>,
+  projectId: string | null,
+  runId: string | null,
+): Record<string, string> {
+  if (!projectId) return memory;
+  if (runId) return { ...memory, [projectId]: runId };
+  const { [projectId]: _forgotten, ...rest } = memory;
+  return rest;
 }
 
 // The tab to land on when the remembered one cannot be drawn. Normally the

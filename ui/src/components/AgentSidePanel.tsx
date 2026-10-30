@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Project, RunInfo } from "../api";
 import { useRuns } from "../store/runs";
-import { loadFocusTab, restorableRun, saveFocusTab, PRIMARY_TAB } from "../lib/focusTab";
-import { RunTab, runTabs, showsTabs, sidePanelTab, workspaceStatus } from "../lib/runTabs";
+import { loadFocusTab, saveFocusTab, PRIMARY_TAB } from "../lib/focusTab";
+import { RunTab, restorableRun, runTabs, showsTabs, sidePanelTab, workspaceStatus } from "../lib/runTabs";
 import { runListLabel } from "../agents";
 import { useDismissOnResize } from "../hooks/useDismissOnResize";
 import { useRepoReadiness, isGitless } from "../hooks/useRepoReadiness";
@@ -41,27 +41,27 @@ export default function AgentSidePanel({ project }: { project: Project }) {
   const { spawn, error, dialogs } = useSpawnAgent(project, refresh);
   const gitless = isGitless(readiness);
 
+  // The tab this panel shows for a run: the one the focus view (or a pick here)
+  // last put on screen, else the one the run remembers, vetted by sidePanelTab
+  // against the tabs the run still draws.
+  const panelOf = (runId: string) =>
+    shownTab?.runId === runId
+      ? shownTab.tab
+      : typeof localStorage !== "undefined" ? loadFocusTab(localStorage, runId) : PRIMARY_TAB;
+
   // Coming back to a project clears the focus, and with this panel left open that
   // meant an empty panel and a trip to the picker on every return (AGE-276). Only
   // the run comes back, not the focus view: that would move the Docs and Files
   // root to the run's worktree under a note link or a daily note that was opened
   // against the checkout on the way in.
   useEffect(() => {
-    const run = restorableRun(rememberedRun(project.id), runs, focusedRunId);
+    const run = restorableRun(rememberedRun(project.id), runs, focusedRunId, panelOf);
     if (run) setFocusedRun(run);
-  }, [project.id, runs, focusedRunId, rememberedRun, setFocusedRun]);
+  }, [project.id, runs, focusedRunId, shownTab, rememberedRun, setFocusedRun]);
 
   const focused = runs.find((r) => r.id === focusedRunId) ?? null;
   const captureFirstPrompt = useFirstPromptCapture(focused?.id, focused?.title);
-  // The tab this panel shows for the focused run: the one the focus view (or a
-  // pick here) last put on screen, else the one the run remembers, vetted by
-  // sidePanelTab against the tabs the run still draws.
-  const shownPanel = focused
-    ? shownTab?.runId === focused.id
-      ? shownTab.tab
-      : typeof localStorage !== "undefined" ? loadFocusTab(localStorage, focused.id) : PRIMARY_TAB
-    : null;
-  const tab = focused ? sidePanelTab(focused, shownPanel) : null;
+  const tab = focused ? sidePanelTab(focused, panelOf(focused.id)) : null;
   const popouts = usePopouts();
   const poppedOut = tab ? popoutForSession(popouts, tab.session) : null;
   // Picker menu, anchored in viewport coordinates so the panel's own overflow

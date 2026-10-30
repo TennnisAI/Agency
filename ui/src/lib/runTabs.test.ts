@@ -3,6 +3,7 @@ import { RunActivity, RunInfo, RunSessionInfo } from "../api";
 import { PRIMARY_TAB } from "./focusTab";
 import { runStatus } from "./runstate";
 import {
+  restorableRun,
   runTabs,
   showsTabs,
   sidePanelTab,
@@ -32,6 +33,63 @@ const run = (over: Partial<RunInfo> = {}): RunInfo =>
     sessions: [],
     ...over,
   }) as RunInfo;
+
+describe("restorableRun", () => {
+  const runs = [run({ id: "a" }), run({ id: "b" })];
+  const primary = () => PRIMARY_TAB;
+
+  it("goes back to the remembered run when nothing is focused", () => {
+    expect(restorableRun("a", runs, null, primary)).toBe("a");
+  });
+
+  it("leaves a focused run alone, even one that differs from the memory", () => {
+    expect(restorableRun("a", runs, "b", primary)).toBeNull();
+  });
+
+  it("has nothing to restore without a memory", () => {
+    expect(restorableRun(null, runs, null, primary)).toBeNull();
+  });
+
+  it("waits while the list still holds the project just left", () => {
+    expect(restorableRun("c", runs, null, primary)).toBeNull();
+    expect(restorableRun("c", [...runs, run({ id: "c" })], null, primary)).toBe("c");
+  });
+
+  it("does not bring back a run removed while away", () => {
+    expect(restorableRun("removed", runs, null, primary)).toBeNull();
+  });
+
+  it("does not respawn an agent whose session went while away", () => {
+    const gone = run({ status: { state: "gone" } });
+    expect(restorableRun("r1", [gone], null, primary)).toBeNull();
+  });
+
+  it("does not respawn a terminal whose session went while away", () => {
+    const gone = run({ kind: "terminal", status: { state: "gone" } });
+    expect(restorableRun("r1", [gone], null, primary)).toBeNull();
+  });
+
+  it("restores an agent that exited but still has its session", () => {
+    // Only a gone session is respawned; an exited one just shows how it ended.
+    const exited = run({ status: { state: "exited", code: 0 } });
+    expect(restorableRun("r1", [exited], null, primary)).toBe("r1");
+  });
+
+  it("goes by the tab the panel would show, not the run's own agent", () => {
+    const r = run({
+      status: { state: "gone" },
+      sessions: [session("r1--2", "codex"), session("r1--3", "codex", { state: "gone" })],
+    });
+    expect(restorableRun("r1", [r], null, () => "r1--2")).toBe("r1");
+    expect(restorableRun("r1", [r], null, () => "r1--3")).toBeNull();
+    expect(restorableRun("r1", [r], null, primary)).toBeNull();
+  });
+
+  it("restores a run with no tab left, which has nothing to respawn", () => {
+    const empty = run({ status: { state: "gone" }, primaryClosed: true });
+    expect(restorableRun("r1", [empty], null, primary)).toBe("r1");
+  });
+});
 
 describe("runTabs", () => {
   it("is the run's own agent alone when it has no extra tabs", () => {

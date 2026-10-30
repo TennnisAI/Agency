@@ -148,6 +148,8 @@ export interface RunInfo {
   issueId: string | null;
   // Model this run's agent was launched on; null = the agent's own default.
   model: string | null;
+  // Name of the custom agent this run was launched as; null = the plain harness.
+  customAgent: string | null;
   // Messages Agency is holding for this run and has not typed into its session
   // yet. Non-zero puts the marker on the tile and the run header: a message
   // waiting behind a long turn should read as patience, not as a lost click.
@@ -469,8 +471,8 @@ export const updateIssueComment = (issueId: string, createdAt: number, body: str
   invoke<Issue>("update_issue_comment", { issueId, createdAt, body });
 export const deleteIssueComment = (issueId: string, createdAt: number) =>
   invoke<Issue>("delete_issue_comment", { issueId, createdAt });
-export const startIssueRun = (issueId: string, agent: string, model?: string | null, base?: string | null, mergeTarget?: string | null) =>
-  invoke<RunInfo>("start_issue_run", { issueId, agent, model: model ?? null, base: base ?? null, mergeTarget: mergeTarget ?? null });
+export const startIssueRun = (issueId: string, agent: string, model?: string | null, base?: string | null, mergeTarget?: string | null, customAgent?: string | null) =>
+  invoke<RunInfo>("start_issue_run", { issueId, agent, model: model ?? null, customAgent: customAgent ?? null, base: base ?? null, mergeTarget: mergeTarget ?? null });
 export const startIssueRace = (issueId: string, attempts: RaceAttempt[], base?: string | null, mergeTarget?: string | null) =>
   invoke<RunInfo[]>("start_issue_race", { issueId, attempts, base: base ?? null, mergeTarget: mergeTarget ?? null });
 export const startIssueLoop = (
@@ -483,9 +485,10 @@ export const startIssueLoop = (
   maxTokens: number | null,
   base?: string | null,
   mergeTarget?: string | null,
+  customAgent?: string | null,
 ) =>
   invoke<RunInfo>("start_issue_loop", {
-    issueId, agent, model: model ?? null, checkCommand, maxAttempts, maxWallSecs, maxTokens,
+    issueId, agent, model: model ?? null, customAgent: customAgent ?? null, checkCommand, maxAttempts, maxWallSecs, maxTokens,
     base: base ?? null, mergeTarget: mergeTarget ?? null,
   });
 
@@ -634,11 +637,12 @@ export function createRun(
   mergeTarget?: string | null,
   onProgress?: (p: CloneProgress) => void,
   worktree = true,
+  customAgent: string | null = null,
 ): Promise<RunInfo> {
   const onProgressChannel = new Channel<CloneProgress>();
   if (onProgress) onProgressChannel.onmessage = onProgress;
   return invoke<RunInfo>("create_run", {
-    projectId, prompt, agent, model, base, mergeTarget: mergeTarget ?? null, worktree,
+    projectId, prompt, agent, model, customAgent, base, mergeTarget: mergeTarget ?? null, worktree,
     onProgress: onProgressChannel,
   });
 }
@@ -653,9 +657,10 @@ export const createLoop = (
   maxAttempts: number,
   maxWallSecs: number | null,
   maxTokens: number | null,
+  customAgent: string | null = null,
 ) =>
   invoke<RunInfo>("create_loop", {
-    projectId, prompt, agent, model, base, mergeTarget, checkCommand, maxAttempts,
+    projectId, prompt, agent, model, customAgent, base, mergeTarget, checkCommand, maxAttempts,
     maxWallSecs, maxTokens,
   });
 export const stopLoop = (id: string) => invoke<void>("stop_loop", { id });
@@ -1225,6 +1230,38 @@ export const getDispatchTools = (projectId: string) =>
 export const setDispatchTools = (projectId: string, on: boolean) =>
   invoke<void>("set_dispatch_tools", { projectId, on });
 
+// A custom agent: who the agent is, as opposed to the profile, which says which
+// CLI to launch. See crates/agency-core/src/custom_agents.rs.
+export interface CustomAgentInfo {
+  id: string;
+  name: string;
+  description: string;
+  instructions: string;
+  scope: "user" | "project";
+  // What a spawn sends to pick this one: `scope:id`. The scope is part of the
+  // pick, so a project's agent can't stand in for yours of the same name.
+  selection: string;
+}
+export interface CustomAgents {
+  agents: CustomAgentInfo[];
+  // Harnesses that can be given one. Anything else refuses at spawn.
+  harnesses: string[];
+  // Definitions that couldn't be read, and why.
+  skipped: { file: string; reason: string }[];
+}
+export const listCustomAgents = (projectId: string | null) =>
+  invoke<CustomAgents>("list_custom_agents", { projectId });
+export const saveCustomAgent = (
+  scope: "user" | "project",
+  projectId: string | null,
+  id: string | null,
+  name: string,
+  description: string,
+  instructions: string,
+) => invoke<CustomAgentInfo>("save_custom_agent", { scope, projectId, id, name, description, instructions });
+export const deleteCustomAgent = (scope: "user" | "project", projectId: string | null, id: string) =>
+  invoke<void>("delete_custom_agent", { scope, projectId, id });
+
 export const listProfiles = () => invoke<AgentProfile[]>("list_profiles");
 export const saveProfile = (profile: AgentProfile) =>
   invoke<void>("save_profile", { profile });
@@ -1283,6 +1320,9 @@ export interface AgentModelInfo {
  */
 export interface RaceAttempt {
   agent: string;
+  // Snake case because this crosses as a nested struct, which Tauri does not
+  // rename the way it does a command's own arguments.
+  custom_agent?: string | null;
   model: string | null;
 }
 

@@ -81,6 +81,7 @@ export default function AgentTile({ run, pinDrag }: { run: RunInfo; pinDrag?: Pi
         >
           {isTerminal ? "terminal" : run.agent}
           {run.model && <span className="badge-model">{run.model}</span>}
+          {run.customAgent && <span className="badge-model">{run.customAgent}</span>}
         </span>
       </div>
       {!isTerminal && (

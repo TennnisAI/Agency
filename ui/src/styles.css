@@ -302,6 +302,15 @@ button:disabled { opacity: .45; cursor: default; }
 .agent-menu { max-height: calc(100vh - 16px); overflow-y: auto; }
 .agent-menu button { background: transparent; border: none; color: var(--text); text-align: left; cursor: pointer; }
 .agent-menu-sep { height: 1px; background: var(--line); }
+/* Custom agent picker. `.filter-pill` is re-stated here because the menu's item
+   rule (0,1,1) outranks it, and it would draw borderless. */
+.agent-menu-as { display: flex; align-items: center; gap: 8px; padding: 4px 6px; color: var(--o1); font-size: var(--fs-sm); }
+.agent-menu .filter-pill { background: transparent; border: 1px solid var(--s1); color: var(--o1); }
+.agent-menu .filter-pill.active { background: var(--s0); color: var(--text); }
+.agent-menu .agent-menu-name:disabled { opacity: .45; cursor: not-allowed; }
+.race-as { display: flex; align-items: center; gap: 8px; color: var(--o1); font-size: var(--fs-sm); }
+.custom-agent-desc { font-size: var(--fs-sm); color: var(--o1); }
+.custom-agent-instructions { min-height: 160px; resize: vertical; font-family: var(--mono); }
 /* Agent row: the name starts the agent, the chip beside it says which model it
    will start on. The name takes the slack so the chip stays hard right, and
    `min-width: 0` is what lets a long model id clip instead of widening the

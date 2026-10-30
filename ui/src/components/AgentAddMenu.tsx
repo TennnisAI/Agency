@@ -7,8 +7,10 @@ import { effectiveMergeTarget } from "../lib/branchTargets";
 import { useDismissOnResize } from "../hooks/useDismissOnResize";
 import { useMenuAnchor } from "../hooks/useMenuAnchor";
 import { useAgentModels } from "../hooks/useAgentModels";
+import { customAgentLabel, useCustomAgents } from "../hooks/useCustomAgents";
 import BranchSelect from "./BranchSelect";
 import ModelSelect from "./ModelSelect";
+import PillSelect from "./PillSelect";
 import RaceDialog from "./RaceDialog";
 import LoopDialog from "./LoopDialog";
 import GhImportDialog from "./GhImportDialog";
@@ -62,6 +64,12 @@ export default function AgentAddMenu({
   const [picked, setPicked] = useState<Record<string, string | null>>({});
   const modelFor = (agent: string) =>
     agent in picked ? picked[agent] : remembered(agent);
+
+  // The custom agent the next spawn runs as. Reset on every open, like the
+  // worktree box: an agent picked for one spawn must not carry into the next.
+  const { agents: customAgents, takes, reload: reloadCustomAgents } = useCustomAgents(projectId ?? null);
+  const [customAgent, setCustomAgent] = useState("");
+  const asCustom = customAgent ? { customAgent } : {};
 
   // Kept in a ref so a host passing a fresh closure each render doesn't
   // re-announce the same state.
@@ -143,6 +151,8 @@ export default function AgentAddMenu({
     // And a run started elsewhere may have moved an agent's model on.
     reloadModels();
     setPicked({});
+    reloadCustomAgents();
+    setCustomAgent("");
     setRect(btnRef.current?.getBoundingClientRect() ?? null);
     setOpen(true);
   };
@@ -157,7 +167,7 @@ export default function AgentAddMenu({
     // is what starts, whether it came from the last run or from a pick just
     // made here. `null` is the agent's own default, which is a real choice.
     const model = modelFor(id);
-    if (!showPicker) return onSpawn(id, { model });
+    if (!showPicker) return onSpawn(id, { model, ...asCustom });
     // The flag is always stated, never left to the Settings default: the box
     // in front of the user is what this spawn does, whichever way it was set.
     // Issue dispatch has no box (it always cuts a worktree), so a default of
@@ -168,6 +178,7 @@ export default function AgentAddMenu({
       mergeTarget,
       worktree: wantsWorktree,
       model,
+      ...asCustom,
     });
   };
   const chooseTerminal = () => { setOpen(false); onTerminal(); };
@@ -212,9 +223,35 @@ export default function AgentAddMenu({
             {/* Agent and model on one row: the name starts the agent, the chip
                 beside it says which model it will start on and opens the list.
                 Agents whose CLI takes no model flag show no chip. */}
+            {customAgents.length > 0 && (
+              <>
+                <div className="agent-menu-as">
+                  <span>as</span>
+                  <PillSelect
+                    value={customAgent}
+                    defaultValue=""
+                    title="Custom agent"
+                    options={[
+                      { value: "", label: "No custom agent" },
+                      ...customAgents.map((c) => ({ value: c.selection, label: customAgentLabel(c) })),
+                    ]}
+                    onChange={setCustomAgent}
+                  />
+                </div>
+                <div className="agent-menu-sep" />
+              </>
+            )}
+            {/* With a custom agent picked, a harness with no way to be given one
+                can't start: the alternative is a plain agent that looks like
+                the one you asked for. */}
             {agents.map((a) => (
               <div key={a.name} className="agent-menu-row">
-                <button className="agent-menu-name" onClick={() => choose(a.name)}>
+                <button
+                  className="agent-menu-name"
+                  disabled={!!customAgent && !takes(a.name)}
+                  title={customAgent && !takes(a.name) ? `${agentLabel(a.name)} can't be given a custom agent` : undefined}
+                  onClick={() => choose(a.name)}
+                >
                   {agentLabel(a.name)}
                 </button>
                 <ModelSelect

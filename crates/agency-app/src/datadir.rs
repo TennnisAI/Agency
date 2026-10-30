@@ -134,6 +134,7 @@ mod tests {
                 branch_cut: None,
                 own_branch: None,
                 pr_merged_head: None,
+                custom_agent: None,
                 pin_rank: None,
             })
             .unwrap();

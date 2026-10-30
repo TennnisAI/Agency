@@ -123,6 +123,11 @@ pub struct Run {
     /// only copy of work that was already on the base. Only vouches for the
     /// branch while its tip is still this commit.
     pub pr_merged_head: Option<String>,
+    /// The custom agent this run was launched as, as it read then (see
+    /// [`crate::custom_agents`]). A copy rather than an id: a loop's next attempt
+    /// or a resume comes back as the agent the work started under, even if the
+    /// file has been edited or deleted since.
+    pub custom_agent: Option<crate::custom_agents::CustomAgent>,
 }
 
 impl Run {
@@ -506,6 +511,9 @@ impl Registry {
         }
         if !column_exists(&conn, "runs", "pr_merged_head")? {
             conn.execute("ALTER TABLE runs ADD COLUMN pr_merged_head TEXT", [])?;
+        }
+        if !column_exists(&conn, "runs", "custom_agent")? {
+            conn.execute("ALTER TABLE runs ADD COLUMN custom_agent TEXT", [])?;
         }
         if !column_exists(&conn, "projects", "issue_key")? {
             conn.execute("ALTER TABLE projects ADD COLUMN issue_key TEXT", [])?;
@@ -974,15 +982,19 @@ impl Registry {
             Some(s) => Some(serde_json::to_string(s)?),
             None => None,
         };
+        let custom_agent = match &run.custom_agent {
+            Some(agent) => Some(serde_json::to_string(agent)?),
+            None => None,
+        };
         self.conn.execute(
-            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch, pr_merged_head)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch, pr_merged_head, custom_agent)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
             rusqlite::params![
                 run.id, run.project_id, run.agent, run.prompt, run.base, run.branch,
                 run.created_at, run.port_base.map(|p| p as i64), run.archived_at, run.title, run.kind,
                 run.merge_target, run.race_id, loop_config, loop_state, run.issue_id, run.worktree as i64,
                 run.model, run.base_commit, run.pin_rank, run.primary_closed_at,
-                run.branch_cut.map(i64::from), run.own_branch, run.pr_merged_head
+                run.branch_cut.map(i64::from), run.own_branch, run.pr_merged_head, custom_agent
             ],
         )?;
         Ok(())
@@ -999,9 +1011,22 @@ impl Registry {
         Ok(())
     }
 
+    /// Whether this run was stored with a custom agent that no longer reads back.
+    /// [`row_to_run`] gives that run `None`, which looks just like a plain run, so
+    /// a launch has to ask, or it would start as the plain harness.
+    pub fn custom_agent_unreadable(&self, id: &str) -> Result<bool> {
+        let stored: Option<Option<String>> = self
+            .conn
+            .query_row("SELECT custom_agent FROM runs WHERE id = ?1", [id], |r| r.get(0))
+            .optional()?;
+        Ok(stored.flatten().is_some_and(|json| {
+            serde_json::from_str::<crate::custom_agents::CustomAgent>(&json).is_err()
+        }))
+    }
+
     pub fn get_run(&self, id: &str) -> Result<Option<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch, pr_merged_head FROM runs WHERE id = ?1",
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch, pr_merged_head, custom_agent FROM runs WHERE id = ?1",
         )?;
         let mut rows = stmt.query([id])?;
         match rows.next()? {
@@ -1012,7 +1037,7 @@ impl Registry {
 
     pub fn list_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch, pr_merged_head
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch, pr_merged_head, custom_agent
              FROM runs WHERE project_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -1025,7 +1050,7 @@ impl Registry {
 
     pub fn list_archived_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch, pr_merged_head
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch, pr_merged_head, custom_agent
              FROM runs WHERE project_id = ?1 AND archived_at IS NOT NULL ORDER BY archived_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -1658,7 +1683,7 @@ impl Registry {
     /// runs" list; also drives the last-run-abandoned rollback check).
     pub fn runs_for_issue(&self, issue_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch, pr_merged_head
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch, pr_merged_head, custom_agent
              FROM runs WHERE issue_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([issue_id], |row| Ok(row_to_run(row)))?;
@@ -1935,6 +1960,13 @@ fn row_to_run(row: &rusqlite::Row) -> Result<Run> {
         branch_cut: row.get::<_, Option<i64>>(21)?.map(|v| v != 0),
         own_branch: row.get(22)?,
         pr_merged_head: row.get(23)?,
+        custom_agent: row.get::<_, Option<String>>(24)?.and_then(|json| {
+            // None, not an error: one bad row must not take the whole run list
+            // with it. A launch asks `custom_agent_unreadable` before it starts.
+            serde_json::from_str(&json)
+                .inspect_err(|e| log::error!("run's saved custom agent is unreadable: {e}"))
+                .ok()
+        }),
     })
 }
 
@@ -2128,6 +2160,7 @@ mod tests {
             branch_cut: None,
             own_branch: None,
             pr_merged_head: None,
+            custom_agent: None,
             pin_rank: None,
         }
     }
@@ -2152,6 +2185,34 @@ mod tests {
         reg.insert_run(&sample_run("x-1", Some(5200))).unwrap();
         let got = reg.get_run("x-1").unwrap().unwrap();
         assert_eq!(got.port_base, Some(5200));
+    }
+
+    /// Corrupt data can't be told from a plain run by what `get_run` returns, so a
+    /// launch has this to ask. One bad row must not take the run list down either.
+    #[test]
+    fn an_unreadable_custom_agent_is_reported_and_the_run_still_lists() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("a.db")).unwrap();
+        reg.insert_run(&sample_run("plain", None)).unwrap();
+        reg.insert_run(&Run {
+            custom_agent: Some(crate::custom_agents::CustomAgent {
+                id: "reviewer".into(),
+                name: "Reviewer".into(),
+                description: String::new(),
+                instructions: "Body".into(),
+                launch_tag: "ab12".into(),
+            }),
+            ..sample_run("good", None)
+        })
+        .unwrap();
+        reg.insert_run(&sample_run("bad", None)).unwrap();
+        reg.conn.execute("UPDATE runs SET custom_agent = '{nope' WHERE id = 'bad'", []).unwrap();
+
+        assert!(!reg.custom_agent_unreadable("plain").unwrap());
+        assert!(!reg.custom_agent_unreadable("good").unwrap());
+        assert!(!reg.custom_agent_unreadable("missing").unwrap());
+        assert!(reg.custom_agent_unreadable("bad").unwrap());
+        assert_eq!(reg.get_run("bad").unwrap().unwrap().custom_agent, None);
     }
 
     #[test]
@@ -2310,6 +2371,7 @@ mod tests {
             branch_cut: Some(true),
             own_branch: Some("agent/agent-6fgy".into()),
             pr_merged_head: None,
+            custom_agent: None,
             ..sample_run("agent-6fgy", None)
         };
         assert_eq!(switched.own_branch(no_rename), Some("agent/agent-6fgy"));
@@ -2709,6 +2771,7 @@ mod tests {
             branch_cut: None,
             own_branch: None,
             pr_merged_head: None,
+            custom_agent: None,
             pin_rank: None,
         };
         reg.insert_run(&run).unwrap();

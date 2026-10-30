@@ -25,7 +25,7 @@ export const GROUP_IDS = ["interface", "agents", "project", "app"] as const;
 
 export const SECTION_IDS = [
   "appearance", "editor", "messages", "notifications",
-  "agents", "mcp", "localModel",
+  "agents", "customAgents", "mcp", "localModel",
   "backlog", "knowledge", "files", "dispatch",
   "workspace", "about",
 ] as const;
@@ -79,6 +79,10 @@ export const SECTIONS: Section[] = [
     terms: "notify alerts idle seconds banner agent finished exited crashed merge loop watching" },
   { id: "agents", label: "Agent profiles", group: "agents",
     terms: "default model worktree command arguments resume loop environment cli catalog custom codex hooks state report blocked trust" },
+  // "persona", "subagent" and "role" because that is what the same thing is
+  // called in the harnesses this section writes for.
+  { id: "customAgents", label: "Custom agents", group: "agents",
+    terms: "persona role subagent instructions system prompt harness create edit reviewer" },
   { id: "mcp", label: "MCP servers", group: "agents",
     terms: "model context protocol tools stdio http sse oauth authenticate headers env import json" },
   { id: "localModel", label: "Local model", group: "agents",

@@ -211,7 +211,13 @@ fn checked_model(model: Option<String>) -> Result<Option<String>, String> {
 fn checked_attempts(attempts: Vec<RaceAttempt>) -> Result<Vec<RaceAttempt>, String> {
     attempts
         .into_iter()
-        .map(|a| Ok(RaceAttempt { agent: a.agent, model: checked_model(a.model)? }))
+        .map(|a| {
+            Ok(RaceAttempt {
+                agent: a.agent,
+                model: checked_model(a.model)?,
+                custom_agent: a.custom_agent,
+            })
+        })
         .collect()
 }
 
@@ -222,6 +228,7 @@ pub async fn create_run(
     prompt: String,
     agent: String,
     model: Option<String>,
+    custom_agent: Option<String>,
     base: String,
     merge_target: Option<String>,
     // Absent = the historical behaviour: cut a worktree. `false` runs the agent
@@ -231,11 +238,12 @@ pub async fn create_run(
 ) -> Result<RunInfo, String> {
     let model = checked_model(model)?;
     state
-        .create_run_with_progress(
+        .create_run_as(
             &project_id,
             &prompt,
             &agent,
             model.as_deref(),
+            custom_agent.as_deref(),
             &base,
             merge_target.as_deref(),
             worktree.unwrap_or(true),
@@ -253,6 +261,7 @@ pub fn create_loop(
     prompt: String,
     agent: String,
     model: Option<String>,
+    custom_agent: Option<String>,
     base: String,
     merge_target: Option<String>,
     check_command: String,
@@ -267,6 +276,7 @@ pub fn create_loop(
             &prompt,
             &agent,
             model.as_deref(),
+            custom_agent.as_deref(),
             &base,
             merge_target.as_deref(),
             &check_command,
@@ -725,6 +735,46 @@ pub async fn run_branches(
 ) -> Result<RunBranches, String> {
     let (branch, base) = state.run_branches(&task_id).map_err(|e| e.to_string())?;
     Ok(RunBranches { branch, base })
+}
+
+#[tauri::command]
+pub fn list_custom_agents(
+    state: State<'_, AppState>,
+    project_id: Option<String>,
+) -> Result<crate::state::CustomAgents, String> {
+    state.list_custom_agents(project_id.as_deref()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_custom_agent(
+    state: State<'_, AppState>,
+    scope: String,
+    project_id: Option<String>,
+    id: Option<String>,
+    name: String,
+    description: String,
+    instructions: String,
+) -> Result<crate::state::CustomAgentInfo, String> {
+    state
+        .save_custom_agent(
+            &scope,
+            project_id.as_deref(),
+            id.as_deref(),
+            &name,
+            &description,
+            &instructions,
+        )
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_custom_agent(
+    state: State<'_, AppState>,
+    scope: String,
+    project_id: Option<String>,
+    id: String,
+) -> Result<(), String> {
+    state.delete_custom_agent(&scope, project_id.as_deref(), &id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1380,6 +1430,7 @@ pub fn start_issue_run(
     issue_id: String,
     agent: String,
     model: Option<String>,
+    custom_agent: Option<String>,
     base: Option<String>,
     merge_target: Option<String>,
 ) -> Result<RunInfo, String> {
@@ -1389,6 +1440,7 @@ pub fn start_issue_run(
             &issue_id,
             &agent,
             model.as_deref(),
+            custom_agent.as_deref(),
             base.as_deref(),
             merge_target.as_deref(),
         )
@@ -1415,6 +1467,7 @@ pub fn start_issue_loop(
     issue_id: String,
     agent: String,
     model: Option<String>,
+    custom_agent: Option<String>,
     check_command: String,
     max_attempts: u32,
     max_wall_secs: Option<u64>,
@@ -1428,6 +1481,7 @@ pub fn start_issue_loop(
             &issue_id,
             &agent,
             model.as_deref(),
+            custom_agent.as_deref(),
             &check_command,
             max_attempts,
             max_wall_secs,

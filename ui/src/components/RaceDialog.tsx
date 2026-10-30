@@ -6,6 +6,7 @@ import { useRuns } from "../store/runs";
 import { useModalKeys } from "../hooks/useModalKeys";
 import { useBackdropDismiss } from "../hooks/useBackdropDismiss";
 import { useAgentModels } from "../hooks/useAgentModels";
+import { attemptsForPick, customAgentLabel, customAgentsProject, useCustomAgents } from "../hooks/useCustomAgents";
 import ModelSelect from "./ModelSelect";
 
 // One row of the race: an agent and the model it runs on. `model` absent (as
@@ -42,6 +43,10 @@ export default function RaceDialog({ onClose, issue, issueLabel }: {
   // so each attempt carries its own choice, seeded from what its agent last
   // ran on.
   const { models, remembered } = useAgentModels();
+  // One for the whole race, unlike the model: instructions mean the same to
+  // every harness, and comparing attempts is the point of giving them the same.
+  const { agents: customAgents, takes } = useCustomAgents(customAgentsProject(issue, selectedProjectId));
+  const [customAgent, setCustomAgent] = useState("");
   const modelFor = (a: Attempt) => (a.model === undefined ? remembered(a.agent) : a.model);
   const attemptsFor = (agent: string) => attempts.filter((a) => a.agent === agent);
   const [branches, setBranches] = useState<string[]>([]);
@@ -93,13 +98,22 @@ export default function RaceDialog({ onClose, issue, issueLabel }: {
     setAttempts(attempts.map((a) => (a.key === key ? { ...a, model } : a)));
   const removeAttempt = (key: number) => setAttempts(attempts.filter((a) => a.key !== key));
 
+  function pickCustomAgent(selection: string) {
+    setCustomAgent(selection);
+    setAttempts(attemptsForPick(attempts, selection, takes));
+  }
+
   const mergeTarget = effectiveMergeTarget(base, targetOverride);
   const canStart = (issue ? true : prompt.trim().length > 0) && attempts.length >= 2 && !busy;
 
   // Sent in the order the dialog lists them (profile order, extra rows under
   // the agent they belong to), so the board comes up reading like the dialog.
   const raceAttempts = (): RaceAttempt[] =>
-    agents.flatMap((name) => attemptsFor(name).map((a) => ({ agent: a.agent, model: modelFor(a) })));
+    agents.flatMap((name) => attemptsFor(name).map((a) => ({
+      agent: a.agent,
+      model: modelFor(a),
+      custom_agent: customAgent || null,
+    })));
 
   async function start() {
     if (!selectedProjectId || !canStart) return;
@@ -150,15 +164,27 @@ export default function RaceDialog({ onClose, issue, issueLabel }: {
             onChange={(e) => setPrompt(e.target.value)}
           />
         )}
+        {customAgents.length > 0 && (
+          <label className="race-as">
+            <span>as</span>
+            <select className="settings-input" value={customAgent} onChange={(e) => pickCustomAgent(e.target.value)}>
+              <option value="">No custom agent</option>
+              {customAgents.map((c) => (
+                <option key={c.selection} value={c.selection}>{customAgentLabel(c)}</option>
+              ))}
+            </select>
+          </label>
+        )}
         <div className="race-agents">
           {agents.map((name) => {
             const mine = attemptsFor(name);
             const [first, ...extra] = mine;
+            const refused = !!customAgent && !takes(name);
             return (
               <div key={name} className="race-agent-block">
                 <div className="race-agent-row">
-                  <label className="race-agent">
-                    <input type="checkbox" checked={mine.length > 0} onChange={() => togglePick(name)} />
+                  <label className="race-agent" title={refused ? `${agentLabel(name)} can't be given a custom agent` : undefined}>
+                    <input type="checkbox" checked={mine.length > 0} disabled={refused} onChange={() => togglePick(name)} />
                     <span>{agentLabel(name)}</span>
                   </label>
                   {/* Only for the agents actually racing: an unticked row's model

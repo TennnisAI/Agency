@@ -152,8 +152,8 @@ pub fn repo_readiness(path: &Path) -> RepoReadiness {
         };
         return RepoReadiness::NoCommits { stageable };
     }
-    let dirty = match git(path, &["status", "--porcelain"]) {
-        Ok((true, out)) => !out.trim().is_empty(),
+    let dirty = match git(path, &["status", "--porcelain", "--untracked-files=all"]) {
+        Ok((true, out)) => crate::custom_agents::checkout_dirty(&out),
         _ => false,
     };
     RepoReadiness::Ready { dirty }

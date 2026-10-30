@@ -5,6 +5,7 @@ pub mod buildlog;
 pub mod checkpoint;
 pub mod cleanup;
 pub mod config;
+pub mod custom_agents;
 pub mod files;
 pub mod gh;
 pub mod git;

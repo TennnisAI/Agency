@@ -6,6 +6,7 @@ import { useRuns } from "../store/runs";
 import { useModalKeys } from "../hooks/useModalKeys";
 import { useBackdropDismiss } from "../hooks/useBackdropDismiss";
 import { useAgentModels } from "../hooks/useAgentModels";
+import { useCustomAgents } from "../hooks/useCustomAgents";
 import ModelSelect from "./ModelSelect";
 
 // One row of the race: an agent and the model it runs on. `model` absent (as
@@ -42,6 +43,10 @@ export default function RaceDialog({ onClose, issue, issueLabel }: {
   // so each attempt carries its own choice, seeded from what its agent last
   // ran on.
   const { models, remembered } = useAgentModels();
+  // One for the whole race, unlike the model: instructions mean the same to
+  // every harness, and comparing attempts is the point of giving them the same.
+  const { agents: customAgents } = useCustomAgents(selectedProjectId);
+  const [customAgent, setCustomAgent] = useState("");
   const modelFor = (a: Attempt) => (a.model === undefined ? remembered(a.agent) : a.model);
   const attemptsFor = (agent: string) => attempts.filter((a) => a.agent === agent);
   const [branches, setBranches] = useState<string[]>([]);
@@ -99,7 +104,11 @@ export default function RaceDialog({ onClose, issue, issueLabel }: {
   // Sent in the order the dialog lists them (profile order, extra rows under
   // the agent they belong to), so the board comes up reading like the dialog.
   const raceAttempts = (): RaceAttempt[] =>
-    agents.flatMap((name) => attemptsFor(name).map((a) => ({ agent: a.agent, model: modelFor(a) })));
+    agents.flatMap((name) => attemptsFor(name).map((a) => ({
+      agent: a.agent,
+      model: modelFor(a),
+      custom_agent: customAgent || null,
+    })));
 
   async function start() {
     if (!selectedProjectId || !canStart) return;
@@ -149,6 +158,17 @@ export default function RaceDialog({ onClose, issue, issueLabel }: {
             autoFocus
             onChange={(e) => setPrompt(e.target.value)}
           />
+        )}
+        {customAgents.length > 0 && (
+          <label className="race-as">
+            <span>as</span>
+            <select className="settings-input" value={customAgent} onChange={(e) => setCustomAgent(e.target.value)}>
+              <option value="">No custom agent</option>
+              {customAgents.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+          </label>
         )}
         <div className="race-agents">
           {agents.map((name) => {

@@ -66,6 +66,7 @@ import Toggle from "./Toggle";
 import ConfirmDialog from "./ConfirmDialog";
 import { notifyProjectsChanged } from "../lib/projectEvents";
 import FormDialog, { Field } from "./FormDialog";
+import CustomAgentsSection from "./CustomAgentsSection";
 import NoticesDialog from "./NoticesDialog";
 import UpdateDialog from "./UpdateDialog";
 import { toastError, toastSuccess } from "../lib/toast";
@@ -1574,8 +1575,15 @@ export default function Settings({
                     )}
                   </div>
                 )}
-                <button className="settings-add-profile" onClick={openAddProfile}>+ Custom agent</button>
+                <button className="settings-add-profile" onClick={openAddProfile}>+ Custom CLI</button>
               </div>
+            </section>
+          )}
+
+          {visible("customAgents") && (
+            <section className="settings-section">
+              <SectionHead id="customAgents" projectName={projectName} />
+              <CustomAgentsSection projectId={projectId} />
             </section>
           )}
 

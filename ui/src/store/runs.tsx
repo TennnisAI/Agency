@@ -21,6 +21,9 @@ export type SpawnOpts = {
   // last ran on is used (the same shape `worktree` uses for its Settings
   // default).
   model?: string | null;
+  // Custom agent to launch as, by id. Absent is the plain harness: unlike a
+  // model, one is never carried over from an earlier run without being picked.
+  customAgent?: string | null;
 };
 
 interface RunStore {
@@ -209,7 +212,7 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
       // the live agent terminal, and the first line is captured as the run's
       // prompt + title, renaming the empty-prompt branch when it still is one
       // (see set_run_title / AGE-183).
-      const run = await createRun(pid, "", agentId, model, base, mergeTarget, setSpawnProgress, worktree).catch((e) => {
+      const run = await createRun(pid, "", agentId, model, base, mergeTarget, setSpawnProgress, worktree, opts?.customAgent ?? null).catch((e) => {
         reportFailure(e, `Couldn't start ${agentId}`);
         return null;
       });

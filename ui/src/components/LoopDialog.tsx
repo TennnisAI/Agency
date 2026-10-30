@@ -6,6 +6,7 @@ import { useRuns } from "../store/runs";
 import { useModalKeys } from "../hooks/useModalKeys";
 import { useBackdropDismiss } from "../hooks/useBackdropDismiss";
 import { useAgentModels } from "../hooks/useAgentModels";
+import { useCustomAgents } from "../hooks/useCustomAgents";
 import ModelSelect from "./ModelSelect";
 
 const PROMPT_TEMPLATE =
@@ -35,6 +36,8 @@ export default function LoopDialog({ onClose, issue, issueLabel }: {
     if (modelTouched) return;
     setModel(remembered(agent));
   }, [agent, remembered, modelTouched]);
+  const { agents: customAgents } = useCustomAgents(selectedProjectId);
+  const [customAgent, setCustomAgent] = useState("");
   const [checkCommand, setCheckCommand] = useState("");
   // Kept as a raw string while editing so the field can be cleared/retyped;
   // clamped to [1,100] only on blur and at submit.
@@ -96,7 +99,7 @@ export default function LoopDialog({ onClose, issue, issueLabel }: {
     try {
       const maxWallSecs = capMinutes === null ? null : capMinutes * 60;
       const run = issue
-        ? await startIssueLoop(issue.id, agent, model, checkCommand.trim(), clampAttempts(maxAttempts), maxWallSecs, capTokens, base || null, mergeTarget)
+        ? await startIssueLoop(issue.id, agent, model, checkCommand.trim(), clampAttempts(maxAttempts), maxWallSecs, capTokens, base || null, mergeTarget, customAgent || null)
         : await createLoop(
             selectedProjectId,
             prompt.trim(),
@@ -108,6 +111,7 @@ export default function LoopDialog({ onClose, issue, issueLabel }: {
             clampAttempts(maxAttempts),
             maxWallSecs,
             capTokens,
+            customAgent || null,
           );
       if (issue) setTab("agents"); // jump from the board to the running loop
       await refreshRuns();
@@ -175,6 +179,17 @@ export default function LoopDialog({ onClose, issue, issueLabel }: {
                 onChange={(m) => { setModel(m); setModelTouched(true); }}
               />
             </div>
+          )}
+          {customAgents.length > 0 && (
+            <label className="branch-row">
+              <span>as</span>
+              <select className="settings-input" value={customAgent} onChange={(e) => setCustomAgent(e.target.value)}>
+                <option value="">No custom agent</option>
+                {customAgents.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </label>
           )}
           <label className="branch-row">
             <span>done when</span>

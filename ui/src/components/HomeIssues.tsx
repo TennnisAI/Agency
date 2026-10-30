@@ -208,7 +208,7 @@ export default function HomeIssues({
       const spawnable = r.state === "notARepo" || (r.state === "ready" && !r.dirty);
       if (spawnable) {
         const model = await launchModel(opts?.model, () => rememberedModel(agentId));
-        const run = await startIssueRun(issue.id, agentId, model, opts?.base, opts?.mergeTarget);
+        const run = await startIssueRun(issue.id, agentId, model, opts?.base, opts?.mergeTarget, opts?.customAgent);
         onOpenRun(project, run.id);
       } else {
         setPendingSpawn({ project, issue, agentId, readiness: r, opts });
@@ -613,7 +613,7 @@ export default function HomeIssues({
             setPendingSpawn(null);
             try {
               const model = await launchModel(opts?.model, () => rememberedModel(agentId));
-              const run = await startIssueRun(issue.id, agentId, model, opts?.base, opts?.mergeTarget);
+              const run = await startIssueRun(issue.id, agentId, model, opts?.base, opts?.mergeTarget, opts?.customAgent);
               onOpenRun(project, run.id);
             } catch (e) {
               reportFailure(e, "Couldn't start agent");

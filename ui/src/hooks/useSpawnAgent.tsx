@@ -41,7 +41,7 @@ export function useSpawnAgent(project: Project | null, onRepoResolved?: () => vo
   // tail of the same flow createAgent handles for promptless runs.
   async function startIssue(issue: Issue, agentId: string, opts?: SpawnOpts) {
     const model = await launchModel(opts?.model, () => rememberedModel(agentId));
-    const run = await startIssueRun(issue.id, agentId, model, opts?.base, opts?.mergeTarget);
+    const run = await startIssueRun(issue.id, agentId, model, opts?.base, opts?.mergeTarget, opts?.customAgent);
     await refreshRuns();
     setFocusedRun(run.id);
     setView("focus");

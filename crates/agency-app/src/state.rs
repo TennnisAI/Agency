@@ -691,6 +691,8 @@ pub struct RunInfo {
     pub issue_id: Option<String>,
     /// Model this run was launched on. None = the agent's own default.
     pub model: Option<String>,
+    /// Name of the custom agent this run was launched as, if any.
+    pub custom_agent: Option<String>,
     /// Messages Agency is holding for this run's sessions and has not typed in
     /// yet (see `crate::sendq`). Zero for almost every run almost always; while
     /// it isn't, the tile and the run header say so, because a message waiting
@@ -886,6 +888,40 @@ pub struct PrConflicts {
     pub probed: bool,
 }
 
+/// A custom agent as the UI reads it. `scope` is where its file lives: "project"
+/// or "user".
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomAgentInfo {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub instructions: String,
+    pub scope: String,
+}
+
+impl CustomAgentInfo {
+    fn new(agent: agency_core::custom_agents::CustomAgent, scope: &str) -> Self {
+        Self {
+            id: agent.id,
+            name: agent.name,
+            description: agent.description,
+            instructions: agent.instructions,
+            scope: scope.to_string(),
+        }
+    }
+}
+
+/// What a spawn menu needs to offer custom agents.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomAgents {
+    pub agents: Vec<CustomAgentInfo>,
+    /// The harnesses that can be given one. The rest are greyed out when one is
+    /// picked, for the same reason a model chip is hidden: they have no way in.
+    pub harnesses: Vec<String>,
+}
+
 /// One attempt in a race: an agent, and the model that attempt runs on.
 ///
 /// The attempt is the unit rather than the agent, so the same agent can appear
@@ -899,6 +935,9 @@ pub struct RaceAttempt {
     /// None = whatever that agent defaults to.
     #[serde(default)]
     pub model: Option<String>,
+    /// The custom agent this attempt runs as, by id. None = the plain harness.
+    #[serde(default)]
+    pub custom_agent: Option<String>,
 }
 
 /// Everything a race has to satisfy before the first workspace is cut. Pure, so
@@ -919,6 +958,10 @@ fn validate_race(prompt: &str, attempts: &[RaceAttempt]) -> Result<()> {
         if attempt.model.is_some() && !crate::agent_catalog::supports_model(&attempt.agent) {
             bail!("'{}' has no way to be told a model on the command line", attempt.agent);
         }
+        if attempt.custom_agent.is_some() && !agency_core::custom_agents::supported(&attempt.agent)
+        {
+            bail!("'{}' has no way to be given a custom agent", attempt.agent);
+        }
     }
     Ok(())
 }
@@ -927,6 +970,8 @@ fn validate_race(prompt: &str, attempts: &[RaceAttempt]) -> Result<()> {
 /// entry points (plain create, racing, from-issue, from-PR) differ only in
 /// which fields they fill.
 struct NewRunSpec<'a> {
+    /// The custom agent to launch as, already read (see [`AppState::custom_agent`]).
+    custom_agent: Option<agency_core::custom_agents::CustomAgent>,
     project_id: &'a str,
     prompt: &'a str,
     agent: &'a str,
@@ -1329,6 +1374,34 @@ fn with_model(profile: &AgentProfile, model: Option<&str>) -> AgentProfile {
     }
     let with_extra = |recipe: &[String]| -> Vec<String> {
         recipe.iter().cloned().chain(extra.iter().cloned()).collect()
+    };
+    AgentProfile {
+        args: with_extra(&profile.args),
+        loop_args: profile.loop_args.as_deref().map(with_extra),
+        ..profile.clone()
+    }
+}
+
+/// A copy of `profile` whose every launch runs as `custom`, folded in once for
+/// the reason [`with_model`] is: fresh, resume, rerun, extra tab and loop attempt
+/// all launch from it, so none can be the one that quietly runs as a plain agent.
+fn with_custom_agent(
+    profile: &AgentProfile,
+    custom: Option<&agency_core::custom_agents::CustomAgent>,
+) -> AgentProfile {
+    let Some(custom) = custom else {
+        return profile.clone();
+    };
+    let (extra, leading) = agency_core::custom_agents::launch_args(&profile.name, custom);
+    if extra.is_empty() {
+        return profile.clone();
+    }
+    let with_extra = |recipe: &[String]| -> Vec<String> {
+        if leading {
+            extra.iter().chain(recipe).cloned().collect()
+        } else {
+            recipe.iter().chain(&extra).cloned().collect()
+        }
     };
     AgentProfile {
         args: with_extra(&profile.args),
@@ -3575,6 +3648,127 @@ impl AppState {
         crate::web_ui::kick(&self.web_ui_ready, session_id, port, cwd, prompt);
     }
 
+    /// Where the custom agents meant for every project live.
+    fn user_agents_dir(&self) -> PathBuf {
+        self.data_dir.join("custom-agents")
+    }
+
+    /// The directory of one scope. `project_id` is required for "project": the
+    /// caller is a form in front of the user, so a missing one is a bug to report
+    /// rather than a reason to write somewhere else.
+    fn custom_agents_dir(&self, scope: &str, project_id: Option<&str>) -> Result<PathBuf> {
+        match (scope, project_id) {
+            ("user", _) => Ok(self.user_agents_dir()),
+            ("project", Some(id)) => {
+                Ok(self.project_repo(id)?.join(agency_core::custom_agents::PROJECT_DIR))
+            }
+            ("project", None) => bail!("no project is selected"),
+            (other, _) => bail!("unknown agent scope: {other}"),
+        }
+    }
+
+    /// The custom agents a spawn in this project can pick, and which harnesses
+    /// can be given one. A project's agent shadows a user one of the same id, so
+    /// the id a spawn sends means one thing.
+    pub fn list_custom_agents(&self, project_id: Option<&str>) -> Result<CustomAgents> {
+        use agency_core::custom_agents as ca;
+        let mut agents: Vec<CustomAgentInfo> = Vec::new();
+        if let Some(id) = project_id {
+            let dir = self.project_repo(id)?.join(ca::PROJECT_DIR);
+            agents.extend(ca::list(&dir).into_iter().map(|a| CustomAgentInfo::new(a, "project")));
+        }
+        for agent in ca::list(&self.user_agents_dir()) {
+            if !agents.iter().any(|a| a.id == agent.id) {
+                agents.push(CustomAgentInfo::new(agent, "user"));
+            }
+        }
+        agents.sort_by_key(|a| a.name.to_lowercase());
+        let harnesses = ca::supported_harnesses().into_iter().map(String::from).collect();
+        Ok(CustomAgents { agents, harnesses })
+    }
+
+    /// Create an agent (`id` of None, which takes its id from the name) or
+    /// update one in place. An edit keeps its id, so a rename does not orphan
+    /// anything that refers to it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn save_custom_agent(
+        &self,
+        scope: &str,
+        project_id: Option<&str>,
+        id: Option<&str>,
+        name: &str,
+        description: &str,
+        instructions: &str,
+    ) -> Result<CustomAgentInfo> {
+        use agency_core::custom_agents as ca;
+        let dir = self.custom_agents_dir(scope, project_id)?;
+        let id = match id {
+            Some(id) => id.to_string(),
+            None => {
+                let id = ca::slugify(name).ok_or_else(|| {
+                    anyhow!("that name has nothing to build an id from; use a letter or a digit")
+                })?;
+                if ca::load(&dir, &id)?.is_some() {
+                    bail!("there is already an agent called '{id}' there");
+                }
+                id
+            }
+        };
+        let agent = ca::CustomAgent {
+            id,
+            name: name.trim().to_string(),
+            description: description.trim().to_string(),
+            instructions: instructions.trim().to_string(),
+        };
+        ca::save(&dir, &agent)?;
+        Ok(CustomAgentInfo::new(agent, scope))
+    }
+
+    pub fn delete_custom_agent(
+        &self,
+        scope: &str,
+        project_id: Option<&str>,
+        id: &str,
+    ) -> Result<()> {
+        agency_core::custom_agents::delete(&self.custom_agents_dir(scope, project_id)?, id)
+    }
+
+    /// Read the agent a spawn asked for, in the order [`Self::list_custom_agents`]
+    /// shows them. An id that no longer resolves fails the spawn: starting the
+    /// plain harness instead would look exactly like starting the agent asked for.
+    fn custom_agent(
+        &self,
+        project_id: &str,
+        id: Option<&str>,
+    ) -> Result<Option<agency_core::custom_agents::CustomAgent>> {
+        use agency_core::custom_agents as ca;
+        let Some(id) = id else {
+            return Ok(None);
+        };
+        let project = self.project_repo(project_id)?.join(ca::PROJECT_DIR);
+        match ca::load(&project, id)? {
+            Some(agent) => Ok(Some(agent)),
+            None => ca::load(&self.user_agents_dir(), id)?
+                .map(Some)
+                .ok_or_else(|| anyhow!("there is no custom agent called '{id}' any more")),
+        }
+    }
+
+    /// Put what `harness` reads `custom` from into the worktree. On every launch,
+    /// since an agent may have edited or deleted it. Best-effort like the skills
+    /// kit: a harness told `--agent` fails loudly in its own pane without it.
+    fn emit_custom_agent(
+        &self,
+        harness: &str,
+        custom: &agency_core::custom_agents::CustomAgent,
+        worktree: &Path,
+        repo: &Path,
+    ) {
+        if let Err(e) = agency_core::custom_agents::emit(harness, custom, worktree, repo) {
+            log::warn!("writing agent {} into {}: {e:#}", custom.id, worktree.display());
+        }
+    }
+
     pub fn register_profile(&self, profile: AgentProfile) -> Result<()> {
         self.registry.lock().unwrap().upsert_profile(&profile)
     }
@@ -4505,6 +4699,7 @@ impl AppState {
             loop_state: run.loop_state.clone(),
             issue_id: run.issue_id.clone(),
             model: run.model.clone(),
+            custom_agent: run.custom_agent.as_ref().map(|a| a.name.clone()),
             created_at: run.created_at,
             archived_at: run.archived_at,
             archived: None,
@@ -4561,10 +4756,39 @@ impl AppState {
         base: &str,
         merge_target: Option<&str>,
         worktree: bool,
+        on_progress: impl FnMut(agency_core::setup::CloneProgress),
+    ) -> Result<RunInfo> {
+        self.create_run_as(
+            project_id,
+            prompt,
+            agent,
+            model,
+            None,
+            base,
+            merge_target,
+            worktree,
+            on_progress,
+        )
+    }
+
+    /// [`Self::create_run_with_progress`], launched as a custom agent.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_run_as(
+        &self,
+        project_id: &str,
+        prompt: &str,
+        agent: &str,
+        model: Option<&str>,
+        custom_agent: Option<&str>,
+        base: &str,
+        merge_target: Option<&str>,
+        worktree: bool,
         mut on_progress: impl FnMut(agency_core::setup::CloneProgress),
     ) -> Result<RunInfo> {
+        let custom_agent = self.custom_agent(project_id, custom_agent)?;
         self.create_run_spec(
             NewRunSpec {
+                custom_agent,
                 project_id,
                 prompt,
                 agent,
@@ -4609,12 +4833,27 @@ impl AppState {
                 spec.agent
             );
         }
+        // The same refusal for a custom agent, and more so: a run that starts
+        // as the plain harness looks exactly like one that took the instructions.
+        if spec.custom_agent.is_some() {
+            if !agency_core::custom_agents::supported(spec.agent) {
+                bail!("'{}' has no way to be given a custom agent", spec.agent);
+            }
+            if !spec.worktree && agency_core::custom_agents::needs_own_worktree(spec.agent) {
+                bail!(
+                    "'{}' takes a custom agent as a rules file, which would apply to everything \
+                     else in your checkout too. Give it its own worktree.",
+                    spec.agent
+                );
+            }
+        }
         let (mut profile, issue_key) = {
             let reg = self.registry.lock().unwrap();
             let profile = reg
                 .get_profile(spec.agent)?
                 .ok_or_else(|| anyhow!("unknown agent profile: {agent}", agent = spec.agent))?;
             let profile = with_model(&profile, model.as_deref());
+            let profile = with_custom_agent(&profile, spec.custom_agent.as_ref());
             let profile = with_web_ui(
                 &profile,
                 gui_port_for(&config, Some(port), spec.agent),
@@ -4727,6 +4966,13 @@ impl AppState {
                 "run {id} works in the project checkout: MCP servers not emitted, \
                  since that would modify a file in the checkout"
             );
+        }
+
+        // Outside the worktree test above, unlike MCP: a file under our own
+        // name is inert until a launch selects it, so it dirties nothing even in
+        // the user's checkout, and a harness told `--agent` needs it to be there.
+        if let Some(custom) = &spec.custom_agent {
+            self.emit_custom_agent(spec.agent, custom, &workspace.path, &repo);
         }
 
         // The workspace as the agent is handed it. Taken here, before the
@@ -4846,6 +5092,7 @@ impl AppState {
             branch_cut: Some(spec.worktree && spec.existing_branch.is_none()),
             own_branch: None,
             pr_merged_head: None,
+            custom_agent: spec.custom_agent.clone(),
         };
         {
             let reg = self.registry.lock().unwrap();
@@ -4913,11 +5160,18 @@ impl AppState {
         issue_id: Option<String>,
     ) -> Result<Vec<RunInfo>> {
         validate_race(prompt, attempts)?;
+        // Read up front, like the validation above: an agent that has gone should
+        // fail the race before the first workspace is cut.
+        let customs = attempts
+            .iter()
+            .map(|a| self.custom_agent(project_id, a.custom_agent.as_deref()))
+            .collect::<Result<Vec<_>>>()?;
         let race_id = uuid::Uuid::new_v4().to_string();
         let mut out = Vec::new();
-        for attempt in attempts {
+        for (attempt, custom_agent) in attempts.iter().zip(customs) {
             out.push(self.create_run_spec(
                 NewRunSpec {
+                    custom_agent,
                     project_id,
                     prompt,
                     agent: &attempt.agent,
@@ -4949,6 +5203,7 @@ impl AppState {
         prompt: &str,
         agent: &str,
         model: Option<&str>,
+        custom_agent: Option<&str>,
         base: &str,
         merge_target: Option<&str>,
         check_command: &str,
@@ -4961,6 +5216,7 @@ impl AppState {
             prompt,
             agent,
             model,
+            custom_agent,
             base,
             merge_target,
             check_command,
@@ -4979,6 +5235,7 @@ impl AppState {
         prompt: &str,
         agent: &str,
         model: Option<&str>,
+        custom_agent: Option<&str>,
         base: &str,
         merge_target: Option<&str>,
         check_command: &str,
@@ -5006,6 +5263,7 @@ impl AppState {
                 bail!("agent '{agent}' has no loop recipe — set the profile's loop args first");
             }
         }
+        let custom_agent = self.custom_agent(project_id, custom_agent)?;
         let cfg = agency_core::loops::LoopConfig {
             check_command: check_command.trim().to_string(),
             max_attempts: max_attempts.clamp(1, 100),
@@ -5018,6 +5276,7 @@ impl AppState {
         };
         self.create_run_spec(
             NewRunSpec {
+                custom_agent,
                 project_id,
                 prompt,
                 agent,
@@ -5076,20 +5335,23 @@ impl AppState {
         issue_id: &str,
         agent: &str,
         model: Option<&str>,
+        custom_agent: Option<&str>,
         base: Option<&str>,
         merge_target: Option<&str>,
     ) -> Result<RunInfo> {
-        self.start_issue_run_for(issue_id, agent, model, base, merge_target, None)
+        self.start_issue_run_for(issue_id, agent, model, custom_agent, base, merge_target, None)
     }
 
     /// [`start_issue_run`], for the user (`parent: None`) or for the run whose
     /// agent called `run_dispatch` (AGE-209). One body, so an agent's dispatch
     /// is the user's Dispatch and cannot drift from it.
+    #[allow(clippy::too_many_arguments)]
     fn start_issue_run_for(
         &self,
         issue_id: &str,
         agent: &str,
         model: Option<&str>,
+        custom_agent: Option<&str>,
         base: Option<&str>,
         merge_target: Option<&str>,
         parent: Option<String>,
@@ -5102,8 +5364,10 @@ impl AppState {
         let gitless = require_gitless_known(&self.project_repo(&issue.project_id)?)?;
         let base =
             if gitless { "HEAD".to_string() } else { self.issue_base(&issue.project_id, base)? };
+        let custom_agent = self.custom_agent(&issue.project_id, custom_agent)?;
         let info = self.create_run_spec(
             NewRunSpec {
+                custom_agent,
                 project_id: &issue.project_id,
                 prompt: &prompt,
                 agent,
@@ -5310,6 +5574,7 @@ impl AppState {
                     &issue_id,
                     agent,
                     model,
+                    None,
                     base,
                     merge_target,
                     Some(asker.into()),
@@ -5318,6 +5583,7 @@ impl AppState {
             Work::Prompt(prompt) => self.issue_base(&parent.project_id, base).and_then(|base| {
                 self.create_run_spec(
                     NewRunSpec {
+                        custom_agent: None,
                         project_id: &parent.project_id,
                         prompt: &prompt,
                         agent,
@@ -5564,6 +5830,7 @@ impl AppState {
         issue_id: &str,
         agent: &str,
         model: Option<&str>,
+        custom_agent: Option<&str>,
         check_command: &str,
         max_attempts: u32,
         max_wall_secs: Option<u64>,
@@ -5578,6 +5845,7 @@ impl AppState {
             &prompt,
             agent,
             model,
+            custom_agent,
             &base,
             merge_target,
             check_command,
@@ -6278,6 +6546,7 @@ impl AppState {
         );
         self.create_run_spec(
             NewRunSpec {
+                custom_agent: None,
                 project_id,
                 prompt: &prompt,
                 agent,
@@ -6342,6 +6611,7 @@ impl AppState {
         let own_worktree = workspace == PrWorkspace::Worktree;
         self.create_run_spec(
             NewRunSpec {
+                custom_agent: None,
                 project_id,
                 prompt: &prompt,
                 agent,
@@ -6460,6 +6730,7 @@ impl AppState {
         let own_worktree = workspace == PrWorkspace::Worktree;
         let run = self.create_run_spec(
             NewRunSpec {
+                custom_agent: None,
                 project_id,
                 prompt,
                 agent,
@@ -7668,6 +7939,7 @@ impl AppState {
             branch_cut: None,
             own_branch: None,
             pr_merged_head: None,
+            custom_agent: None,
             pin_rank: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
@@ -7890,6 +8162,7 @@ impl AppState {
             branch_cut: None,
             own_branch: None,
             pr_merged_head: None,
+            custom_agent: None,
             pin_rank: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
@@ -10260,6 +10533,10 @@ impl AppState {
             // nothing to Codex. Only carry it when the tab is the same agent.
             let model = (agent == run.agent).then_some(run.model.as_deref()).flatten();
             let profile = with_model(&profile, model);
+            // A tab of the run's own harness is the same agent as the run; one of
+            // another harness is whatever the user just picked from the list.
+            let custom = (agent == run.agent).then_some(run.custom_agent.as_ref()).flatten();
+            let profile = with_custom_agent(&profile, custom);
             // Same GUI port as the run would use: start_run_session refuses a
             // second web-GUI session in one workspace, so it can't be taken.
             with_web_ui(&profile, gui_port_for(&config, run.port_base, agent), &self.data_dir)
@@ -10290,6 +10567,9 @@ impl AppState {
                 run.loop_config.as_ref(),
                 run.port_base,
             );
+        }
+        if let Some(custom) = run.custom_agent.as_ref().filter(|_| agent == run.agent) {
+            self.emit_custom_agent(agent, custom, &worktree, &repo);
         }
         // Same env recipe as the run itself, ports included: extra sessions are
         // collaborators in the same workspace, not new workspaces. The
@@ -10641,8 +10921,12 @@ impl AppState {
             // that quietly changed model would rewrite the session's terms
             // halfway through the work.
             let profile = with_model(&profile, run.model.as_deref());
+            let profile = with_custom_agent(&profile, run.custom_agent.as_ref());
             with_web_ui(&profile, gui_port_for(&config, run.port_base, &run.agent), &self.data_dir)
         };
+        if let Some(custom) = &run.custom_agent {
+            self.emit_custom_agent(&run.agent, custom, &worktree, &repo);
+        }
         let env = self.agent_env(&mut profile, &worktree, &repo, &run.id, id, run.port_base)?;
         let setup = config.scripts.setup.as_deref();
         // The conversation this session owns, if it has one to come back to.
@@ -10756,8 +11040,12 @@ impl AppState {
                 .get_profile(&run.agent)?
                 .ok_or_else(|| anyhow!("unknown agent profile: {}", run.agent))?;
             let profile = with_model(&profile, run.model.as_deref());
+            let profile = with_custom_agent(&profile, run.custom_agent.as_ref());
             with_web_ui(&profile, gui_port_for(&config, run.port_base, &run.agent), &self.data_dir)
         };
+        if let Some(custom) = &run.custom_agent {
+            self.emit_custom_agent(&run.agent, custom, &worktree, &repo);
+        }
         let env = self.agent_env(&mut profile, &worktree, &repo, &run.id, id, run.port_base)?;
         // A rerun is a fresh launch by definition, so it takes the fresh argv
         // (prompt and all, never the resume recipe) that `create_run` took, and
@@ -10818,8 +11106,14 @@ impl AppState {
             let profile = reg
                 .get_profile(&run.agent)?
                 .ok_or_else(|| anyhow!("unknown agent profile: {}", run.agent))?;
-            with_model(&profile, run.model.as_deref())
+            with_custom_agent(
+                &with_model(&profile, run.model.as_deref()),
+                run.custom_agent.as_ref(),
+            )
         };
+        if let Some(custom) = &run.custom_agent {
+            self.emit_custom_agent(&run.agent, custom, &worktree, &repo);
+        }
         // Re-emit into the existing worktree on every attempt. A headless
         // attempt is a fresh agent process with no memory of the last one, and
         // the previous attempt may have edited or deleted the kit; refreshing
@@ -12305,6 +12599,7 @@ impl AppState {
             agency_core::merge::resolve_target(None, &repo).unwrap_or_else(|_| "main".into());
         let run = self.create_run_spec(
             NewRunSpec {
+                custom_agent: None,
                 project_id: &project_id,
                 prompt: &prompt,
                 agent,
@@ -13280,6 +13575,7 @@ mod tests {
             branch_cut: None,
             own_branch: None,
             pr_merged_head: None,
+            custom_agent: None,
             pin_rank: None,
         };
         assert!(super::wants_web_ui(&base));
@@ -14143,6 +14439,64 @@ mod tests {
         assert_eq!(hooked.loop_args, Some([hooks, exec].concat()), "the loop's own recipe");
     }
 
+    /// One join point, like the model, so a resume, a rerun and a loop attempt
+    /// cannot be the launch that runs as a plain agent. Codex's flag leads: `-c`
+    /// behind `exec -- {{prompt}}` would be read as more prompt.
+    #[test]
+    fn with_custom_agent_reaches_every_launch_recipe() {
+        let custom = agency_core::custom_agents::CustomAgent {
+            id: "reviewer".into(),
+            name: "Reviewer".into(),
+            description: String::new(),
+            instructions: "Lead with what is wrong.".into(),
+        };
+        let profile = |name: &str| AgentProfile {
+            name: name.into(),
+            command: name.into(),
+            args: vec!["--flag".into()],
+            env: vec![],
+            resume_args: Some(vec!["--continue".into()]),
+            loop_args: Some(vec!["run".into(), "{{prompt}}".into()]),
+        };
+
+        let claude = super::with_custom_agent(&profile("claude"), Some(&custom));
+        let flag = vec!["--agent".to_string(), "agency-reviewer".to_string()];
+        assert_eq!(claude.args[1..], flag[..]);
+        assert_eq!(claude.loop_args.as_ref().unwrap()[2..], flag[..]);
+        // A resume launches `args` ahead of its recipe, so pinning both would
+        // hand the CLI the flag twice.
+        assert_eq!(claude.resume_args, profile("claude").resume_args);
+
+        let codex = super::with_custom_agent(&profile("codex"), Some(&custom));
+        assert_eq!(codex.args[0], "-c");
+        assert_eq!(codex.args[2], "--flag");
+        assert_eq!(codex.loop_args.as_ref().unwrap()[0], "-c");
+        assert_eq!(codex.loop_args.as_ref().unwrap()[2], "run");
+
+        // The prompt still lands behind Agency's flags on a fresh launch.
+        let (_, argv) = super::fresh_agent_argv(&claude, no_worktree(), "review it", None, None);
+        assert_eq!(argv.last().unwrap(), "review it");
+        assert!(argv.windows(2).any(|w| w == flag));
+
+        // Nothing to say on the command line, or no agent at all: unchanged.
+        let cursor = profile("cursor");
+        assert_eq!(super::with_custom_agent(&cursor, Some(&custom)), cursor);
+        assert_eq!(super::with_custom_agent(&profile("claude"), None), profile("claude"));
+    }
+
+    #[test]
+    fn a_race_refuses_a_custom_agent_a_harness_cannot_take() {
+        let attempt = |agent: &str, custom: Option<&str>| RaceAttempt {
+            agent: agent.into(),
+            model: None,
+            custom_agent: custom.map(str::to_string),
+        };
+        let ok = [attempt("claude", Some("r")), attempt("codex", Some("r"))];
+        assert!(super::validate_race("go", &ok).is_ok());
+        let bad = [attempt("claude", Some("r")), attempt("crush", Some("r"))];
+        assert!(super::validate_race("go", &bad).unwrap_err().to_string().contains("crush"));
+    }
+
     #[test]
     fn with_model_is_a_no_op_without_a_model_or_a_recipe() {
         let claude = AgentProfile {
@@ -14311,6 +14665,7 @@ mod tests {
             branch_cut: None,
             own_branch: None,
             pr_merged_head: None,
+            custom_agent: None,
             pin_rank: None,
         }
     }
@@ -14362,7 +14717,11 @@ mod tests {
     }
 
     fn attempt(agent: &str, model: Option<&str>) -> RaceAttempt {
-        RaceAttempt { agent: agent.to_string(), model: model.map(str::to_string) }
+        RaceAttempt {
+            agent: agent.to_string(),
+            model: model.map(str::to_string),
+            custom_agent: None,
+        }
     }
 
     /// The point of AGE-118: an agent can appear more than once in a race, so
@@ -14669,6 +15028,7 @@ mod tests {
             branch_cut: None,
             own_branch: None,
             pr_merged_head: None,
+            custom_agent: None,
             pin_rank: None,
         };
         assert_eq!(run.kind, "terminal");
@@ -14704,6 +15064,7 @@ mod tests {
             branch_cut: None,
             own_branch: None,
             pr_merged_head: None,
+            custom_agent: None,
             pin_rank: None,
         }
     }

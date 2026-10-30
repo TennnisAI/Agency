@@ -123,6 +123,11 @@ pub struct Run {
     /// only copy of work that was already on the base. Only vouches for the
     /// branch while its tip is still this commit.
     pub pr_merged_head: Option<String>,
+    /// The custom agent this run was launched as, as it read then (see
+    /// [`crate::custom_agents`]). A copy rather than an id: a loop's next attempt
+    /// or a resume comes back as the agent the work started under, even if the
+    /// file has been edited or deleted since.
+    pub custom_agent: Option<crate::custom_agents::CustomAgent>,
 }
 
 impl Run {
@@ -506,6 +511,9 @@ impl Registry {
         }
         if !column_exists(&conn, "runs", "pr_merged_head")? {
             conn.execute("ALTER TABLE runs ADD COLUMN pr_merged_head TEXT", [])?;
+        }
+        if !column_exists(&conn, "runs", "custom_agent")? {
+            conn.execute("ALTER TABLE runs ADD COLUMN custom_agent TEXT", [])?;
         }
         if !column_exists(&conn, "projects", "issue_key")? {
             conn.execute("ALTER TABLE projects ADD COLUMN issue_key TEXT", [])?;
@@ -974,15 +982,19 @@ impl Registry {
             Some(s) => Some(serde_json::to_string(s)?),
             None => None,
         };
+        let custom_agent = match &run.custom_agent {
+            Some(agent) => Some(serde_json::to_string(agent)?),
+            None => None,
+        };
         self.conn.execute(
-            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch, pr_merged_head)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch, pr_merged_head, custom_agent)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
             rusqlite::params![
                 run.id, run.project_id, run.agent, run.prompt, run.base, run.branch,
                 run.created_at, run.port_base.map(|p| p as i64), run.archived_at, run.title, run.kind,
                 run.merge_target, run.race_id, loop_config, loop_state, run.issue_id, run.worktree as i64,
                 run.model, run.base_commit, run.pin_rank, run.primary_closed_at,
-                run.branch_cut.map(i64::from), run.own_branch, run.pr_merged_head
+                run.branch_cut.map(i64::from), run.own_branch, run.pr_merged_head, custom_agent
             ],
         )?;
         Ok(())
@@ -1001,7 +1013,7 @@ impl Registry {
 
     pub fn get_run(&self, id: &str) -> Result<Option<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch, pr_merged_head FROM runs WHERE id = ?1",
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch, pr_merged_head, custom_agent FROM runs WHERE id = ?1",
         )?;
         let mut rows = stmt.query([id])?;
         match rows.next()? {
@@ -1012,7 +1024,7 @@ impl Registry {
 
     pub fn list_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch, pr_merged_head
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch, pr_merged_head, custom_agent
              FROM runs WHERE project_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -1025,7 +1037,7 @@ impl Registry {
 
     pub fn list_archived_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch, pr_merged_head
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch, pr_merged_head, custom_agent
              FROM runs WHERE project_id = ?1 AND archived_at IS NOT NULL ORDER BY archived_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -1658,7 +1670,7 @@ impl Registry {
     /// runs" list; also drives the last-run-abandoned rollback check).
     pub fn runs_for_issue(&self, issue_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch, pr_merged_head
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch, pr_merged_head, custom_agent
              FROM runs WHERE issue_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([issue_id], |row| Ok(row_to_run(row)))?;
@@ -1935,6 +1947,9 @@ fn row_to_run(row: &rusqlite::Row) -> Result<Run> {
         branch_cut: row.get::<_, Option<i64>>(21)?.map(|v| v != 0),
         own_branch: row.get(22)?,
         pr_merged_head: row.get(23)?,
+        custom_agent: row
+            .get::<_, Option<String>>(24)?
+            .and_then(|json| serde_json::from_str(&json).ok()),
     })
 }
 
@@ -2128,6 +2143,7 @@ mod tests {
             branch_cut: None,
             own_branch: None,
             pr_merged_head: None,
+            custom_agent: None,
             pin_rank: None,
         }
     }
@@ -2310,6 +2326,7 @@ mod tests {
             branch_cut: Some(true),
             own_branch: Some("agent/agent-6fgy".into()),
             pr_merged_head: None,
+            custom_agent: None,
             ..sample_run("agent-6fgy", None)
         };
         assert_eq!(switched.own_branch(no_rename), Some("agent/agent-6fgy"));
@@ -2709,6 +2726,7 @@ mod tests {
             branch_cut: None,
             own_branch: None,
             pr_merged_head: None,
+            custom_agent: None,
             pin_rank: None,
         };
         reg.insert_run(&run).unwrap();

@@ -1,5 +1,5 @@
 import { IssuePatch, IssueStatus } from "../api";
-import { Attachment, parseAttachments } from "./attachments";
+import { ASSETS_DIR, Attachment, parseAttachments } from "./attachments";
 import { ISSUE_STATUSES, PRIORITY_LABELS } from "./issues";
 
 // A new issue being written in the composer (AGE-255). The board used to
@@ -20,6 +20,9 @@ export interface IssueDraft {
   // Whether the composer is up. A draft closed without a title is kept but put
   // away, and the board should come back to it closed, not sprung open.
   open: boolean;
+  // Names of the files this draft wrote into the assets dir: the only ones
+  // discarding it may trash.
+  owned: string[];
 }
 
 export const NEW_DRAFT: IssueDraft = {
@@ -30,6 +33,7 @@ export const NEW_DRAFT: IssueDraft = {
   due: null,
   scheduled: null,
   open: true,
+  owned: [],
 };
 
 export function issuesDraftKey(projectId: string): string {
@@ -65,6 +69,7 @@ export function parseDraft(raw: string | null): IssueDraft | null {
     due: date(o.due),
     scheduled: date(o.scheduled),
     open: o.open === true,
+    owned: Array.isArray(o.owned) ? o.owned.filter((n): n is string => typeof n === "string") : [],
   };
 }
 
@@ -120,15 +125,16 @@ export function draftAttachLabel(now: Date = new Date()): string {
   return `${DRAFT_ASSET_PREFIX}${now.getTime().toString(36)}`;
 }
 
-// What discarding a draft may trash. Only files the composer wrote: a draft's
-// description can link an asset that belongs to a filed issue, and throwing
-// the draft away must not take that issue's file with it.
-export function ownedByDraft(a: Attachment): boolean {
-  return a.name.startsWith(DRAFT_ASSET_PREFIX);
+// What discarding a draft may trash. Recorded rather than read off the name: a
+// filed issue keeps its `draft-` file names, and a project keyed DRAFT names
+// its assets the same way, so a link to either pasted into a draft would have
+// had the discard trash another issue's file. Directly under `assets/` only.
+export function ownedByDraft(draft: IssueDraft, a: Attachment): boolean {
+  return draft.owned.includes(a.name) && a.ref === `${ASSETS_DIR}/${a.name}`;
 }
 
-export function draftOwnedAttachments(body: string): Attachment[] {
-  return parseAttachments(body).filter(ownedByDraft);
+export function draftOwnedAttachments(draft: IssueDraft): Attachment[] {
+  return parseAttachments(draft.body).filter((a) => ownedByDraft(draft, a));
 }
 
 type DraftStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;

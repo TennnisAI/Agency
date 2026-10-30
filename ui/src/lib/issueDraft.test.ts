@@ -126,10 +126,22 @@ describe("issue drafts", () => {
     expect(a).not.toBe(b);
   });
 
-  it("only claims the files the composer wrote, not an issue's linked asset", () => {
+  it("only claims the files this draft wrote, whatever another file is called", () => {
     const own = attachmentName(draftAttachLabel(new Date(1000)), "/x/shot.png", "stamp");
-    const body = `![](assets/${own})\n![](assets/AGE-14-crash.png)\n[log](assets/draft-abc-log.txt)\n`;
-    expect(draftOwnedAttachments(body).map((a) => a.name)).toEqual([own, "draft-abc-log.txt"]);
+    // A filed issue's file that kept its draft name, a DRAFT-keyed project's
+    // asset, and a nested path sharing an owned name.
+    const body = [
+      `![](assets/${own})`, "![](assets/AGE-14-crash.png)", "![](assets/draft-abc-shot.png)",
+      "![](assets/draft-12-shot.png)", `![](assets/sub/${own}x)`,
+    ].join("\n");
+    const draft = { ...NEW_DRAFT, body, owned: [own, `${own}x`] };
+    expect(draftOwnedAttachments(draft).map((a) => a.name)).toEqual([own]);
+  });
+
+  it("keeps only strings in the stored ownership list", () => {
+    expect(parseDraft(JSON.stringify({ owned: ["a.png", 7, null] }))?.owned).toEqual(["a.png"]);
+    expect(parseDraft(JSON.stringify({ owned: "a.png" }))?.owned).toEqual([]);
+    expect(parseDraft(JSON.stringify({}))?.owned).toEqual([]);
   });
 
   it("keeps drafts in memory when storage refuses access", () => {

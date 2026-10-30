@@ -771,7 +771,11 @@ export default function IssuesView({
       const cur = issueDrafts.get(key);
       if (done.length === 0 || !cur) return;
       const md = done.map((d) => d.markdown).join("\n");
-      setDraft({ ...cur, body: spliceAttachments(cur.body, md, at).body }, key);
+      setDraft({
+        ...cur,
+        body: spliceAttachments(cur.body, md, at).body,
+        owned: [...cur.owned, ...done.map((d) => d.name)],
+      }, key);
     } finally {
       issueDrafts.setAttaching(key, false);
     }
@@ -788,14 +792,19 @@ export default function IssuesView({
 
   function removeDraftAttachment(a: Attachment) {
     if (!draft) return;
-    setDraft({ ...draft, body: removeAttachment(draft.body, a) });
-    if (ownedByDraft(a)) void trashDraftAttachment(a);
+    const owned = ownedByDraft(draft, a);
+    setDraft({
+      ...draft,
+      body: removeAttachment(draft.body, a),
+      owned: draft.owned.filter((n) => n !== a.name),
+    });
+    if (owned) void trashDraftAttachment(a);
   }
 
   // The files were written as soon as they were dropped, so a discarded draft
   // would otherwise leave them in the assets dir with nothing linking to them.
   function discardComposer() {
-    const owned = draft ? draftOwnedAttachments(draft.body) : [];
+    const owned = draft ? draftOwnedAttachments(draft) : [];
     setDraft(null);
     owned.forEach((a) => { void trashDraftAttachment(a); });
   }

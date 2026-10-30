@@ -6,7 +6,7 @@ import { useRuns } from "../store/runs";
 import { useModalKeys } from "../hooks/useModalKeys";
 import { useBackdropDismiss } from "../hooks/useBackdropDismiss";
 import { useAgentModels } from "../hooks/useAgentModels";
-import { customAgentLabel, useCustomAgents } from "../hooks/useCustomAgents";
+import { attemptsForPick, customAgentLabel, customAgentsProject, useCustomAgents } from "../hooks/useCustomAgents";
 import ModelSelect from "./ModelSelect";
 
 // One row of the race: an agent and the model it runs on. `model` absent (as
@@ -45,9 +45,7 @@ export default function RaceDialog({ onClose, issue, issueLabel }: {
   const { models, remembered } = useAgentModels();
   // One for the whole race, unlike the model: instructions mean the same to
   // every harness, and comparing attempts is the point of giving them the same.
-  // From the issue's own project when there is one: that is where the backend
-  // looks the pick up, whichever project happens to be selected.
-  const { agents: customAgents, takes } = useCustomAgents(issue?.projectId ?? selectedProjectId);
+  const { agents: customAgents, takes } = useCustomAgents(customAgentsProject(issue, selectedProjectId));
   const [customAgent, setCustomAgent] = useState("");
   const modelFor = (a: Attempt) => (a.model === undefined ? remembered(a.agent) : a.model);
   const attemptsFor = (agent: string) => attempts.filter((a) => a.agent === agent);
@@ -100,11 +98,9 @@ export default function RaceDialog({ onClose, issue, issueLabel }: {
     setAttempts(attempts.map((a) => (a.key === key ? { ...a, model } : a)));
   const removeAttempt = (key: number) => setAttempts(attempts.filter((a) => a.key !== key));
 
-  // The backend refuses a whole race over one harness that can't take the agent,
-  // so one that can't is unticked here, where the row greys out and says why.
   function pickCustomAgent(selection: string) {
     setCustomAgent(selection);
-    if (selection) setAttempts(attempts.filter((a) => takes(a.agent)));
+    setAttempts(attemptsForPick(attempts, selection, takes));
   }
 
   const mergeTarget = effectiveMergeTarget(base, targetOverride);

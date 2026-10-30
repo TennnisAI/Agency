@@ -22,6 +22,19 @@ type Pending = {
 };
 
 /**
+ * A spawn in a folder with no repository. What was picked carries through: this
+ * once rebuilt the options, and the run started as the plain harness on the
+ * default model. base/mergeTarget are ignored for a run that stays in the
+ * checkout; they're spelled only because SpawnOpts asks for them.
+ */
+export const gitlessOpts = (opts?: SpawnOpts): SpawnOpts => ({
+  ...opts,
+  base: "HEAD",
+  mergeTarget: "",
+  worktree: false,
+});
+
+/**
  * The pre-flight every agent spawn goes through, plus the dialogs it can raise:
  * a preconfigured agent whose CLI is missing would spawn a session that dies
  * instantly, and a repo that isn't ready has no commit to branch a worktree
@@ -74,9 +87,7 @@ export function useSpawnAgent(project: Project | null, onRepoResolved?: () => vo
       // backend would only refuse.
       if (r.state === "notARepo") {
         if (issue) await startIssue(issue, agentId, opts);
-        // base/mergeTarget are ignored for a run that stays in the checkout;
-        // they're spelled only because SpawnOpts asks for them.
-        else await createAgent(agentId, { ...opts, base: "HEAD", mergeTarget: "", worktree: false });
+        else await createAgent(agentId, gitlessOpts(opts));
         return;
       }
       // A dirty checkout only blocks cutting a worktree (the new branch would

@@ -587,6 +587,20 @@ pub fn merge_with_progress(
     if crate::custom_agents::checkout_dirty(&dirty) {
         bail!("the project's main checkout has uncommitted changes; commit or stash them there before merging");
     }
+    // Let through as not dirty above, so make sure the merge won't need them gone:
+    // git would stop halfway, either at the checkout or at the merge, with an
+    // error about overwriting a file the user never connected to this branch.
+    for path in crate::custom_agents::unshared_agents(&dirty) {
+        for range in [format!("HEAD..{base}"), format!("{base}...{branch}")] {
+            let changed = git_ok(repo, &["diff", "--name-only", &range, "--", path])?;
+            if !changed.trim().is_empty() {
+                bail!(
+                    "merging {branch} would overwrite {path}, which isn't committed in the \
+                     project's main checkout; commit or remove it there before merging"
+                );
+            }
+        }
+    }
     // Remember which branch the main checkout was on so a clean merge can put
     // it back — merging shouldn't hijack the user's checkout as a side effect.
     // Detached HEAD yields nothing and skips the restore.

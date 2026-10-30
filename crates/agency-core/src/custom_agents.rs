@@ -250,16 +250,29 @@ pub fn render(agent: &CustomAgent) -> String {
     out
 }
 
+/// The file a line of `git status --porcelain` names, when it is an agent saved
+/// or deleted in Settings and not yet committed. Staged changes are not included:
+/// git refuses a merge over them, whatever they are.
+fn unshared_agent(line: &str) -> Option<&str> {
+    let (status, path) = (line.get(..3)?, line.get(3..)?);
+    let in_dir = path.strip_prefix(PROJECT_DIR)?.starts_with('/');
+    (in_dir && matches!(status, "?? " | " M " | " D ")).then_some(path)
+}
+
+/// Every agent in `git status --porcelain --untracked-files=all` output that
+/// [`checkout_dirty`] lets through, for a merge to check it won't overwrite them.
+pub fn unshared_agents(porcelain: &str) -> Vec<&str> {
+    porcelain.lines().filter_map(unshared_agent).collect()
+}
+
 /// Whether `git status --porcelain --untracked-files=all` output is anything that
-/// should stop a merge or a spawn. An untracked file in [`PROJECT_DIR`] is not:
-/// saving a "This project" agent left `?? .agency/` in the status, and every merge
-/// then refused with "uncommitted changes" until it was committed. The spawn reads
-/// the definition from the checkout, so a worktree cut without it loses nothing.
-/// It stays visible to git, because committing it is how it gets shared. An edit
-/// to one already committed still counts, as any tracked change does.
+/// should stop a merge or a spawn. An agent saved in Settings is not: a "This
+/// project" agent left `?? .agency/` in the status, and every merge then refused
+/// with "uncommitted changes" until it was committed. The spawn reads the
+/// definition from the checkout, so a worktree cut without it loses nothing. It
+/// stays visible to git, because committing it is how it gets shared.
 pub fn checkout_dirty(porcelain: &str) -> bool {
-    let unshared = format!("?? {PROJECT_DIR}/");
-    porcelain.lines().any(|l| !l.trim().is_empty() && !l.starts_with(&unshared))
+    porcelain.lines().any(|l| !l.trim().is_empty() && unshared_agent(l).is_none())
 }
 
 /// A definition [`list`] left out, for Settings to say so. An agent missing from
@@ -486,7 +499,10 @@ fn native_file(harness: &str, agent: &CustomAgent) -> Option<(String, String, St
             };
             Some((
                 format!("{dir}/{name}{suffix}"),
-                format!("---\nname: {name}\ndescription: {}\n---\n{body}\n", quoted(description)),
+                format!(
+                    "---\nname: {name}\ndescription: {}\n---\n{body}\n",
+                    quoted(&format!("{RESERVED_NOTE} {description}"))
+                ),
                 format!("/{dir}/agency-*"),
             ))
         }
@@ -501,6 +517,13 @@ fn native_file(harness: &str, agent: &CustomAgent) -> Option<(String, String, St
         Delivery::Flag { .. } => None,
     }
 }
+
+/// Leads the description of a file a harness discovers. A run in the user's
+/// checkout leaves it where other sessions there can see it, and the description
+/// is what a harness decides to hand work to a subagent on. Only a request, since
+/// no harness has a way to hide one, but the run itself selects by name and never
+/// reads it.
+const RESERVED_NOTE: &str = "Reserved for one Agency run; don't use it from another session.";
 
 /// Refuse a path that leaves the worktree through a symlink. The parts of `rel`
 /// are the repo's to commit, and a `.claude/agents` linked at the user's own
@@ -731,9 +754,16 @@ mod tests {
         assert!(!checkout_dirty(""));
         assert!(!checkout_dirty("?? .agency/agents/reviewer.md\n"));
         assert!(checkout_dirty("?? .agency/agents/reviewer.md\n?? notes.md\n"));
-        // A committed agent's edit is a tracked change like any other.
-        assert!(checkout_dirty(" M .agency/agents/reviewer.md\n"));
+        // Saved or deleted in Settings, on one the team already shares.
+        assert!(!checkout_dirty(" M .agency/agents/reviewer.md\n"));
+        assert!(!checkout_dirty(" D .agency/agents/reviewer.md\n"));
+        // Staged, which git refuses a merge over, or not in the directory at all.
+        assert!(checkout_dirty("M  .agency/agents/reviewer.md\n"));
         assert!(checkout_dirty("?? .agency/agents-old/x.md\n"));
+        assert_eq!(
+            unshared_agents("?? .agency/agents/a.md\n M src.rs\n M .agency/agents/b.md\n"),
+            vec![".agency/agents/a.md", ".agency/agents/b.md"]
+        );
     }
 
     #[test]
@@ -812,13 +842,16 @@ mod tests {
 
         // The name is what `--agent` looks up, not the display name. The
         // description stays quoted because it holds a `: `.
-        assert!(file("claude").1.starts_with(
-            "---\nname: agency-reviewer\ndescription: \"Reviews: a diff\"\n---\nLead with"
-        ));
+        assert!(file("claude").1.starts_with(&format!(
+            "---\nname: agency-reviewer\ndescription: \"{RESERVED_NOTE} Reviews: a diff\"\n---\nLead with"
+        )));
         assert!(file("cursor").1.contains("alwaysApply: true\n"));
 
         let blank = CustomAgent { description: String::new(), ..agent() };
-        assert!(native_file("claude", &blank).unwrap().1.contains("description: \"Reviewer\""));
+        assert!(native_file("claude", &blank)
+            .unwrap()
+            .1
+            .contains(&format!("description: \"{RESERVED_NOTE} Reviewer\"")));
     }
 
     /// A generated file git offers is a generated file in the project at merge.

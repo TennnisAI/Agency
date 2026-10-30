@@ -455,6 +455,93 @@ fn conflicting_merge_stays_on_base_for_resolution() {
     merge::abort_merge(dir.path(), None).unwrap();
 }
 
+fn repo_with_branch(dir: &Path) {
+    init_repo(dir);
+    run(dir, &["checkout", "-q", "-b", "agent/p"]);
+    std::fs::write(dir.join("new.txt"), "hi\n").unwrap();
+    run(dir, &["add", "-A"]);
+    run(dir, &["commit", "-q", "-m", "add new"]);
+    run(dir, &["checkout", "-q", "main"]);
+}
+
+fn write_agent(dir: &Path, text: &str) {
+    std::fs::create_dir_all(dir.join(".agency/agents")).unwrap();
+    std::fs::write(dir.join(".agency/agents/reviewer.md"), text).unwrap();
+}
+
+/// An edit in Settings to an agent the team already shares is the same case as a
+/// new one: it isn't work a merge can lose, unless the merge touches that file.
+#[test]
+fn an_edit_to_a_committed_agent_does_not_block_a_merge() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    write_agent(dir.path(), "shared");
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-q", "-m", "share the agent"]);
+    run(dir.path(), &["checkout", "-q", "-b", "agent/p"]);
+    std::fs::write(dir.path().join("new.txt"), "hi\n").unwrap();
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-q", "-m", "add new"]);
+    run(dir.path(), &["checkout", "-q", "main"]);
+
+    write_agent(dir.path(), "edited");
+    let outcome = merge::merge_with_progress(dir.path(), "agent/p", "main", &mut |_| {}).unwrap();
+    assert!(matches!(outcome, MergeOutcome::Clean { .. }));
+    let kept = std::fs::read_to_string(dir.path().join(".agency/agents/reviewer.md")).unwrap();
+    assert_eq!(kept, "edited");
+}
+
+/// Refused up front and by name, with the checkout left where it was. Git's own
+/// refusal comes mid-merge and doesn't say what the file has to do with this.
+#[test]
+fn a_merge_that_would_overwrite_an_uncommitted_agent_refuses() {
+    let dir = tempfile::tempdir().unwrap();
+    repo_with_branch(dir.path());
+    run(dir.path(), &["checkout", "-q", "agent/p"]);
+    write_agent(dir.path(), "theirs");
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-q", "-m", "add the same agent"]);
+    run(dir.path(), &["checkout", "-q", "main"]);
+    let head = || {
+        let out = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let before = head();
+
+    write_agent(dir.path(), "mine");
+    let e = merge::merge_with_progress(dir.path(), "agent/p", "main", &mut |_| {}).unwrap_err();
+    assert!(e.to_string().contains(".agency/agents/reviewer.md"), "{e}");
+    assert_eq!(head(), before);
+    let kept = std::fs::read_to_string(dir.path().join(".agency/agents/reviewer.md")).unwrap();
+    assert_eq!(kept, "mine");
+}
+
+/// The same refusal when it is the checkout to the base that would overwrite it,
+/// which is a step earlier than the merge.
+#[test]
+fn switching_to_a_base_that_has_the_agent_refuses_too() {
+    let dir = tempfile::tempdir().unwrap();
+    repo_with_branch(dir.path());
+    write_agent(dir.path(), "on main");
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-q", "-m", "share the agent"]);
+    run(dir.path(), &["checkout", "-q", "-b", "dev", "HEAD~1"]);
+
+    write_agent(dir.path(), "mine");
+    let e = merge::merge_with_progress(dir.path(), "agent/p", "main", &mut |_| {}).unwrap_err();
+    assert!(e.to_string().contains(".agency/agents/reviewer.md"), "{e}");
+    let branch = Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&branch.stdout).trim(), "dev");
+}
+
 /// Saving a "This project" agent writes an untracked file into the checkout, and
 /// that alone refused every merge with "uncommitted changes".
 #[test]

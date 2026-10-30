@@ -19,8 +19,9 @@ You review diffs. Lead with what is wrong, and say why.
 ```
 
 - `.agency/agents/<id>.md` is one project's. The directory stays trackable, so
-  commit it to share the agent with your team. Until you do, it doesn't count as
-  uncommitted work for a merge or a spawn. An edit to a committed one does.
+  commit it to share the agent with your team. Until you do, saving or deleting
+  one doesn't count as uncommitted work for a merge or a spawn. The exception is
+  a merge that would overwrite that file, which refuses and names it.
 - `custom-agents/<id>.md` in the app's data directory is available in every
   project. Both are offered even under one id, and a project's is labelled as
   such in the picker (`Project: Reviewer`), so a `git pull` can't change what picking yours starts.
@@ -54,9 +55,10 @@ it commits could answer to, and `--agent` would launch that file instead. A path
 that leaves the worktree through a symlink is refused, and the spawn with it.
 
 Generated files are excluded from git. A run in your checkout leaves its file
-there until the run is archived or deleted, and a harness that scans that
-directory can offer it to other sessions in the checkout until then. Any other
-harness refuses at spawn rather
+there until the run is archived or deleted. A harness that scans that directory
+can still offer it to other sessions in the checkout until then, so its
+description asks them not to use it. That is a request and not a barrier: only
+its own worktree keeps it from them. Any other harness refuses at spawn rather
 than starting a plain agent that looks like the one you asked for. So does Cursor
 without its own worktree, because its rules file would apply to everything else
 running in your checkout.

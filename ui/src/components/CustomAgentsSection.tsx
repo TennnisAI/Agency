@@ -10,6 +10,7 @@ import { agentLabel } from "../agents";
 import { toastError } from "../lib/toast";
 import ConfirmDialog from "./ConfirmDialog";
 import FormDialog, { Field } from "./FormDialog";
+import SkippedAgents from "./SkippedAgents";
 
 type Draft = {
   // Set when editing: an edit keeps its id and stays in the scope it was found.
@@ -66,9 +67,7 @@ export default function CustomAgentsSection({ projectId }: { projectId: string |
         An agent you write once and start in any of these harnesses:{" "}
         {data.harnesses.map(agentLabel).join(", ")}. Pick one from the add agent menu.
       </p>
-      {data.skipped.map((s) => (
-        <div key={s.file} className="git-error">Couldn't load {s.file}: {s.reason}</div>
-      ))}
+      <SkippedAgents skipped={data.skipped} />
       <div className="settings-card-list">
         {data.agents.map((a) => (
           <div key={a.selection} className="settings-profile-card">

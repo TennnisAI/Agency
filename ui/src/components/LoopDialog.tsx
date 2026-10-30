@@ -6,7 +6,7 @@ import { useRuns } from "../store/runs";
 import { useModalKeys } from "../hooks/useModalKeys";
 import { useBackdropDismiss } from "../hooks/useBackdropDismiss";
 import { useAgentModels } from "../hooks/useAgentModels";
-import { customAgentLabel, useCustomAgents } from "../hooks/useCustomAgents";
+import { customAgentLabel, customAgentsProject, pickFor, useCustomAgents } from "../hooks/useCustomAgents";
 import ModelSelect from "./ModelSelect";
 
 const PROMPT_TEMPLATE =
@@ -36,13 +36,9 @@ export default function LoopDialog({ onClose, issue, issueLabel }: {
     if (modelTouched) return;
     setModel(remembered(agent));
   }, [agent, remembered, modelTouched]);
-  // From the issue's own project when there is one: that is where the backend
-  // looks the pick up, whichever project happens to be selected.
-  const { agents: customAgents, takes } = useCustomAgents(issue?.projectId ?? selectedProjectId);
+  const { agents: customAgents, takes } = useCustomAgents(customAgentsProject(issue, selectedProjectId));
   const [customAgent, setCustomAgent] = useState("");
-  // Derived rather than cleared, so trying another harness and coming back keeps
-  // the pick, and a harness that can't take one is never sent it.
-  const pickedCustomAgent = takes(agent) ? customAgent : "";
+  const pickedCustomAgent = pickFor(agent, customAgent, takes);
   const [checkCommand, setCheckCommand] = useState("");
   // Kept as a raw string while editing so the field can be cleared/retyped;
   // clamped to [1,100] only on blur and at submit.

@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-  NEW_DRAFT, closeOutcome, createDraftStore, draftAttachLabel, draftExtras, draftOwnedAttachments, draftWaiting,
-  issuesDraftKey, loadDraft, parseDraft, saveDraft,
+  NEW_DRAFT, closeOutcome, composerEscape, createDraftStore, draftAttachLabel, draftExtras, draftOwnedPaths,
+  draftWaiting, issuesDraftKey, loadDraft, ownedByDraft, parseDraft, saveDraft,
 } from "./issueDraft";
-import { attachmentName } from "./attachments";
+import { attachmentName, parseAttachments } from "./attachments";
 
 function memStorage() {
   const m = new Map<string, string>();
@@ -135,7 +135,35 @@ describe("issue drafts", () => {
       "![](assets/draft-12-shot.png)", `![](assets/sub/${own}x)`,
     ].join("\n");
     const draft = { ...NEW_DRAFT, body, owned: [own, `${own}x`] };
-    expect(draftOwnedAttachments(draft).map((a) => a.name)).toEqual([own]);
+    expect(parseAttachments(body).filter((a) => ownedByDraft(draft, a)).map((a) => a.name)).toEqual([own]);
+  });
+
+  it("discards every file the draft wrote, even one whose link was deleted by hand", () => {
+    const draft = { ...NEW_DRAFT, body: "![](assets/kept.png)", owned: ["kept.png", "unlinked.png"] };
+    expect(draftOwnedPaths(draft)).toEqual([
+      ".agency/issues/assets/kept.png",
+      ".agency/issues/assets/unlinked.png",
+    ]);
+  });
+
+  it("refuses a stored name that would reach outside the assets dir", () => {
+    const owned = ["../AGE-1.md", "..", ".", "", "sub/a.png", "sub\\a.png", "a.png"];
+    expect(draftOwnedPaths({ ...NEW_DRAFT, owned })).toEqual([".agency/issues/assets/a.png"]);
+  });
+
+  it("holds Escape while busy, but still lets it close a menu", () => {
+    expect(composerEscape(false, false)).toBe("close");
+    expect(composerEscape(false, true)).toBe("hold");
+    expect(composerEscape(true, true)).toBe("menu");
+    expect(composerEscape(true, false)).toBe("menu");
+  });
+
+  it("hands a pasted caret over once, per key", () => {
+    const store = createDraftStore(() => null);
+    store.setCaret("a", 7);
+    expect(store.takeCaret("b")).toBeNull();
+    expect(store.takeCaret("a")).toBe(7);
+    expect(store.takeCaret("a")).toBeNull();
   });
 
   it("keeps only strings in the stored ownership list", () => {

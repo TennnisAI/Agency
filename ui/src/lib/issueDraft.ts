@@ -1,5 +1,5 @@
 import { IssuePatch, IssueStatus } from "../api";
-import { ASSETS_DIR, Attachment, parseAttachments } from "./attachments";
+import { ASSETS_DIR, Attachment, ISSUES_DIR } from "./attachments";
 import { ISSUE_STATUSES, PRIORITY_LABELS } from "./issues";
 
 // A new issue being written in the composer (AGE-255). The board used to
@@ -133,8 +133,25 @@ export function ownedByDraft(draft: IssueDraft, a: Attachment): boolean {
   return draft.owned.includes(a.name) && a.ref === `${ASSETS_DIR}/${a.name}`;
 }
 
-export function draftOwnedAttachments(draft: IssueDraft): Attachment[] {
-  return parseAttachments(draft.body).filter((a) => ownedByDraft(draft, a));
+// The repo paths of every file this draft wrote, linked or not: a file whose
+// link was deleted by hand was left in the assets dir when the draft was
+// discarded, with nothing pointing at it. The names come back out of storage,
+// so anything that is not a plain file name is refused rather than trashed.
+export function draftOwnedPaths(draft: IssueDraft): string[] {
+  return draft.owned
+    .filter((n) => n !== "" && n !== "." && n !== ".." && !/[/\\]/.test(n))
+    .map((n) => `${ISSUES_DIR}/${ASSETS_DIR}/${n}`);
+}
+
+// What Escape does in the composer. It stays on the modal stack while busy, and
+// holds, rather than dropping off: re-registering when an attach ended put the
+// composer above a date picker or preview opened meanwhile, so the next Escape
+// closed the composer and filed a half-written issue instead of closing that.
+export type ComposerEscape = "menu" | "close" | "hold";
+
+export function composerEscape(menuOpen: boolean, busy: boolean): ComposerEscape {
+  if (menuOpen) return "menu";
+  return busy ? "hold" : "close";
 }
 
 type DraftStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
@@ -156,6 +173,12 @@ export interface DraftStore {
   // back or the issue is filed without the links.
   attaching(key: string): boolean;
   setAttaching(key: string, on: boolean): void;
+  // Where the caret belongs after a paste's links land. Spliced into the body
+  // from outside, the link went in after the caret and the next word typed
+  // landed in front of the image. Held here because the composer that takes it
+  // may not be the one that was mounted when the write began.
+  setCaret(key: string, caret: number): void;
+  takeCaret(key: string): number | null;
   subscribe(notify: () => void): () => void;
 }
 
@@ -166,6 +189,7 @@ export function createDraftStore(storage: () => DraftStorage | null): DraftStore
   const cache = new Map<string, IssueDraft | null>();
   const inFlight = new Set<string>();
   const attachingNow = new Set<string>();
+  const carets = new Map<string, number>();
   const listeners = new Set<() => void>();
   const notify = () => listeners.forEach((l) => l());
   return {
@@ -203,6 +227,14 @@ export function createDraftStore(storage: () => DraftStorage | null): DraftStore
       if (on) attachingNow.add(key);
       else attachingNow.delete(key);
       notify();
+    },
+    setCaret(key, caret) {
+      carets.set(key, caret);
+    },
+    takeCaret(key) {
+      const caret = carets.get(key) ?? null;
+      carets.delete(key);
+      return caret;
     },
     subscribe(l) {
       listeners.add(l);

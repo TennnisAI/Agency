@@ -43,7 +43,7 @@ import {
   stepSelection,
 } from "../lib/issues";
 import {
-  IssueDraft, NEW_DRAFT, closeOutcome, createDraftStore, draftExtras, draftOwnedAttachments, draftWaiting,
+  IssueDraft, NEW_DRAFT, closeOutcome, createDraftStore, draftExtras, draftOwnedPaths, draftWaiting,
   issuesDraftKey, ownedByDraft,
 } from "../lib/issueDraft";
 import { autoSchedules, shouldSayKeyMismatch } from "../lib/autoSync";
@@ -748,7 +748,7 @@ export default function IssuesView({
         toastInfo("Draft kept. It needs a title to be saved; press + to finish it.");
         return;
       case "discard":
-        setDraft(null);
+        discardComposer();
     }
   }
 
@@ -771,9 +771,11 @@ export default function IssuesView({
       const cur = issueDrafts.get(key);
       if (done.length === 0 || !cur) return;
       const md = done.map((d) => d.markdown).join("\n");
+      const next = spliceAttachments(cur.body, md, at);
+      if (next.cursor !== undefined) issueDrafts.setCaret(key, next.cursor);
       setDraft({
         ...cur,
-        body: spliceAttachments(cur.body, md, at).body,
+        body: next.body,
         owned: [...cur.owned, ...done.map((d) => d.name)],
       }, key);
     } finally {
@@ -781,32 +783,35 @@ export default function IssuesView({
     }
   }
 
-  async function trashDraftAttachment(a: Attachment) {
-    forgetAttachment(fileRoot, a.repoPath);
+  async function trashDraftFile(repoPath: string) {
+    forgetAttachment(fileRoot, repoPath);
     try {
-      await trashPath(fileRoot, a.repoPath);
+      await trashPath(fileRoot, repoPath);
     } catch (e) {
       toastError(e, "Removed the link, but couldn't delete the file");
     }
   }
 
   function removeDraftAttachment(a: Attachment) {
-    if (!draft) return;
+    // The save in flight already carries this link: trashing the file now
+    // would file the issue pointing at nothing.
+    if (!draft || issueDrafts.saving(draftKey)) return;
     const owned = ownedByDraft(draft, a);
     setDraft({
       ...draft,
       body: removeAttachment(draft.body, a),
-      owned: draft.owned.filter((n) => n !== a.name),
+      // A nested link sharing an owned name leaves the claim on the real file.
+      owned: owned ? draft.owned.filter((n) => n !== a.name) : draft.owned,
     });
-    if (owned) void trashDraftAttachment(a);
+    if (owned) void trashDraftFile(a.repoPath);
   }
 
   // The files were written as soon as they were dropped, so a discarded draft
   // would otherwise leave them in the assets dir with nothing linking to them.
   function discardComposer() {
-    const owned = draft ? draftOwnedAttachments(draft) : [];
+    const owned = draft ? draftOwnedPaths(draft) : [];
     setDraft(null);
-    owned.forEach((a) => { void trashDraftAttachment(a); });
+    owned.forEach((p) => { void trashDraftFile(p); });
   }
 
   async function patch(issue: Issue, p: IssuePatch) {
@@ -1331,6 +1336,7 @@ export default function IssuesView({
           saving={savingDraft}
           attaching={attachingDraft}
           onChange={(next) => setDraft(next)}
+          takeCaret={() => issueDrafts.takeCaret(draftKey)}
           onAttach={(jobs, at) => { void attachToDraft(jobs, at); }}
           onRemoveAttachment={removeDraftAttachment}
           onSave={() => { void saveComposer(); }}

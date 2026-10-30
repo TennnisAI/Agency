@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { FileRoot } from "../api";
 import { CrossRefs } from "../lib/links";
 import { DocsIndex } from "../lib/docsIndex";
-import { IssueDraft, closeOutcome, draftAttachLabel, draftWaiting } from "../lib/issueDraft";
+import { IssueDraft, closeOutcome, composerEscape, draftAttachLabel, draftWaiting } from "../lib/issueDraft";
 import { ISSUE_STATUSES, PRIORITY_LABELS, STATUS_LABELS } from "../lib/issues";
 import { AttachAt, Attachment, ISSUES_DIR, parseAttachments } from "../lib/attachments";
 import { Attached, attachBlob, attachPath } from "../lib/issueAttach";
@@ -35,6 +35,7 @@ export default function IssueComposer({
   saving,
   attaching,
   onChange,
+  takeCaret,
   onAttach,
   onRemoveAttachment,
   onSave,
@@ -52,6 +53,7 @@ export default function IssueComposer({
   // links would land on a draft that is already gone.
   attaching: boolean;
   onChange: (next: IssueDraft) => void;
+  takeCaret: () => number | null;
   onAttach: (jobs: Array<() => Promise<Attached>>, at: AttachAt | null) => void;
   onRemoveAttachment: (a: Attachment) => void;
   onSave: () => void;
@@ -92,7 +94,11 @@ export default function IssueComposer({
 
   // The status and priority menus are not on the modal stack (the date picker
   // is), so Escape over one of them closes the menu, not the whole form.
-  useModalKeys(() => (menu ? setMenu(null) : onClose()), !busy);
+  useModalKeys(() => {
+    const action = composerEscape(menu !== null, busy);
+    if (action === "menu") setMenu(null);
+    else if (action === "close") onClose();
+  });
   useDismissOnResize(menu !== null, () => setMenu(null));
 
   // Whatever was being written last gets the caret back: the title for a new
@@ -113,6 +119,16 @@ export default function IssueComposer({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // After the mount effect above, so a paste that finished during a tab switch
+  // still parks the caret after its link. The editor has followed `value` by
+  // now: a child's effects run before its parent's.
+  useEffect(() => {
+    const caret = takeCaret();
+    const v = bodyRef.current?.view();
+    if (caret !== null && v) v.dispatch({ selection: { anchor: Math.min(caret, v.state.doc.length) } });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft.body]);
 
   // The title wraps rather than scrolls, as in the detail pane.
   useLayoutEffect(() => {

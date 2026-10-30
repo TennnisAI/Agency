@@ -871,8 +871,9 @@ pub async fn merge_task(
     Ok(outcome)
 }
 
-// async: read-only, and polled every 3s while a conflict is open — exactly the
-// shape the note at the top of this file says must stay off the main thread.
+// async: read-only, and polled by the source control panel for as long as it
+// shows a worktree agent: every 3s during a merge, every 15s otherwise. Exactly
+// the shape the note at the top of this file says must stay off the main thread.
 #[tauri::command]
 pub async fn merge_status(
     state: State<'_, AppState>,

@@ -6,7 +6,8 @@ import { useRuns } from "../../store/runs";
 import ConfirmDialog from "../ConfirmDialog";
 import PillSelect from "../PillSelect";
 import {
-  endMergeFlow, handoffNote, mergeCardPhase, mergeFlow, patchMergeFlow, reconcileFlow, useMergeFlows,
+  endMergeFlow, handoffNote, mergeCardPhase, mergeFlow, mergePollMs, patchMergeFlow, reconcileFlow,
+  useMergeFlows,
 } from "./mergeFlow";
 import { useMergeHandoff } from "./useMergeHandoff";
 
@@ -48,7 +49,9 @@ export default function MergeCard({
   // The resolver is the agent, or you by hand in the checkout, so the only way
   // to learn of a resolution is to look. A failed read keeps the last answer: a
   // blip here (the index locked while the agent commits, say) clears itself on
-  // the next tick.
+  // the next tick. Asked again the moment an entry appears or goes, so a merge
+  // the window just started shows here without waiting out the slower pace.
+  const tracked = !!flow;
   useEffect(() => {
     let live = true;
     const poll = () => {
@@ -68,9 +71,9 @@ export default function MergeCard({
         .catch(() => {});
     };
     poll();
-    const timer = window.setInterval(poll, 3000);
+    const timer = window.setInterval(poll, mergePollMs(tracked));
     return () => { live = false; window.clearInterval(timer); };
-  }, [run.id]);
+  }, [run.id, tracked]);
 
   const phase = mergeCardPhase(flow, state);
   const unresolved = state?.unresolved ?? [];

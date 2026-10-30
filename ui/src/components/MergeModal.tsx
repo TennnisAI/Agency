@@ -371,6 +371,10 @@ export default function MergeModal({
       const result = await mergeTask(taskId, setGitStep);
       setOutcome(result);
       landed = result.kind === "clean";
+      // git writes MERGE_HEAD during a clean merge too, for as long as commit-msg
+      // runs, so the panel's poll can catch one and start an entry for it. Left
+      // behind, that entry read as "Ready to finish" on a merge that was done.
+      if (landed) endMergeFlow(taskId);
       // This window closes on the hand-off, and the end of the merge still needs
       // what was decided here. `prRef` over `pr`: see where they are declared.
       if (result.kind === "conflicts") {

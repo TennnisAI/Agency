@@ -37,7 +37,7 @@ export type GitSelection =
   // A conflict from the merge card. Not a `file`: that names a path in this
   // panel's tree, and a merge is in the project's checkout whichever worktree
   // the panel is showing.
-  | { kind: "conflict"; projectId: string; path: string; code?: string }
+  | { kind: "conflict"; runId: string; projectId: string; path: string; code?: string }
   | null;
 
 type Props = {
@@ -484,21 +484,32 @@ function GitRepoPanel({
   const run = runs.find((r) => r.id === taskId);
   // An agent with a worktree watches its own merge. Everything else in this panel
   // is the project's checkout, which is where merges happen, so there it shows
-  // whichever run has one open.
+  // every run with one open. Only the first used to get a card, and a run whose
+  // agent had committed its merge unfinished hid the live conflict of whichever
+  // run merged next: its own card stays hidden while the checkout is that run's.
   const mergeFlows = useMergeFlows();
   const ownMerge = run?.kind === "agent" && run.worktree;
-  const mergeRun = ownMerge
-    ? run
-    : runs.find((r) => r.kind === "agent" && r.worktree && mergeFlows.has(r.id));
-  const mergeCard = mergeRun && (
+  const mergeRuns = ownMerge && run
+    ? [run]
+    : runs.filter((r) => r.kind === "agent" && r.worktree && mergeFlows.has(r.id));
+  const mergeCard = mergeRuns.map((r) => (
     <MergeCard
-      run={mergeRun}
+      key={r.id}
+      run={r}
       own={!!ownMerge}
-      selectedPath={selection?.kind === "conflict" ? selection.path : null}
-      onSelectFile={(sel) => onSelect(sel && { kind: "conflict", projectId: mergeRun.projectId, ...sel })}
+      selectedPath={selection?.kind === "conflict" && selection.runId === r.id ? selection.path : null}
+      onSelectFile={(sel) => onSelect(sel && { kind: "conflict", runId: r.id, projectId: r.projectId, ...sel })}
       onChanged={refresh}
     />
-  );
+  ));
+  // The card clears a settled file itself, but a merge aborted from a terminal
+  // takes the card with it in the same update, and the conflict pane stayed open
+  // on a file that was no longer in conflict.
+  const conflictRunId = selection?.kind === "conflict" ? selection.runId : null;
+  const conflictOrphaned = !!conflictRunId && !mergeRuns.some((r) => r.id === conflictRunId);
+  useEffect(() => {
+    if (conflictOrphaned) onSelect(null);
+  }, [conflictOrphaned]); // eslint-disable-line react-hooks/exhaustive-deps
   // Checkpoints are an agent run's (AGE-140): the project checkout and a
   // terminal have no turns to bracket.
   const checkpointRun = run?.kind === "agent" && run.branch ? run : null;

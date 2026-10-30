@@ -1,4 +1,5 @@
 import { IssuePatch, IssueStatus } from "../api";
+import { Attachment, parseAttachments } from "./attachments";
 import { ISSUE_STATUSES, PRIORITY_LABELS } from "./issues";
 
 // A new issue being written in the composer (AGE-255). The board used to
@@ -109,6 +110,27 @@ export function draftExtras(draft: IssueDraft): IssuePatch | null {
   return Object.keys(p).length > 0 ? p : null;
 }
 
+// A file attached to a draft is named before the issue has a key to name it
+// after. The time keeps it unique: the backend refuses to overwrite and the
+// write gives up after five suffixes, so a bare `draft-image.png` would stop
+// attaching after the fifth one ever dropped in the project.
+const DRAFT_ASSET_PREFIX = "draft-";
+
+export function draftAttachLabel(now: Date = new Date()): string {
+  return `${DRAFT_ASSET_PREFIX}${now.getTime().toString(36)}`;
+}
+
+// What discarding a draft may trash. Only files the composer wrote: a draft's
+// description can link an asset that belongs to a filed issue, and throwing
+// the draft away must not take that issue's file with it.
+export function ownedByDraft(a: Attachment): boolean {
+  return a.name.startsWith(DRAFT_ASSET_PREFIX);
+}
+
+export function draftOwnedAttachments(body: string): Attachment[] {
+  return parseAttachments(body).filter(ownedByDraft);
+}
+
 type DraftStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 // Every project's draft, and which of them are being saved, shared by every
@@ -123,6 +145,11 @@ export interface DraftStore {
   set(key: string, draft: IssueDraft | null): void;
   saving(key: string): boolean;
   setSaving(key: string, on: boolean): void;
+  // Files being written for a draft. Held here for the same reason as `saving`:
+  // a tab switch mid-write remounts the composer, which must still hold Save
+  // back or the issue is filed without the links.
+  attaching(key: string): boolean;
+  setAttaching(key: string, on: boolean): void;
   subscribe(notify: () => void): () => void;
 }
 
@@ -132,6 +159,7 @@ export function createDraftStore(storage: () => DraftStorage | null): DraftStore
   // Parsed once per key, so a snapshot is the same object until it changes.
   const cache = new Map<string, IssueDraft | null>();
   const inFlight = new Set<string>();
+  const attachingNow = new Set<string>();
   const listeners = new Set<() => void>();
   const notify = () => listeners.forEach((l) => l());
   return {
@@ -162,6 +190,12 @@ export function createDraftStore(storage: () => DraftStorage | null): DraftStore
     setSaving(key, on) {
       if (on) inFlight.add(key);
       else inFlight.delete(key);
+      notify();
+    },
+    attaching: (key) => attachingNow.has(key),
+    setAttaching(key, on) {
+      if (on) attachingNow.add(key);
+      else attachingNow.delete(key);
       notify();
     },
     subscribe(l) {

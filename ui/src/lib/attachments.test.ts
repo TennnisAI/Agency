@@ -9,9 +9,28 @@ import {
   pastedName,
   removeAttachment,
   slugify,
+  spliceAttachments,
   splitExt,
   stampFor,
 } from "./attachments";
+
+describe("spliceAttachments", () => {
+  const md = "![](assets/a.png)";
+
+  it("starts a drop's own paragraph at the end", () => {
+    expect(spliceAttachments("", md, null)).toEqual({ body: `${md}\n` });
+    expect(spliceAttachments("Some text\n\n", md, null)).toEqual({ body: `Some text\n\n${md}\n` });
+  });
+
+  it("puts a paste at the caret and parks it after the link", () => {
+    const next = spliceAttachments("ab", md, { from: 1, to: 1, text: "ab" });
+    expect(next).toEqual({ body: `a ${md}b`, cursor: 2 + md.length });
+  });
+
+  it("appends when the text moved while the bytes were being written", () => {
+    expect(spliceAttachments("abc", md, { from: 1, to: 1, text: "ab" })).toEqual({ body: `abc\n\n${md}\n` });
+  });
+});
 
 describe("names", () => {
   it("splits extensions, leaving dotfiles alone", () => {

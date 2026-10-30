@@ -16,6 +16,8 @@
 // Everything here is pure string work so it can be tested without a webview;
 // the IO lives in IssueDetail.
 
+import { cellSafe } from "./mdTable";
+
 /** Attachments dir, relative to an issue file (which sits in `.agency/issues/`). */
 export const ASSETS_DIR = "assets";
 
@@ -193,6 +195,34 @@ export function insertAttachment(
   const pad = before === "" || before.endsWith("\n") ? "" : before.endsWith(" ") ? "" : " ";
   const text = `${pad}${insert}`;
   return { body: before + text + after, cursor: from + text.length };
+}
+
+/** Where a paste landed, and the text its offsets are good for. */
+export interface AttachAt {
+  from: number;
+  to: number;
+  text: string;
+  cell?: boolean;
+}
+
+/**
+ * Put freshly written attachments' markdown into `cur`: at the caret for a
+ * paste, at the end for a drop or a file pick. Offsets only survive if nothing
+ * was typed while the bytes were being written; otherwise they point into text
+ * that has moved, so this falls back to appending rather than splicing mid-word.
+ */
+export function spliceAttachments(
+  cur: string,
+  md: string,
+  at: AttachAt | null,
+): { body: string; cursor?: number } {
+  if (at && at.text === cur) {
+    // In a table cell the links go on one line, or the row would split.
+    const links = at.cell ? cellSafe(md, cur.slice(cur.lastIndexOf("\n", at.from - 1) + 1, at.from)) : md;
+    return insertAttachment(cur, at.from, at.to, links);
+  }
+  // Appended attachments start their own paragraph at the end.
+  return { body: cur.trim() ? `${cur.replace(/\n+$/, "")}\n\n${md}\n` : `${md}\n` };
 }
 
 /**

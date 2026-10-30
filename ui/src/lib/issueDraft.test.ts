@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-  NEW_DRAFT, closeOutcome, createDraftStore, draftExtras, draftWaiting, issuesDraftKey, loadDraft, parseDraft,
-  saveDraft,
+  NEW_DRAFT, closeOutcome, createDraftStore, draftAttachLabel, draftExtras, draftOwnedAttachments, draftWaiting,
+  issuesDraftKey, loadDraft, parseDraft, saveDraft,
 } from "./issueDraft";
+import { attachmentName } from "./attachments";
 
 function memStorage() {
   const m = new Map<string, string>();
@@ -104,6 +105,31 @@ describe("issue drafts", () => {
     expect(store.saving("b")).toBe(false);
     store.setSaving("a", false);
     expect(store.saving("a")).toBe(false);
+  });
+
+  it("tracks attaching per key and notifies, so a remounted composer still holds Save", () => {
+    const store = createDraftStore(() => null);
+    let calls = 0;
+    store.subscribe(() => { calls++; });
+    store.setAttaching("a", true);
+    expect(store.attaching("a")).toBe(true);
+    expect(store.attaching("b")).toBe(false);
+    store.setAttaching("a", false);
+    expect(store.attaching("a")).toBe(false);
+    expect(calls).toBe(2);
+  });
+
+  it("names a dropped file so repeats do not collide across drafts", () => {
+    const a = attachmentName(draftAttachLabel(new Date(1000)), "/x/image.png", "stamp");
+    const b = attachmentName(draftAttachLabel(new Date(2000)), "/x/image.png", "stamp");
+    expect(a).toMatch(/^draft-[a-z0-9]+-image\.png$/);
+    expect(a).not.toBe(b);
+  });
+
+  it("only claims the files the composer wrote, not an issue's linked asset", () => {
+    const own = attachmentName(draftAttachLabel(new Date(1000)), "/x/shot.png", "stamp");
+    const body = `![](assets/${own})\n![](assets/AGE-14-crash.png)\n[log](assets/draft-abc-log.txt)\n`;
+    expect(draftOwnedAttachments(body).map((a) => a.name)).toEqual([own, "draft-abc-log.txt"]);
   });
 
   it("keeps drafts in memory when storage refuses access", () => {

@@ -22,7 +22,7 @@ You review diffs. Lead with what is wrong, and say why.
   commit it to share the agent with your team.
 - `custom-agents/<id>.md` in the app's data directory is available in every
   project. Both are offered even under one id, and a project's is labelled as
-  such in the picker, so a `git pull` can't change what picking yours starts.
+  such in the picker (`Project: Reviewer`), so a `git pull` can't change what picking yours starts.
 
 Only `name`, `description` and the body are read. Anything else in the
 frontmatter is dropped, on purpose: a project's agents arrive through `git pull`,

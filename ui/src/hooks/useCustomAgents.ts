@@ -4,10 +4,11 @@ import { CustomAgentInfo, CustomAgents, listCustomAgents } from "../api";
 /**
  * How a spawn picker names an agent. A project's agents arrive through git, so
  * the one that came from the repo says so, and it can't pass for one of yours
- * with the same name.
+ * with the same name. A prefix, not a suffix: pills truncate at 170px, so a long
+ * name would have cut "(this project)" off the end.
  */
 export const customAgentLabel = (a: CustomAgentInfo) =>
-  a.scope === "project" ? `${a.name} (this project)` : a.name;
+  a.scope === "project" ? `Project: ${a.name}` : a.name;
 
 /**
  * The custom agents a spawn in this project can pick, and the harnesses that can

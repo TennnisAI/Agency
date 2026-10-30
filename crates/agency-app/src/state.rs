@@ -3717,7 +3717,7 @@ impl AppState {
         };
         let agent = ca::CustomAgent {
             id,
-            name: name.trim().to_string(),
+            name: ca::clean_name(name),
             description: description.trim().to_string(),
             instructions: instructions.trim().to_string(),
             launch_tag: String::new(),

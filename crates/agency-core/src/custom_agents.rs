@@ -92,6 +92,24 @@ pub fn slugify(name: &str) -> Option<String> {
     valid_id(&out).then_some(out)
 }
 
+/// A name as it is shown: single spaces, however it was typed. Runs of spaces,
+/// Unicode ones included, could push the rest of a label out of a narrow pill.
+pub fn clean_name(name: &str) -> String {
+    name.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Characters that change how text around them reads without showing themselves:
+/// bidi overrides and isolates, zero-width characters, soft hyphens and the like.
+/// A name in a picker says where an agent came from, and a project's agents
+/// arrive through git, so an override could make "Project: Reviewer" read as
+/// something else.
+fn hidden_char(c: char) -> bool {
+    c.is_control()
+        || matches!(c,
+            '\u{ad}' | '\u{61c}' | '\u{180e}' | '\u{200b}'..='\u{200f}'
+            | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}')
+}
+
 /// The rules every definition meets, from the settings form or a hand-edited
 /// file alike.
 pub fn validate(agent: &CustomAgent) -> Result<()> {
@@ -106,6 +124,9 @@ pub fn validate(agent: &CustomAgent) -> Result<()> {
     }
     if agent.description.chars().count() > MAX_DESCRIPTION_LEN {
         bail!("that description is too long (max {MAX_DESCRIPTION_LEN} characters)");
+    }
+    if agent.name.chars().chain(agent.description.chars()).any(hidden_char) {
+        bail!("names and descriptions can't contain invisible or text direction characters");
     }
     if agent.instructions.trim().is_empty() {
         bail!("an agent needs instructions");
@@ -154,7 +175,10 @@ pub fn parse(id: &str, text: &str) -> Result<CustomAgent> {
     body.extend(lines);
     let agent = CustomAgent {
         id: id.to_string(),
-        name: name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| id.to_string()),
+        name: name
+            .map(|n| clean_name(&n))
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| id.to_string()),
         description,
         instructions: body.trim().to_string(),
         launch_tag: String::new(),
@@ -488,6 +512,23 @@ mod tests {
         for bad in ["no frontmatter", "---\nname: A\n", "---\nname: A\n---\n   \n"] {
             assert!(parse("a", bad).is_err(), "{bad:?} parsed");
         }
+    }
+
+    /// A picker's label says where an agent came from, and a shared file must not
+    /// be able to disguise that.
+    #[test]
+    fn a_name_cannot_hide_or_reorder_what_is_shown_beside_it() {
+        for bad in ["Rev\u{202e}iewer", "Rev\u{2067}iewer", "Rev\u{200b}iewer", "Rev\u{7}iewer"] {
+            let text = format!("---\nname: {bad}\n---\nBody\n");
+            assert!(parse("a", &text).is_err(), "{bad:?} parsed");
+        }
+        let text = "---\nname: A\ndescription: \"x\\u202ey\"\n---\nBody\n";
+        assert!(parse("a", text).is_err());
+
+        let spaced = parse("a", "---\nname: Rev  \u{a0}\u{2003}iewer\n---\nBody\n").unwrap();
+        assert_eq!(spaced.name, "Rev iewer");
+        // Not everything outside ASCII: a name in another script is a fine name.
+        assert_eq!(parse("a", "---\nname: レビュー\n---\nBody\n").unwrap().name, "レビュー");
     }
 
     #[test]

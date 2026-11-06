@@ -58,7 +58,7 @@ describe("describeCheckout", () => {
 describe("checkoutTooltip", () => {
   it("names the place and offers the switch", () => {
     expect(checkoutTooltip(at({})))
-      .toBe("You are viewing the Agency checkout. Click to switch to the project checkout or another agent's worktree.");
+      .toBe("You are viewing the Agency checkout. Click to switch to an agent's worktree.");
     expect(checkoutTooltip(at({ root: { kind: "run", id: "r1" } })))
       .toBe("You are viewing claude: Fix login's own worktree. Click to switch to the project checkout or another agent's worktree.");
   });

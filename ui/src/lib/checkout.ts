@@ -46,7 +46,10 @@ export function checkoutTooltip(c: Checkout): string {
   const where = c.kind === "worktree"
     ? `You are viewing ${c.name}'s own worktree`
     : `You are viewing the ${c.name} checkout`;
-  return `${where}. Click to switch to the project checkout or another agent's worktree.`;
+  const to = c.kind === "worktree"
+    ? "the project checkout or another agent's worktree"
+    : "an agent's worktree";
+  return `${where}. Click to switch to ${to}.`;
 }
 
 /** Hover text for the bar's branch, which opens Source Control on the same tree. */

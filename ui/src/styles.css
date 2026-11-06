@@ -2454,13 +2454,10 @@ input.settings-notif-secs { width: 90px; flex: 0 0 auto; }
 /* Hidden-not-unmounted editor panes: one per warm tab, display toggled inline. */
 .files-editor-pane { flex: 1; min-height: 0; flex-direction: column; }
 
-/* Which working tree the Docs / Files tab is reading: the source-control branch
-   bar's quieter twin. A button, like the status bar's branch — it reads as a
-   caption until you hover it, then it is the way to Source Control for the tree
-   it names. Full width so the whole strip is the target, and text-aligned left
-   so it still reads as a bar rather than a control. */
-/* Two controls in one strip: the name switches which tree the view is rooted
-   in (AGE-277), the branch opens Source Control on it. */
+/* Which working tree the Docs, Files or Source Control tab is reading: the
+   source-control branch bar's quieter twin. Two controls in one strip: the name
+   switches which tree the view is rooted in (AGE-277), the branch opens Source
+   Control on it. */
 .checkout-bar {
   display: flex; align-items: center; gap: 4px; flex-shrink: 0; min-width: 0;
   padding: 2px 6px; border-bottom: 1px solid var(--line);

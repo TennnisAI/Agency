@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RunLike, checkoutTooltip, describeCheckout } from "./checkout";
+import { RunLike, branchTooltip, checkoutChoices, checkoutTooltip, describeCheckout, isCurrentChoice } from "./checkout";
 
 const run = (over: Partial<RunLike> & { id: string }): RunLike => ({
   kind: "agent",
@@ -56,15 +56,46 @@ describe("describeCheckout", () => {
 });
 
 describe("checkoutTooltip", () => {
-  it("names the place and the branch", () => {
-    expect(checkoutTooltip(at({}), "main"))
-      .toBe("You are viewing the Agency checkout on branch main. Opens Source Control for this checkout.");
-    expect(checkoutTooltip(at({ root: { kind: "run", id: "r1" } }), "agent/fix-login"))
-      .toBe("You are viewing claude: Fix login's own worktree on branch agent/fix-login. Opens Source Control for this worktree.");
+  it("names the place and offers the switch", () => {
+    expect(checkoutTooltip(at({})))
+      .toBe("You are viewing the Agency checkout. Click to switch to the project checkout or another agent's worktree.");
+    expect(checkoutTooltip(at({ root: { kind: "run", id: "r1" } })))
+      .toBe("You are viewing claude: Fix login's own worktree. Click to switch to the project checkout or another agent's worktree.");
+  });
+});
+
+describe("branchTooltip", () => {
+  it("names the branch and where clicking goes", () => {
+    expect(branchTooltip(at({}), "main"))
+      .toBe("On branch main. Opens Source Control for this checkout.");
+    expect(branchTooltip(at({ root: { kind: "run", id: "r1" } }), "agent/fix-login"))
+      .toBe("On branch agent/fix-login. Opens Source Control for this worktree.");
+  });
+});
+
+describe("checkoutChoices", () => {
+  const choices = checkoutChoices("Agency", [agent, inCheckout, term]);
+
+  it("puts the project checkout first", () => {
+    expect(choices[0]).toEqual({ runId: null, name: "Agency", branch: "", kind: "checkout" });
   });
 
-  it("drops the branch clause when there is no git", () => {
-    expect(checkoutTooltip(at({}), null))
-      .toBe("You are viewing the Agency checkout. Opens Source Control for this checkout.");
+  it("lists only runs with a worktree of their own", () => {
+    expect(choices.map((c) => c.runId)).toEqual([null, "r1"]);
+    expect(choices[1]).toEqual({ runId: "r1", name: "claude: Fix login", branch: "agent/fix-login", kind: "worktree" });
+  });
+
+  it("offers the checkout even with no agents at all", () => {
+    expect(checkoutChoices("Agency", []).map((c) => c.kind)).toEqual(["checkout"]);
+  });
+
+  it("marks the checkout current for a run working in it", () => {
+    const c = at({ root: { kind: "run", id: "r2" } });
+    expect(choices.filter((ch) => isCurrentChoice(c, ch)).map((ch) => ch.runId)).toEqual([null]);
+  });
+
+  it("marks the worktree being viewed", () => {
+    const c = at({ root: { kind: "run", id: "r1" } });
+    expect(choices.filter((ch) => isCurrentChoice(c, ch)).map((ch) => ch.runId)).toEqual(["r1"]);
   });
 });

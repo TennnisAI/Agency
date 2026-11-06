@@ -26,6 +26,8 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
   { id: "go-docs", label: "Go to Docs", sublabel: "Show this project's docs", when: "project" },
   { id: "go-files", label: "Go to Files", sublabel: "Show this project's files", when: "project" },
   { id: "source", label: "Source & Diff", sublabel: "Show source control", when: "project" },
+  // Leaves the tab where it is: the view on it re-roots in the checkout (AGE-277).
+  { id: "view-checkout", label: "View Project Checkout", sublabel: "Show the checkout's docs, files and changes instead of an agent's worktree", when: "project" },
   // Always offered: find works on whatever is on screen, project or not.
   { id: "find", label: "Find…", sublabel: "Search the note, file, or board in front of you", when: "always" },
   { id: "replace", label: "Find and Replace…", sublabel: "Search and replace in the text you're editing", when: "always" },

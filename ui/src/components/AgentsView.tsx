@@ -17,6 +17,7 @@ import { useFolderMissing } from "../hooks/useFolderMissing";
 import { useSpawnAgent } from "../hooks/useSpawnAgent";
 import { usePinDrag } from "../hooks/usePinDrag";
 import FilesView from "./FilesView";
+import CheckoutBar from "./CheckoutBar";
 import DocsView from "./DocsView";
 import HomeView from "./HomeView";
 import IssuesView from "./IssuesView";
@@ -129,7 +130,7 @@ export default function AgentsView({
     requestOpenFile({ rootKey: fileRootKey(filesRoot), path });
   };
 
-  // Where the Docs / Files checkout bar goes when clicked: Source Control on
+  // Where the Docs / Files checkout bar's branch goes when clicked: Source Control on
   // the tree it names. Both tabs are rooted at whatever source control already
   // targets (all three follow the run selection, and a run without a worktree
   // resolves to the checkout either way), so the tab is the whole move, plus
@@ -339,9 +340,15 @@ export default function AgentsView({
 
           {tab === "source" && (
             <div className="source-wrap">
-              {srcTab === "changes" && gitRoot && (
-                <GitPanel taskId={gitRoot} layout="full" selection={gitSel} onSelect={setGitSel}
-                  allowComments={allowComments} onRevealInFiles={revealInFilesTab} />
+              {srcTab === "changes" && gitRoot && filesRoot && (
+                <div className="source-col">
+                  {/* The same switcher Docs and Files carry, so the checkout is
+                      one pick away here too (AGE-277). No branch on it: the
+                      panel's own branch bar is right below. */}
+                  <CheckoutBar root={filesRoot} projectId={project.id} projectName={project.name} />
+                  <GitPanel taskId={gitRoot} layout="full" selection={gitSel} onSelect={setGitSel}
+                    allowComments={allowComments} onRevealInFiles={revealInFilesTab} />
+                </div>
               )}
               {srcTab === "prs" && (
                 <PrReviewPanel projectId={project.id} initialPr={reviewPr} onConsumeInitial={() => setReviewPr(null)} />

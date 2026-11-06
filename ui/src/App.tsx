@@ -488,6 +488,9 @@ function Shell() {
       case "go-issues": setTab("issues"); break;
       case "go-docs": setTab("docs"); break;
       case "go-files": setTab("files"); break;
+      // The grid's tree, as the checkout bar and the status bar have it: the
+      // run stays focused, so the way back is one pick (AGE-277).
+      case "view-checkout": setView("grid"); break;
       case "toggle-sidebar": setSidebarOpen((s) => !s); break;
       case "home": goHome(); break;
       case "approve": {

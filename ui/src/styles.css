@@ -1305,6 +1305,8 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   overflow: hidden;
 }
 .source-wrap > .map { margin: 16px; }
+/* Source Control's Changes: the checkout bar over the git panel. */
+.source-col { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
 
 /* Row actions (new-task footer) */
@@ -2457,18 +2459,34 @@ input.settings-notif-secs { width: 90px; flex: 0 0 auto; }
    caption until you hover it, then it is the way to Source Control for the tree
    it names. Full width so the whole strip is the target, and text-aligned left
    so it still reads as a bar rather than a control. */
+/* Two controls in one strip: the name switches which tree the view is rooted
+   in (AGE-277), the branch opens Source Control on it. */
 .checkout-bar {
-  display: flex; align-items: center; gap: 8px; flex-shrink: 0; min-width: 0;
-  width: 100%; text-align: left; cursor: pointer;
-  padding: 4px 10px; border: none; border-bottom: 1px solid var(--line); border-radius: 0;
-  background: var(--mantle); font-family: inherit; font-size: var(--fs-sm); color: var(--sub0);
+  display: flex; align-items: center; gap: 4px; flex-shrink: 0; min-width: 0;
+  padding: 2px 6px; border-bottom: 1px solid var(--line);
+  background: var(--mantle); font-size: var(--fs-sm); color: var(--sub0);
 }
-.checkout-bar:hover { background: var(--s0); }
-.checkout-bar:hover .checkout-branch { text-decoration: underline; }
-.checkout-scope { color: var(--text); font-weight: 600; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.checkout-branch { display: inline-flex; align-items: center; gap: 4px; min-width: 0; color: var(--blue); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.checkout-bar > button {
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0;
+  padding: 2px 6px; border: none; border-radius: var(--r-sm); background: transparent;
+  font-family: inherit; font-size: inherit; color: inherit; cursor: pointer; text-align: left;
+}
+.checkout-bar > button:hover, .checkout-switch.on { background: var(--s0); }
+.checkout-switch { max-width: 60%; }
+.checkout-scope { min-width: 0; color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.checkout-branch { color: var(--blue); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.checkout-bar > .checkout-branch:hover { text-decoration: underline; }
 .checkout-branch svg { flex-shrink: 0; }
 .checkout-kind { flex-shrink: 0; text-transform: uppercase; letter-spacing: .06em; font-size: var(--fs-2xs); color: var(--o0); }
+.checkout-chev { flex-shrink: 0; color: var(--o0); font-size: var(--fs-2xs); }
+/* One row per tree: its name, then the branch it is on, then the tick. */
+.checkout-menu { max-width: 360px; }
+.checkout-menu button { display: flex; align-items: center; }
+.checkout-menu button.on { background: var(--s0); }
+.checkout-menu-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.checkout-menu-sub { flex-shrink: 1; min-width: 0; max-width: 45%; color: var(--o0); font-size: var(--fs-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.checkout-menu-tick { flex-shrink: 0; color: var(--blue); }
+.checkout-menu-none { color: var(--o0); font-size: var(--fs-sm); padding: 6px 8px; }
 
 /* ── Editor tabs (one-stop Phase 3) ──────────────────────────── */
 .file-tabs-wrap { display: flex; align-items: stretch; flex-shrink: 0; min-width: 0; border-bottom: 1px solid var(--line); background: var(--mantle); }

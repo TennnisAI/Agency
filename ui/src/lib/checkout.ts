@@ -41,11 +41,50 @@ export function describeCheckout({ root, projectId, projectName, runs }: {
   return { taskId: projectTarget(projectId), name: projectName, kind: "checkout" };
 }
 
-/** Hover text for the bar: where you are, on which branch, and where clicking it goes. */
-export function checkoutTooltip(c: Checkout, branch: string | null): string {
+/** Hover text for the bar's name: where you are, and that clicking it moves you. */
+export function checkoutTooltip(c: Checkout): string {
   const where = c.kind === "worktree"
     ? `You are viewing ${c.name}'s own worktree`
     : `You are viewing the ${c.name} checkout`;
-  const on = branch ? ` on branch ${branch}` : "";
-  return `${where}${on}. Opens Source Control for this ${c.kind}.`;
+  const to = c.kind === "worktree"
+    ? "the project checkout or another agent's worktree"
+    : "an agent's worktree";
+  return `${where}. Click to switch to ${to}.`;
+}
+
+/** Hover text for the bar's branch, which opens Source Control on the same tree. */
+export function branchTooltip(c: Checkout, branch: string): string {
+  return `On branch ${branch}. Opens Source Control for this ${c.kind}.`;
+}
+
+/** One working tree the Docs, Files and Source Control tabs can be pointed at. */
+export interface CheckoutChoice {
+  /** The run whose worktree this is, or null for the project's own checkout. */
+  runId: string | null;
+  name: string;
+  /** The run's branch as the store has it; empty for the checkout, whose branch
+   * the bar reads live. */
+  branch: string;
+  kind: Checkout["kind"];
+}
+
+/**
+ * The places a file view can be switched to (AGE-277): the project checkout,
+ * then every run with a worktree of its own, in the store's order (pins first).
+ * Switching used to mean a trip to the Agents tab and its Grid button, because
+ * the grid is what points these views at the checkout, and nothing on the Files
+ * tab said so. A run working in the checkout (every terminal, and an agent
+ * started without a worktree) is not listed: picking it would show the
+ * checkout under another name.
+ */
+export function checkoutChoices(projectName: string, runs: RunLike[]): CheckoutChoice[] {
+  const own = runs
+    .filter((r) => r.worktree !== false)
+    .map((r): CheckoutChoice => ({ runId: r.id, name: runListLabel(r), branch: r.branch, kind: "worktree" }));
+  return [{ runId: null, name: projectName, branch: "", kind: "checkout" }, ...own];
+}
+
+/** Which choice a described checkout is, by the same token the bar reads git with. */
+export function isCurrentChoice(c: Checkout, choice: CheckoutChoice): boolean {
+  return c.kind === "checkout" ? choice.runId === null : choice.runId === c.taskId;
 }

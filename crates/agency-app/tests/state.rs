@@ -956,6 +956,86 @@ fn a_new_conflict_agent_falls_back_off_a_web_gui_profile() {
     let _ = state.discard_run(&run.id);
 }
 
+/// AGE-279: "Review" opens a fresh tab on the run's own branch, told which base
+/// it merges into. Through crush, so the prompt lands in the send queue where
+/// it can be read back: a CLI with no argv prompt must still be handed the
+/// review, against the new tab and not the run's own agent.
+#[test]
+fn a_branch_review_opens_a_new_tab_told_the_branch_and_base() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "crush".into(),
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 30".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let run = state.create_run(&project.id, "p", "crush", None, "HEAD", None).unwrap();
+    let base = state.merge_preview(&run.id).unwrap().base;
+
+    let spawn = state.spawn_branch_review_agent(&run.id, None).unwrap();
+    assert_ne!(spawn.session.id, run.id, "the review needs a fresh agent, not the run's own");
+    assert_eq!(spawn.session.agent, "crush");
+    assert!(spawn.queued);
+    let waiting = state.list_queued_messages(&run.id);
+    assert_eq!(waiting.len(), 1, "{waiting:?}");
+    assert_eq!(waiting[0].session_id, spawn.session.id);
+    assert_eq!(waiting[0].origin, "branch review");
+    let text = &waiting[0].text;
+    assert!(text.contains(&format!("`{}`", run.branch)), "got: {text}");
+    assert!(text.contains(&format!("git diff {base}...HEAD")), "got: {text}");
+
+    let _ = state.discard_run(&run.id);
+}
+
+/// AGE-279: an explicit merge target is passed through `resolve_target`
+/// unverified, so one deleted after the run was cut went into the review
+/// prompt and the reviewer met git's "unknown revision". Refused before any
+/// tab opens instead.
+#[test]
+fn a_branch_review_refuses_a_merge_target_that_is_gone() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let git = |args: &[&str]| {
+        assert!(Command::new("git").args(args).current_dir(&repo).status().unwrap().success());
+    };
+    git(&["branch", "release"]);
+
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "crush".into(),
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 30".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let run = state.create_run(&project.id, "p", "crush", None, "HEAD", Some("release")).unwrap();
+    git(&["branch", "-D", "release"]);
+    let tabs = state.run_sessions(&run.id).unwrap().len();
+
+    let err = state.spawn_branch_review_agent(&run.id, None).unwrap_err().to_string();
+    assert!(err.contains("release") && err.contains("no longer exists"), "got: {err}");
+    assert!(state.list_queued_messages(&run.id).is_empty());
+    assert_eq!(state.run_sessions(&run.id).unwrap().len(), tabs, "no tab opened");
+
+    let _ = state.discard_run(&run.id);
+}
+
 /// AGE-199: the busy/idle bookkeeping the send queue decides against is one
 /// entry per *run*, read from whichever session speaks for the run — so an
 /// extra agent tab had no entry at all. No entry reads as "working", so a

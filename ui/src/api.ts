@@ -1717,17 +1717,22 @@ export const sendMergeConflict = (taskId: string, sessionId?: string) =>
 // agent's opening argv, which is the usual case and means it is already
 // working; true for a CLI that takes no prompt on the command line, where the
 // conflict waits in the send queue until the new agent reaches its prompt.
-export interface MergeConflictSpawn {
+export interface AgentTabSpawn {
   session: RunSessionInfo;
   queued: boolean;
 }
 export const spawnMergeConflictAgent = (taskId: string, agent?: string) =>
-  invoke<MergeConflictSpawn>("spawn_merge_conflict_agent", { taskId, agent: agent ?? null });
+  invoke<AgentTabSpawn>("spawn_merge_conflict_agent", { taskId, agent: agent ?? null });
+// "Review" in the agent header (AGE-279): a fresh agent tab in this run's
+// worktree, launched on a review of its branch against the base it merges into.
+// `queued` as above.
+export const spawnBranchReviewAgent = (taskId: string, agent?: string) =>
+  invoke<AgentTabSpawn>("spawn_branch_review_agent", { taskId, agent: agent ?? null });
 // "Fix with an agent" after a failed Rebase & Sync (AGE-245). `taskId` is the
 // git panel's token, a run or `project:<id>`; `output` is the error the panel
 // showed, which the agent's prompt quotes. A live agent in that tree gets a new
 // tab (`sessionId`); a checkout with none gets a run of its own. `queued` as
-// in MergeConflictSpawn.
+// in AgentTabSpawn.
 export interface SyncFixAgent {
   run: RunInfo;
   sessionId: string | null;

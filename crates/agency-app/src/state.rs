@@ -840,13 +840,14 @@ pub struct RunSessionInfo {
     pub activity: Option<crate::activity::ActivityInfo>,
 }
 
-/// What "Fix with a new agent" did: the tab it opened, and whether the conflict
+/// What opening a fresh agent tab for one job did ("Fix with a new agent" on a
+/// conflict, or "Review" on a branch): the tab it opened, and whether the job
 /// went in as that agent's opening argv or is waiting in the send queue for it
-/// to reach its prompt. The modal's wording turns on the difference, and the
+/// to reach its prompt. The caller's wording turns on the difference, and the
 /// tab alone cannot answer it.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MergeConflictSpawn {
+pub struct AgentTabSpawn {
     pub session: RunSessionInfo,
     pub queued: bool,
 }
@@ -864,7 +865,7 @@ pub struct PrAgentRun {
 
 /// Where the agent sent to finish a failed Rebase & Sync landed. `session_id`
 /// is the tab it opened in an existing run, None when it got a run of its own;
-/// `queued` as in [`MergeConflictSpawn`].
+/// `queued` as in [`AgentTabSpawn`].
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncFixAgent {
@@ -1159,6 +1160,35 @@ fn compose_merge_conflict(repo: &Path, branch: &str, base: &str, status: &[Strin
          conflict markers, and `git add` each file you fix. Do not commit; Agency completes the \
          merge once nothing is left unmerged.",
         repo = repo.display(),
+    )
+}
+
+/// The prompt a "Review" tab opens on (AGE-279): review the run's branch
+/// against the base it merges into, before the user approves it.
+///
+/// Single line by construction, like [`compose_merge_conflict`]: a CLI that
+/// takes no prompt in its argv is handed this through the send queue, which
+/// submits on the first newline. The base and the issue are named rather than
+/// left to be found: the reviewer is a fresh agent that knows neither, and a
+/// review against the wrong base reads every commit on it as part of the
+/// change. Uncommitted work is called out because Approve commits it as part
+/// of the merge, so a review of `HEAD` alone would miss part of what lands.
+fn compose_branch_review(branch: &str, base: &str, issue: Option<(&str, &str)>) -> String {
+    let one_line = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let made_for = match issue {
+        Some((key, title)) => format!(", and it was made for {key}: {}", one_line(title)),
+        None => String::new(),
+    };
+    format!(
+        "Review this branch before I merge it. `{branch}` is checked out in this workspace and \
+         merges into `{base}`{made_for}. Read the change with `git log {base}..HEAD` and \
+         `git diff {base}...HEAD`, and run `git status`: uncommitted work here is committed \
+         as part of the merge, so it counts too. Review it for correctness, bugs, security \
+         problems, missing tests, and anything else that should block the merge, and read the \
+         surrounding code, not just the diff. Report what you find here, most serious first. \
+         Do not change any files or commit anything yet: I may ask you to fix what you found.",
+        branch = one_line(branch),
+        base = one_line(base),
     )
 }
 
@@ -12554,7 +12584,7 @@ impl AppState {
     /// The prompt goes in as the tab's opening argv, so for most agents there is
     /// no queue and nothing to wait for: the hand-off cannot be held behind
     /// another turn. `agent` picks the profile; `None` leaves the choice to
-    /// [`Self::conflict_agent_for`].
+    /// [`Self::fresh_tab_agent_for`].
     ///
     /// crush and kimi are the exception. Their CLIs take no prompt on the
     /// command line, so `prompt_args` answers for them with an empty argv and a
@@ -12569,11 +12599,11 @@ impl AppState {
         &self,
         id: &str,
         agent: Option<&str>,
-    ) -> anyhow::Result<MergeConflictSpawn> {
+    ) -> anyhow::Result<AgentTabSpawn> {
         let prompt = self.merge_conflict_prompt(id)?;
         let agent = match agent {
             Some(a) => a.to_string(),
-            None => self.conflict_agent_for(id)?,
+            None => self.fresh_tab_agent_for(id, "the conflict")?,
         };
         let session = self.start_run_session(id, Some(&agent), &prompt)?;
         // The same condition `fresh_agent_argv` launches by, not just the
@@ -12587,7 +12617,58 @@ impl AppState {
         if queued {
             self.queue_send(&session.id, "merge conflict", prompt)?;
         }
-        Ok(MergeConflictSpawn { session, queued })
+        Ok(AgentTabSpawn { session, queued })
+    }
+
+    /// "Review" in the agent header (AGE-279): open a fresh agent tab in the
+    /// run's worktree, launched on a review of the branch about to be merged.
+    ///
+    /// Before this, the gesture was by hand on every merge: open a new tab,
+    /// type "review this branch before I merge it", and get an agent that had
+    /// to work out the base and what the branch was for. A fresh tab rather
+    /// than the run's own agent, because the point is a reader with no memory
+    /// of writing the code. Delivered like [`Self::spawn_merge_conflict_agent`]:
+    /// argv where the CLI takes one, the send queue where it does not.
+    pub fn spawn_branch_review_agent(
+        &self,
+        id: &str,
+        agent: Option<&str>,
+    ) -> anyhow::Result<AgentTabSpawn> {
+        let run = self.branch_run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+        // The header offers Review only where it offers Approve, and for the
+        // same reason: a run in the project checkout is on the user's branch,
+        // which is not this run's to send for review.
+        require_own_branch(&run, &repo, "review")?;
+        // The base the merge would use, refused rather than guessed when it is
+        // not there: a review against a missing base diffs nothing. Checked
+        // here, because `resolve_target` only refuses the main/master fallback;
+        // an explicit merge target is passed through unverified, so a deleted
+        // one went into the prompt and the reviewer met git's "unknown
+        // revision" instead of a refusal the user could act on.
+        let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
+        if agency_core::merge::rev(&repo, &base).is_none() {
+            bail!(
+                "this agent merges into {base}, which no longer exists, so there is nothing \
+                 to review it against; restore that branch first"
+            );
+        }
+        let issue = run.issue_id.as_ref().and_then(|i| self.issue_names(i));
+        let prompt = compose_branch_review(
+            &run.branch,
+            &base,
+            issue.as_ref().map(|(k, t)| (k.as_str(), t.as_str())),
+        );
+        let agent = match agent {
+            Some(a) => a.to_string(),
+            None => self.fresh_tab_agent_for(id, "the review")?,
+        };
+        let session = self.start_run_session(id, Some(&agent), &prompt)?;
+        let queued = self.prompt_needs_queue(&session.agent);
+        if queued {
+            self.queue_send(&session.id, "branch review", prompt)?;
+        }
+        Ok(AgentTabSpawn { session, queued })
     }
 
     /// Whether a session launched on `agent` was handed nothing in its argv, so
@@ -12704,8 +12785,9 @@ impl AppState {
         matches!(profile, Ok(Some(p)) if p.args.iter().any(|a| a.contains("{{prompt}}")))
     }
 
-    /// Which profile "New agent" opens when the caller named none: the run's
-    /// own, unless that agent serves its interactive surface as a browser GUI.
+    /// Which profile a fresh tab for one job opens when the caller named none:
+    /// the run's own, unless that agent serves its interactive surface as a
+    /// browser GUI. `job` names the work in the refusal ("the conflict").
     ///
     /// A run has one GUI port and the run's own agent already answers for it,
     /// so `start_run_session` refuses a second web-GUI session in the same
@@ -12715,8 +12797,9 @@ impl AppState {
     /// refusal, which reads as a bug rather than as "pick another agent".
     /// Falling back to a terminal profile is the answer that keeps the option
     /// working: the tab is opened to read a conflict and edit files, which is
-    /// not what the browser GUI was wanted for.
-    fn conflict_agent_for(&self, run_id: &str) -> anyhow::Result<String> {
+    /// not what the browser GUI was wanted for. A branch review is the same
+    /// shape of tab, so it is answered the same way.
+    fn fresh_tab_agent_for(&self, run_id: &str, job: &str) -> anyhow::Result<String> {
         let run = self.run_record(run_id)?;
         if crate::agent_catalog::web_ui(&run.agent).is_none() {
             return Ok(run.agent);
@@ -12745,8 +12828,8 @@ impl AppState {
             Some(p) => Ok(p.name.clone()),
             None => bail!(
                 "{} serves its GUI on this workspace's port, so a second one can't start here, \
-                 and no other agent is set up to take the conflict — enable one in Settings, or \
-                 hand the conflict to an agent already in this workspace",
+                 and no other agent is set up to take {job}; enable one in Settings, or \
+                 hand {job} to an agent already in this workspace",
                 run.agent
             ),
         }
@@ -15030,6 +15113,36 @@ mod tests {
         assert!(!msg.contains("src/b.rs:5-5"), "equal start/end shows one number");
         assert!(msg.contains("rename this"));
         assert!(msg.contains("remove dead code"));
+    }
+
+    #[test]
+    fn compose_branch_review_names_the_base_and_stays_on_one_line() {
+        let p = super::compose_branch_review("agent/age-9-w", "main", None);
+        // Sent through the queue for a CLI with no prompt argv, which submits
+        // on the first newline.
+        assert!(!p.contains('\n') && !p.contains('\r'), "{p}");
+        assert!(p.starts_with("Review this branch before I merge it."), "{p}");
+        assert!(p.contains("`agent/age-9-w`") && p.contains("merges into `main`"), "{p}");
+        // Three dots for the diff (the change since the fork point), two for
+        // the log: the other way round reads base's own commits as the change.
+        assert!(p.contains("git diff main...HEAD") && p.contains("git log main..HEAD"), "{p}");
+        // Approve commits uncommitted work, so the review has to look at it.
+        assert!(p.contains("git status"), "{p}");
+        // The reviewer reports; fixing is the user's call.
+        assert!(p.contains("Do not change any files"), "{p}");
+        assert!(!p.contains("made for"), "{p}");
+    }
+
+    #[test]
+    fn compose_branch_review_names_the_issue_on_one_line() {
+        let p = super::compose_branch_review(
+            "agent/x",
+            "develop",
+            Some(("AGE-279", "Add a\nreview   button")),
+        );
+        assert!(p.contains("made for AGE-279: Add a review button."), "{p}");
+        assert!(p.contains("git diff develop...HEAD"), "{p}");
+        assert!(!p.contains('\n'), "{p}");
     }
 
     #[test]

@@ -287,6 +287,7 @@ pub fn run() {
             commands::start_issue_loop,
             commands::send_merge_conflict,
             commands::spawn_merge_conflict_agent,
+            commands::spawn_branch_review_agent,
             commands::spawn_sync_fix_agent,
             commands::git_parse_diff,
             commands::git_blob_sides,

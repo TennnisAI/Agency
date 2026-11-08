@@ -12,9 +12,9 @@ use tauri::State;
 use crate::popout::Stream;
 
 use crate::state::{
-    AppState, DiscardSummary, FilesConfigDto, KnowledgeConfigDto, McpImportResult,
-    MergeConflictSpawn, MergePreview, ProviderSettings, RaceAttempt, RestoredRun, RunInfo,
-    RunScriptConfigDto, RunScriptStatusDto, RunSessionInfo,
+    AgentTabSpawn, AppState, DiscardSummary, FilesConfigDto, KnowledgeConfigDto, McpImportResult,
+    MergePreview, ProviderSettings, RaceAttempt, RestoredRun, RunInfo, RunScriptConfigDto,
+    RunScriptStatusDto, RunSessionInfo,
 };
 
 #[derive(Clone, Serialize)]
@@ -1662,8 +1662,20 @@ pub fn spawn_merge_conflict_agent(
     state: State<'_, AppState>,
     task_id: String,
     agent: Option<String>,
-) -> Result<MergeConflictSpawn, String> {
+) -> Result<AgentTabSpawn, String> {
     state.spawn_merge_conflict_agent(&task_id, agent.as_deref()).map_err(|e| e.to_string())
+}
+
+/// "Review" in the agent header (AGE-279): open a fresh agent tab in this
+/// run's worktree, launched on a review of its branch before it is merged.
+/// `agent` defaults to the run's own profile.
+#[tauri::command]
+pub fn spawn_branch_review_agent(
+    state: State<'_, AppState>,
+    task_id: String,
+    agent: Option<String>,
+) -> Result<AgentTabSpawn, String> {
+    state.spawn_branch_review_agent(&task_id, agent.as_deref()).map_err(|e| e.to_string())
 }
 
 /// "Fix with an agent" after a failed Rebase & Sync (AGE-245): start an agent

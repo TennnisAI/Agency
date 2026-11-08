@@ -2509,6 +2509,37 @@ pub async fn read_run_conversation(
     state.read_run_conversation(&id).map_err(|e| e.to_string())
 }
 
+/// Save the run's conversation as markdown where the user picks (AGE-278).
+/// `Ok(None)` when they cancel the dialog.
+///
+/// The save dialog is shown from here rather than from the webview, so the
+/// destination is whatever the user answered in a native dialog and never a
+/// path the frontend names: the webview holds no permission to write files,
+/// and this does not hand it one. async: the dialog blocks until answered,
+/// and the read parses the whole transcript.
+#[tauri::command]
+pub async fn export_run_conversation(
+    window: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let (markdown, name) = state.run_conversation_markdown(&id).map_err(|e| e.to_string())?;
+    let picked = window
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .set_title("Export conversation")
+        .set_file_name(name)
+        .add_filter("Markdown", &["md"])
+        .blocking_save_file();
+    let Some(path) = picked.and_then(|p| p.as_path().map(std::path::Path::to_path_buf)) else {
+        return Ok(None);
+    };
+    std::fs::write(&path, markdown).map_err(|e| format!("writing {}: {e}", path.display()))?;
+    Ok(Some(path.display().to_string()))
+}
+
 /// The archived runs a query matches in their summary, record or
 /// conversation. async for the same reason as `read_run_conversation`: the
 /// first search parses every archived run's transcript.

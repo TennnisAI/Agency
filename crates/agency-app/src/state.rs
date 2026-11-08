@@ -9499,6 +9499,31 @@ impl AppState {
         })
     }
 
+    /// The run's conversation as one markdown file, and the name to offer it
+    /// under (AGE-278). Read whole, unlike the view: see
+    /// `transcript::read_files_whole`. Errs where there is nothing to export,
+    /// so the caller never writes an empty file that reads as "it said
+    /// nothing".
+    pub fn run_conversation_markdown(&self, id: &str) -> Result<(String, String)> {
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+        let files = self
+            .conversation_files(&run, &repo, &record_dir_names(&repo))
+            .ok_or_else(|| anyhow!("Agency cannot read {} transcripts", run.agent))?;
+        let sessions = agency_core::transcript::read_files_whole(&files);
+        if sessions.is_empty() {
+            bail!("no conversation is kept for this run");
+        }
+        let title = run.title.as_deref().map(str::trim).filter(|t| !t.is_empty());
+        let title = title.unwrap_or(&run.branch);
+        let head =
+            agency_core::transcript::ExportHead { title, agent: &run.agent, branch: &run.branch };
+        Ok((
+            agency_core::transcript::to_markdown(&head, &sessions),
+            agency_core::transcript::export_file_name(title, &run.id),
+        ))
+    }
+
     /// [`Self::conversation_files`], parsed, or `None` where the run's agent
     /// is one we cannot read. `names` is the record directory's listing (see
     /// [`record_dir_names`]).

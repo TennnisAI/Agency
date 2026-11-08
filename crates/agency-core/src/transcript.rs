@@ -464,7 +464,7 @@ pub fn to_markdown(head: &ExportHead, sessions: &[Conversation]) -> String {
                     }
                 }
                 Role::Assistant => {
-                    out.push_str(&format!("\n{}\n", t.text.trim_end()));
+                    out.push_str(&format!("\n{}\n", nest_markdown(t.text.trim_end())));
                 }
                 Role::Tool => {
                     // Consecutive calls are one list; a blank line between
@@ -479,6 +479,68 @@ pub fn to_markdown(head: &ExportHead, sessions: &[Conversation]) -> String {
         }
     }
     out
+}
+
+/// An assistant turn's own markdown, made to sit under its `### Assistant`
+/// heading without breaking the export around it. The view renders each turn
+/// on its own, so neither problem below shows on screen; in one file both do.
+///
+/// - Headings drop three levels (capped at six). Agents close a turn with
+///   `## Summary` or `# Plan` routinely, and left as written those land level
+///   with the export's `## Session`, or above its `# title`, so the outline
+///   files the agent's sections as sessions.
+/// - A fence still open at the end of the turn is closed. Left open, it turns
+///   every later heading and quote in the file into code.
+///
+/// Lines inside a fenced block are copied as they are: a `#` there is a shell
+/// comment, not a heading.
+fn nest_markdown(text: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    // The open fence's character and length, per CommonMark 4.5: it closes
+    // only on a run of the same character at least as long, with nothing
+    // after it.
+    let mut open: Option<(char, usize)> = None;
+    for line in text.lines() {
+        let body = line.trim_start_matches(' ');
+        let indent = line.len() - body.len();
+        if indent > 3 {
+            out.push(line.to_string());
+            continue;
+        }
+        if let Some((c, n, rest)) = fence_run(body) {
+            match open {
+                None if c == '~' || !rest.contains('`') => open = Some((c, n)),
+                Some((oc, on)) if c == oc && n >= on && rest.trim().is_empty() => open = None,
+                _ => {}
+            }
+            out.push(line.to_string());
+            continue;
+        }
+        if open.is_none() {
+            let hashes = body.chars().take_while(|&c| c == '#').count();
+            let rest = &body[hashes..];
+            if (1..=6).contains(&hashes)
+                && (rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t'))
+            {
+                let level = (hashes + 3).min(6);
+                out.push(format!("{}{}{rest}", &line[..indent], "#".repeat(level)));
+                continue;
+            }
+        }
+        out.push(line.to_string());
+    }
+    if let Some((c, n)) = open {
+        out.push(c.to_string().repeat(n));
+    }
+    out.join("\n")
+}
+
+/// A code fence at the start of `body`: its character, the run's length and
+/// what follows it. `None` for anything shorter than three.
+fn fence_run(body: &str) -> Option<(char, usize, &str)> {
+    let c = body.chars().next().filter(|&c| c == '`' || c == '~')?;
+    let n = body.chars().take_while(|&x| x == c).count();
+    (n >= 3).then(|| (c, n, &body[n..]))
 }
 
 /// `s` as an inline code span that cannot be closed early by a backtick of
@@ -1004,6 +1066,39 @@ mod tests {
             Conversation { turns: vec![turn(Role::User, "# not a heading")], ..Default::default() };
         let md = to_markdown(&head(), &[convo]);
         assert!(md.contains("\n> # not a heading\n"), "{md}");
+    }
+
+    #[test]
+    fn the_agents_headings_sit_below_its_speaker_heading() {
+        assert_eq!(nest_markdown("# Plan\n\n## Summary\ntext"), "#### Plan\n\n##### Summary\ntext");
+        // Capped at six; indented up to three spaces still a heading.
+        assert_eq!(nest_markdown("#### deep\n  # near"), "###### deep\n  #### near");
+        // Not headings: no space after, too many hashes, indented code.
+        assert_eq!(nest_markdown("#tag\n####### x\n    # code"), "#tag\n####### x\n    # code");
+    }
+
+    #[test]
+    fn a_hash_inside_a_fence_is_not_a_heading() {
+        let text = "```sh\n# a comment\n```\n# After";
+        assert_eq!(nest_markdown(text), "```sh\n# a comment\n```\n#### After");
+        // A shorter or different run does not close the fence.
+        let text = "````\n```\n~~~\n# still code\n````";
+        assert_eq!(nest_markdown(text), text);
+    }
+
+    #[test]
+    fn a_fence_left_open_is_closed_so_it_cannot_swallow_the_file() {
+        assert_eq!(nest_markdown("see:\n~~~~\nlog"), "see:\n~~~~\nlog\n~~~~");
+        let convo = Conversation {
+            turns: vec![
+                turn(Role::User, "go"),
+                turn(Role::Assistant, "```rust\nfn x() {"),
+                turn(Role::User, "next"),
+            ],
+            ..Default::default()
+        };
+        let md = to_markdown(&head(), &[convo]);
+        assert!(md.contains("```rust\nfn x() {\n```\n\n### User\n\n> next\n"), "{md}");
     }
 
     #[test]

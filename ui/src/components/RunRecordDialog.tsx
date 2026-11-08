@@ -76,6 +76,14 @@ export default function RunRecordDialog({
   useModalKeys(onClose, true);
 
   const canExport = tab === "conversation" && !!convo?.supported && convo.sessions.length > 0;
+  // An export's outcome is news about the conversation tab. Shown on the
+  // record tab it hid why Restore was disabled, and it never went away, so it
+  // shows on its own tab only and clears when the reader leaves it.
+  const exportNote = tab === "conversation" ? exported : null;
+  const showTab = (t: "record" | "conversation") => {
+    setTab(t);
+    if (t !== tab) setExported(null);
+  };
   const runExport = () => {
     setExporting(true);
     setExported(null);
@@ -127,12 +135,12 @@ export default function RunRecordDialog({
         <div className="modal-head">
           <h3>{run.title || run.branch}</h3>
           <div className="seg run-record-seg">
-            <button className={tab === "record" ? "on" : ""} onClick={() => setTab("record")}>
+            <button className={tab === "record" ? "on" : ""} onClick={() => showTab("record")}>
               Record
             </button>
             <button
               className={tab === "conversation" ? "on" : ""}
-              onClick={() => setTab("conversation")}
+              onClick={() => showTab("conversation")}
             >
               Conversation
             </button>
@@ -214,11 +222,11 @@ export default function RunRecordDialog({
           <div className="modal-foot">
             {/* A disabled button's tooltip is easy to miss, so the one case
                 that disables it says why on the footer itself. An export's
-                outcome takes the slot while it is news; the Restore button's
-                tooltip still carries the reason. */}
-            {exported ? (
-              <span className="run-record-note" title={exported.title}>
-                {exported.text}
+                outcome takes the slot on the conversation tab until the reader
+                leaves it; the record tab always shows the reason. */}
+            {exportNote ? (
+              <span className="run-record-note" title={exportNote.title}>
+                {exportNote.text}
               </span>
             ) : (
               onRestore &&

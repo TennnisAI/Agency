@@ -3,13 +3,13 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useRuns, SpawnOpts } from "../store/runs";
 import {
   listProfiles, AgentProfile,
-  listRunSessions, startRunSession, closeRunSession, reopenRunAgent, RunSessionInfo,
+  listRunSessions, startRunSession, closeRunSession, reopenRunAgent, RunSessionInfo, spawnBranchReviewAgent,
   RunInfo, SessionStatus, stopLoop, listIssues, listProjects, ensureRunActive, popOut,
 } from "../api";
 import { Removal, removalLabel, removalsFor } from "../lib/runRemoval";
 import { issueLabel } from "../lib/issues";
 import { requestNavigate } from "../lib/navigate";
-import { toastError } from "../lib/toast";
+import { toastError, toastInfo } from "../lib/toast";
 import { inGitlessFolder } from "../lib/runstate";
 import { runListLabel, agentLabel } from "../agents";
 import FocusTerminal, { shellStream } from "./FocusTerminal";
@@ -29,7 +29,7 @@ import QueuedMarker from "./QueuedMarker";
 import OverflowMenu from "./OverflowMenu";
 import { PinGrip, PinMark, pinItems } from "./AttentionMarker";
 import { PinDrag, usePinDrag } from "../hooks/usePinDrag";
-import { TrashIcon, InboxIcon, TerminalIcon, PencilIcon, CheckIcon, BranchIcon } from "./icons";
+import { TrashIcon, InboxIcon, TerminalIcon, PencilIcon, CheckIcon, BranchIcon, ReviewIcon } from "./icons";
 import { shortcutLabel } from "../lib/platform";
 import { findPopout } from "../lib/popout";
 import { usePopouts } from "../hooks/usePopouts";
@@ -315,7 +315,7 @@ export default function AgentFocus({
   // it is already out. The window's own title bar carries the way back.
   solo?: boolean;
 }) {
-  const { runs, focusedRunId, setFocusedRun, refreshRuns, createAgent, createTerminal, selectedProjectId, pendingSessionId, setPendingSession, agentViewRunId, requestAgentView, setApproveRun, setShownTab } = useRuns();
+  const { runs, focusedRunId, selectedRunId, sourcePanelOpen, setFocusedRun, refreshRuns, createAgent, createTerminal, selectedProjectId, pendingSessionId, setPendingSession, agentViewRunId, requestAgentView, setApproveRun, setShownTab } = useRuns();
   // The rail's right-click menu, and the dialogs its entries raise: renaming a
   // run or its branch, archiving, deleting. The header menu below drives the
   // same actions rather than keeping a second copy of them.
@@ -478,6 +478,29 @@ export default function AgentFocus({
       void refreshRuns();
     } catch (e) {
       toastError(e, "Couldn't open agent tab");
+    }
+  };
+
+  // "Review" (AGE-279): a fresh agent tab told to review this branch against
+  // its base, the gesture that used to be a new tab and a typed "review this
+  // branch before I merge it" before every Approve. `reviewing` keeps a double
+  // click from opening two reviewers.
+  const [reviewing, setReviewing] = useState(false);
+  const reviewBranch = async () => {
+    if (!focusedRunId || reviewing) return;
+    setReviewing(true);
+    try {
+      const { session, queued } = await spawnBranchReviewAgent(focusedRunId);
+      setSessions((prev) => [...prev, session]);
+      selectPanel(session.id);
+      void refreshRuns();
+      // A CLI that takes no prompt in its argv gets the review typed in once
+      // it is at its prompt, so the new tab sits idle for a moment first.
+      if (queued) toastInfo(`The review starts once ${agentLabel(session.agent)} is ready.`);
+    } catch (e) {
+      toastError(e, "Couldn't start the review");
+    } finally {
+      setReviewing(false);
     }
   };
 
@@ -731,10 +754,15 @@ export default function AgentFocus({
                     </span>
                   ) : (
                     <>
-                      <span className="branch-chip" title={`Branch: ${focused.branch}`}>
-                        <BranchIcon />
-                        <span className="branch-chip-name">{focused.branch}</span>
-                      </span>
+                      {/* The Source panel heads itself with this branch, so
+                          while it is open for this run the chip only repeats
+                          it and takes the room the actions need (AGE-279). */}
+                      {!(sourcePanelOpen && selectedRunId === focused.id && !gitless) && (
+                        <span className="branch-chip" title={`Branch: ${focused.branch}`}>
+                          <BranchIcon />
+                          <span className="branch-chip-name">{focused.branch}</span>
+                        </span>
+                      )}
                       {!focused.worktree && (
                         <span className="badge" title="Works in the project checkout, not an isolated worktree">
                           in checkout
@@ -784,12 +812,29 @@ export default function AgentFocus({
                     button and ⌘↵ open the one Approve window AgentsView owns
                     (AGE-59): the one wired to deep-link a created PR into Source
                     Control instead of out to github.com. */}
+                {/* Review sits beside Approve because it is the step before it.
+                    The shortcut moved into Approve's tooltip to make the room
+                    (AGE-279). */}
                 {focused.worktree && (
-                  <button className="btn-approve" title="Approve & merge this agent's branch" onClick={() => setApproveRun(focused.id)}>
-                    <CheckIcon />
-                    <span>Approve</span>
-                    <kbd className="btn-approve-kbd">{shortcutLabel("⌘↵")}</kbd>
-                  </button>
+                  <>
+                    <button
+                      className="btn-secondary btn-review"
+                      title="Open a fresh agent tab to review this branch before you merge it"
+                      disabled={reviewing}
+                      onClick={reviewBranch}
+                    >
+                      <ReviewIcon />
+                      <span>Review</span>
+                    </button>
+                    <button
+                      className="btn-approve"
+                      title={`Approve & merge this agent's branch (${shortcutLabel("⌘↵")})`}
+                      onClick={() => setApproveRun(focused.id)}
+                    >
+                      <CheckIcon />
+                      <span>Approve</span>
+                    </button>
+                  </>
                 )}
               </div>
               <LoopStrip run={focused} onChanged={refreshRuns} />

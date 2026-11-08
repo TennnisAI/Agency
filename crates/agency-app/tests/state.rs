@@ -956,6 +956,47 @@ fn a_new_conflict_agent_falls_back_off_a_web_gui_profile() {
     let _ = state.discard_run(&run.id);
 }
 
+/// AGE-279: "Review" opens a fresh tab on the run's own branch, told which base
+/// it merges into. Through crush, so the prompt lands in the send queue where
+/// it can be read back: a CLI with no argv prompt must still be handed the
+/// review, against the new tab and not the run's own agent.
+#[test]
+fn a_branch_review_opens_a_new_tab_told_the_branch_and_base() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "crush".into(),
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 30".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let run = state.create_run(&project.id, "p", "crush", None, "HEAD", None).unwrap();
+    let base = state.merge_preview(&run.id).unwrap().base;
+
+    let spawn = state.spawn_branch_review_agent(&run.id, None).unwrap();
+    assert_ne!(spawn.session.id, run.id, "the review needs a fresh agent, not the run's own");
+    assert_eq!(spawn.session.agent, "crush");
+    assert!(spawn.queued);
+    let waiting = state.list_queued_messages(&run.id);
+    assert_eq!(waiting.len(), 1, "{waiting:?}");
+    assert_eq!(waiting[0].session_id, spawn.session.id);
+    assert_eq!(waiting[0].origin, "branch review");
+    let text = &waiting[0].text;
+    assert!(text.contains(&format!("`{}`", run.branch)), "got: {text}");
+    assert!(text.contains(&format!("git diff {base}...HEAD")), "got: {text}");
+
+    let _ = state.discard_run(&run.id);
+}
+
 /// AGE-199: the busy/idle bookkeeping the send queue decides against is one
 /// entry per *run*, read from whichever session speaks for the run — so an
 /// extra agent tab had no entry at all. No entry reads as "working", so a

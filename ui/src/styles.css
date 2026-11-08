@@ -205,10 +205,11 @@ button:disabled { opacity: .45; cursor: default; }
 .content-head.is-tight .btn-add { padding: 0 8px; }
 
 /* Approve — the one primary, irreversible-feeling action in the agent header.
-   Solid accent, hairline top highlight, and a quiet shortcut hint; it presses
-   in on click rather than just changing colour. */
+   Solid accent and a hairline top highlight; it presses in on click rather
+   than just changing colour. Its ⌘↵ hint lives in the tooltip, not on the
+   button, so Review fits beside it (AGE-279). */
 .btn-approve {
-  gap: 7px;
+  gap: 6px;
   background: var(--blue); color: var(--crust);
   box-shadow: 0 1px 2px rgba(0,0,0,.22), inset 0 1px 0 rgba(255,255,255,.16);
   transition: filter var(--dur), box-shadow var(--dur), transform 60ms;
@@ -219,12 +220,7 @@ button:disabled { opacity: .45; cursor: default; }
   box-shadow: 0 2px 10px color-mix(in srgb, var(--blue) 34%, transparent), inset 0 1px 0 rgba(255,255,255,.2);
 }
 .btn-approve:active { filter: brightness(0.96); box-shadow: inset 0 1px 3px rgba(0,0,0,.2); }
-.btn-approve .btn-ico { margin: 0; }
-.btn-approve-kbd {
-  font-family: var(--sans); font-size: var(--fs-xs); font-weight: 600; letter-spacing: 0.03em;
-  padding-left: 8px; margin-left: 1px; opacity: 0.6;
-  border-left: 1px solid color-mix(in srgb, var(--crust) 28%, transparent);
-}
+.btn-approve .btn-ico, .btn-review .btn-ico { margin: 0; }
 
 /* Header icon button: the quiet, square-ish affordance used for toggles and
    the "…" overflow in a toolbar row. */

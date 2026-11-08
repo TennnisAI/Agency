@@ -341,6 +341,10 @@ export default function AgentFocus({
   // where you came from instead of dumping you on the primary agent.
   const beforeRun = useRef<string>(PRIMARY_TAB);
   const [sessions, setSessions] = useState<RunSessionInfo[]>([]);
+  // The run on screen now, for a spawn that resolves after an await: the
+  // `focusedRunId` its handler closed over is the run it was started for.
+  const focusedRunRef = useRef(focusedRunId);
+  focusedRunRef.current = focusedRunId;
   // Read by the tab-restore effect, which keys off the run id alone: the strip
   // does not draw a closed primary tab, so restoring onto it would strand an
   // empty pane. Declared here (like guiSessionRef below) so the effect does not
@@ -466,13 +470,29 @@ export default function AgentFocus({
   // Anchored to where the + was when it was clicked; a resize moves it.
   useDismissOnResize(addOpen, () => setAddOpen(false));
 
+  // Put a tab just opened for `runId` on screen. `sessions` and the panel
+  // belong to whichever run is focused when the spawn resolves, so a switch
+  // during the await used to append the new tab to the other run's strip and
+  // select a panel that run does not have. If the run is no longer on screen,
+  // the tab is remembered as its last-used one instead, so coming back opens
+  // it; the session poll lists it there.
+  const landNewTab = (runId: string, s: RunSessionInfo) => {
+    if (focusedRunRef.current !== runId) {
+      if (typeof localStorage !== "undefined") saveFocusTab(localStorage, runId, s.id);
+      return;
+    }
+    // A switch away and back mid-await reloads the strip, which may list it.
+    setSessions((prev) => (prev.some((p) => p.id === s.id) ? prev : [...prev, s]));
+    selectPanel(s.id);
+  };
+
   const spawnTab = async (agent: string) => {
     setAddOpen(false);
     if (!focusedRunId) return;
+    const runId = focusedRunId;
     try {
-      const s = await startRunSession(focusedRunId, agent);
-      setSessions((prev) => [...prev, s]);
-      selectPanel(s.id);
+      const s = await startRunSession(runId, agent);
+      landNewTab(runId, s);
       // The rail and the sidebar count tabs off the run list; without this the
       // new one showed up in the strip a poll before it showed up there.
       void refreshRuns();
@@ -483,16 +503,17 @@ export default function AgentFocus({
 
   // "Review" (AGE-279): a fresh agent tab told to review this branch against
   // its base, the gesture that used to be a new tab and a typed "review this
-  // branch before I merge it" before every Approve. `reviewing` keeps a double
-  // click from opening two reviewers.
-  const [reviewing, setReviewing] = useState(false);
+  // branch before I merge it" before every Approve. `reviewing` holds the runs
+  // with a reviewer on its way, so a double click cannot open two; per run,
+  // so one run's spawn does not grey out Review on the next run you switch to.
+  const [reviewing, setReviewing] = useState<ReadonlySet<string>>(new Set());
   const reviewBranch = async () => {
-    if (!focusedRunId || reviewing) return;
-    setReviewing(true);
+    if (!focusedRunId || reviewing.has(focusedRunId)) return;
+    const runId = focusedRunId;
+    setReviewing((prev) => new Set(prev).add(runId));
     try {
-      const { session, queued } = await spawnBranchReviewAgent(focusedRunId);
-      setSessions((prev) => [...prev, session]);
-      selectPanel(session.id);
+      const { session, queued } = await spawnBranchReviewAgent(runId);
+      landNewTab(runId, session);
       void refreshRuns();
       // A CLI that takes no prompt in its argv gets the review typed in once
       // it is at its prompt, so the new tab sits idle for a moment first.
@@ -500,7 +521,11 @@ export default function AgentFocus({
     } catch (e) {
       toastError(e, "Couldn't start the review");
     } finally {
-      setReviewing(false);
+      setReviewing((prev) => {
+        const next = new Set(prev);
+        next.delete(runId);
+        return next;
+      });
     }
   };
 
@@ -756,8 +781,11 @@ export default function AgentFocus({
                     <>
                       {/* The Source panel heads itself with this branch, so
                           while it is open for this run the chip only repeats
-                          it and takes the room the actions need (AGE-279). */}
-                      {!(sourcePanelOpen && selectedRunId === focused.id && !gitless) && (
+                          it and takes the room the actions need (AGE-279).
+                          Not in a pop-out: it has no Source panel, but reads
+                          the main window's open flag from shared storage and
+                          is always in focus view, so it lost its chip. */}
+                      {!(!solo && sourcePanelOpen && selectedRunId === focused.id && !gitless) && (
                         <span className="branch-chip" title={`Branch: ${focused.branch}`}>
                           <BranchIcon />
                           <span className="branch-chip-name">{focused.branch}</span>
@@ -820,7 +848,7 @@ export default function AgentFocus({
                     <button
                       className="btn-secondary btn-review"
                       title="Open a fresh agent tab to review this branch before you merge it"
-                      disabled={reviewing}
+                      disabled={reviewing.has(focused.id)}
                       onClick={reviewBranch}
                     >
                       <ReviewIcon />

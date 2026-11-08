@@ -64,9 +64,6 @@ export function CheckIcon({ size = 13 }: IconProps) {
   );
 }
 
-// Pin: a pushpin seen head-on. Drawn rather than typed — the obvious character
-// for this is an emoji, and the UI has none. `filled` is the pinned state:
-// head solid, needle stroked, so the tile can read "on" without a second glyph.
 // A magnifier: "Review" in the agent header, beside Approve's check.
 export function ReviewIcon({ size = 13 }: IconProps) {
   return (
@@ -77,6 +74,9 @@ export function ReviewIcon({ size = 13 }: IconProps) {
   );
 }
 
+// Pin: a pushpin seen head-on. Drawn rather than typed — the obvious character
+// for this is an emoji, and the UI has none. `filled` is the pinned state:
+// head solid, needle stroked, so the tile can read "on" without a second glyph.
 export function PinIcon({ size = 13, filled = false }: IconProps & { filled?: boolean }) {
   return (
     <svg {...base(size)} fill={filled ? "currentColor" : "none"}>

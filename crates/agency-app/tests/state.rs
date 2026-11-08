@@ -997,6 +997,45 @@ fn a_branch_review_opens_a_new_tab_told_the_branch_and_base() {
     let _ = state.discard_run(&run.id);
 }
 
+/// AGE-279: an explicit merge target is passed through `resolve_target`
+/// unverified, so one deleted after the run was cut went into the review
+/// prompt and the reviewer met git's "unknown revision". Refused before any
+/// tab opens instead.
+#[test]
+fn a_branch_review_refuses_a_merge_target_that_is_gone() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let git = |args: &[&str]| {
+        assert!(Command::new("git").args(args).current_dir(&repo).status().unwrap().success());
+    };
+    git(&["branch", "release"]);
+
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "crush".into(),
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 30".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let run = state.create_run(&project.id, "p", "crush", None, "HEAD", Some("release")).unwrap();
+    git(&["branch", "-D", "release"]);
+    let tabs = state.run_sessions(&run.id).unwrap().len();
+
+    let err = state.spawn_branch_review_agent(&run.id, None).unwrap_err().to_string();
+    assert!(err.contains("release") && err.contains("no longer exists"), "got: {err}");
+    assert!(state.list_queued_messages(&run.id).is_empty());
+    assert_eq!(state.run_sessions(&run.id).unwrap().len(), tabs, "no tab opened");
+
+    let _ = state.discard_run(&run.id);
+}
+
 /// AGE-199: the busy/idle bookkeeping the send queue decides against is one
 /// entry per *run*, read from whichever session speaks for the run — so an
 /// extra agent tab had no entry at all. No entry reads as "working", so a

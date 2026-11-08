@@ -12615,9 +12615,19 @@ impl AppState {
         // same reason: a run in the project checkout is on the user's branch,
         // which is not this run's to send for review.
         require_own_branch(&run, &repo, "review")?;
-        // The base the merge would use, unresolved as a refusal rather than a
-        // guess: a review against a base that is not there diffs nothing.
+        // The base the merge would use, refused rather than guessed when it is
+        // not there: a review against a missing base diffs nothing. Checked
+        // here, because `resolve_target` only refuses the main/master fallback;
+        // an explicit merge target is passed through unverified, so a deleted
+        // one went into the prompt and the reviewer met git's "unknown
+        // revision" instead of a refusal the user could act on.
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
+        if agency_core::merge::rev(&repo, &base).is_none() {
+            bail!(
+                "this agent merges into {base}, which no longer exists, so there is nothing \
+                 to review it against; restore that branch first"
+            );
+        }
         let issue = run.issue_id.as_ref().and_then(|i| self.issue_names(i));
         let prompt = compose_branch_review(
             &run.branch,
@@ -12793,7 +12803,7 @@ impl AppState {
             Some(p) => Ok(p.name.clone()),
             None => bail!(
                 "{} serves its GUI on this workspace's port, so a second one can't start here, \
-                 and no other agent is set up to take {job} — enable one in Settings, or \
+                 and no other agent is set up to take {job}; enable one in Settings, or \
                  hand {job} to an agent already in this workspace",
                 run.agent
             ),

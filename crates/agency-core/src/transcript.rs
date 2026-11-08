@@ -96,10 +96,17 @@ const TURN_CHARS: usize = 8_000;
 const TOOL_CHARS: usize = 160;
 
 pub fn parse_conversation(text: &str, dialect: impl Into<Dialect>) -> Conversation {
-    match dialect.into() {
-        Dialect::Claude => parse_claude(text),
-        Dialect::Pi => parse_pi(text),
-        Dialect::Copilot => parse_copilot(text),
+    parse_clipped(text, dialect.into(), TURN_CHARS)
+}
+
+/// [`parse_conversation`] with spoken turns clipped at `turn_chars`.
+/// `usize::MAX` keeps every word, for an export: the clip protects a
+/// rendered view, and a file the user saved has no view to protect.
+fn parse_clipped(text: &str, dialect: Dialect, turn_chars: usize) -> Conversation {
+    match dialect {
+        Dialect::Claude => parse_claude(text, turn_chars),
+        Dialect::Pi => parse_pi(text, turn_chars),
+        Dialect::Copilot => parse_copilot(text, turn_chars),
     }
 }
 
@@ -136,7 +143,7 @@ fn clip(s: &str, max_chars: usize) -> String {
 /// streams one content block per record (6,057 messages over 120 real files:
 /// every extra record for a message id carried only new blocks), so one spoken
 /// turn arrives as several records and reads as one only if merged.
-fn push_assistant_text(turns: &mut Vec<Turn>, text: &str) {
+fn push_assistant_text(turns: &mut Vec<Turn>, text: &str, max_chars: usize) {
     let text = text.trim();
     if text.is_empty() {
         return;
@@ -144,17 +151,17 @@ fn push_assistant_text(turns: &mut Vec<Turn>, text: &str) {
     if let Some(last) = turns.last_mut() {
         if last.role == Role::Assistant {
             let joined = format!("{}\n\n{}", last.text, text);
-            last.text = clip(&joined, TURN_CHARS);
+            last.text = clip(&joined, max_chars);
             return;
         }
     }
-    turns.push(Turn { role: Role::Assistant, text: clip(text, TURN_CHARS) });
+    turns.push(Turn { role: Role::Assistant, text: clip(text, max_chars) });
 }
 
-fn push_user_text(turns: &mut Vec<Turn>, content: &serde_json::Value) {
+fn push_user_text(turns: &mut Vec<Turn>, content: &serde_json::Value, max_chars: usize) {
     let text = text_of(content);
     if !text.is_empty() {
-        turns.push(Turn { role: Role::User, text: clip(&text, TURN_CHARS) });
+        turns.push(Turn { role: Role::User, text: clip(&text, max_chars) });
     }
 }
 
@@ -191,7 +198,7 @@ fn tool_line(name: &str, input: Option<&serde_json::Value>) -> String {
 /// `user`/`assistant` records carry the conversation; `isMeta` user records
 /// are injected context, not the user speaking; `isSidechain` records are a
 /// subagent's conversation, not this one; `ai-title` records name the session.
-fn parse_claude(text: &str) -> Conversation {
+fn parse_claude(text: &str, turn_chars: usize) -> Conversation {
     let mut convo = Conversation::default();
     for line in text.lines() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
@@ -216,7 +223,7 @@ fn parse_claude(text: &str) -> Conversation {
             // the sample were that kind.)
             Some("user") => {
                 if let Some(content) = message.get("content") {
-                    push_user_text(&mut convo.turns, content);
+                    push_user_text(&mut convo.turns, content, turn_chars);
                 }
             }
             Some("assistant") => {
@@ -227,7 +234,7 @@ fn parse_claude(text: &str) -> Conversation {
                     match b.get("type").and_then(|t| t.as_str()) {
                         Some("text") => {
                             if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
-                                push_assistant_text(&mut convo.turns, t);
+                                push_assistant_text(&mut convo.turns, t, turn_chars);
                             }
                         }
                         // server_tool_use is claude's provider-side tool call
@@ -257,7 +264,7 @@ fn parse_claude(text: &str) -> Conversation {
 /// blocks. Pi's tool-call block shape has not been read against a real file,
 /// so an unknown block renders by its own declared `name` (or type) as a tool
 /// line rather than being guessed at — or silently dropped.
-fn parse_pi(text: &str) -> Conversation {
+fn parse_pi(text: &str, turn_chars: usize) -> Conversation {
     let mut convo = Conversation::default();
     for line in text.lines() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
@@ -273,7 +280,7 @@ fn parse_pi(text: &str) -> Conversation {
         match message.get("role").and_then(|r| r.as_str()) {
             Some("user") => {
                 if let Some(content) = message.get("content") {
-                    push_user_text(&mut convo.turns, content);
+                    push_user_text(&mut convo.turns, content, turn_chars);
                 }
             }
             Some("assistant") => {
@@ -284,7 +291,7 @@ fn parse_pi(text: &str) -> Conversation {
                     match b.get("type").and_then(|t| t.as_str()) {
                         Some("text") => {
                             if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
-                                push_assistant_text(&mut convo.turns, t);
+                                push_assistant_text(&mut convo.turns, t, turn_chars);
                             }
                         }
                         Some("thinking") | None => {}
@@ -323,7 +330,7 @@ fn parse_pi(text: &str) -> Conversation {
 /// so how a multi-chunk reply splits its content has not been seen. Each
 /// record's content goes through the same merge as claude's streamed blocks,
 /// which keeps every word even if it would join chunks with a paragraph break.
-fn parse_copilot(text: &str) -> Conversation {
+fn parse_copilot(text: &str, turn_chars: usize) -> Conversation {
     let mut convo = Conversation::default();
     for line in text.lines() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
@@ -336,12 +343,12 @@ fn parse_copilot(text: &str) -> Conversation {
         match v.get("type").and_then(|t| t.as_str()) {
             Some("user.message") => {
                 if let Some(content) = data.get("content") {
-                    push_user_text(&mut convo.turns, content);
+                    push_user_text(&mut convo.turns, content, turn_chars);
                 }
             }
             Some("assistant.message") => {
                 if let Some(t) = data.get("content").and_then(|t| t.as_str()) {
-                    push_assistant_text(&mut convo.turns, t);
+                    push_assistant_text(&mut convo.turns, t, turn_chars);
                 }
                 let requests = data.get("toolRequests").and_then(|r| r.as_array());
                 for r in requests.into_iter().flatten() {
@@ -372,10 +379,21 @@ pub fn read_sessions(dir: &Path, dialect: impl Into<Dialect>) -> Vec<Conversatio
 /// [`read_sessions`] over named files, each in its own dialect, so sessions
 /// from several agents' stores read as one list, oldest first.
 pub fn read_files(files: &[(PathBuf, Dialect)]) -> Vec<Conversation> {
+    read_files_clipped(files, TURN_CHARS)
+}
+
+/// [`read_files`] without the per-turn clip, for an export. Not cached by the
+/// caller: it is a one-off, and holding every word of every archived run in
+/// memory for search would be the 268 MB the cache exists to avoid.
+pub fn read_files_whole(files: &[(PathBuf, Dialect)]) -> Vec<Conversation> {
+    read_files_clipped(files, usize::MAX)
+}
+
+fn read_files_clipped(files: &[(PathBuf, Dialect)], turn_chars: usize) -> Vec<Conversation> {
     let mut sessions: Vec<(String, String, Conversation)> = Vec::new();
     for (path, dialect) in files {
         let Ok(text) = std::fs::read_to_string(path) else { continue };
-        let convo = parse_conversation(&text, *dialect);
+        let convo = parse_clipped(&text, *dialect, turn_chars);
         if convo.turns.is_empty() {
             continue;
         }
@@ -387,6 +405,124 @@ pub fn read_files(files: &[(PathBuf, Dialect)]) -> Vec<Conversation> {
     }
     sessions.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
     sessions.into_iter().map(|(_, _, c)| c).collect()
+}
+
+/// What heads an exported conversation: the run it belongs to.
+pub struct ExportHead<'a> {
+    /// The run's title, or its branch where it never got one.
+    pub title: &'a str,
+    pub agent: &'a str,
+    pub branch: &'a str,
+}
+
+/// A run's conversation as one markdown file (AGE-278). The archive keeps the
+/// agent's own JSONL, which is complete but unreadable as a file; this is the
+/// view the conversation tab renders, written down, so it can be read, shared
+/// or pasted without Agency.
+///
+/// Speakers are headings, and a heading appears only when the speaker
+/// changes: an assistant turn and the tool calls between its paragraphs read
+/// as one block of the agent working, as they do on screen. What the user
+/// typed is quoted, so a line of theirs that happens to start with `#` or `-`
+/// cannot pass for the document's own structure.
+pub fn to_markdown(head: &ExportHead, sessions: &[Conversation]) -> String {
+    let mut out = format!("# {}\n\n", head.title.trim());
+    out.push_str(&format!(
+        "Agent: {} · Branch: {}\n",
+        code_span(head.agent),
+        code_span(head.branch)
+    ));
+    for (i, s) in sessions.iter().enumerate() {
+        let mut heading =
+            if sessions.len() > 1 { format!("Session {}", i + 1) } else { "Session".to_string() };
+        if let Some(t) = s.title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+            heading.push_str(&format!(" · {t}"));
+        }
+        out.push_str(&format!("\n## {heading}\n"));
+        if let Some(started) = &s.started {
+            out.push_str(&format!("\nStarted {started}\n"));
+        }
+        let mut speaker: Option<Role> = None;
+        let mut prev: Option<Role> = None;
+        for t in &s.turns {
+            // Tool calls are the assistant acting, so they sit under its
+            // heading; a run of them opens with one before any prose.
+            let who = if t.role == Role::User { Role::User } else { Role::Assistant };
+            if speaker != Some(who) {
+                let name = if who == Role::User { "User" } else { "Assistant" };
+                out.push_str(&format!("\n### {name}\n"));
+                speaker = Some(who);
+                prev = None;
+            }
+            match t.role {
+                Role::User => {
+                    out.push('\n');
+                    for line in t.text.lines() {
+                        out.push_str(if line.is_empty() { ">" } else { "> " });
+                        out.push_str(line);
+                        out.push('\n');
+                    }
+                }
+                Role::Assistant => {
+                    out.push_str(&format!("\n{}\n", t.text.trim_end()));
+                }
+                Role::Tool => {
+                    // Consecutive calls are one list; a blank line between
+                    // items would make it a loose list with gaps.
+                    if prev != Some(Role::Tool) {
+                        out.push('\n');
+                    }
+                    out.push_str(&format!("- {}\n", code_span(&t.text)));
+                }
+            }
+            prev = Some(t.role);
+        }
+    }
+    out
+}
+
+/// `s` as an inline code span that cannot be closed early by a backtick of
+/// its own: the fence is one longer than the longest backtick run inside,
+/// and padded where `s` starts or ends with one (CommonMark 6.1). Tool lines
+/// are shell commands, which carry backticks often enough to matter.
+fn code_span(s: &str) -> String {
+    let mut longest = 0;
+    let mut run = 0;
+    for c in s.chars() {
+        run = if c == '`' { run + 1 } else { 0 };
+        longest = longest.max(run);
+    }
+    let fence = "`".repeat(longest + 1);
+    let pad = if s.starts_with('`') || s.ends_with('`') { " " } else { "" };
+    format!("{fence}{pad}{s}{pad}{fence}")
+}
+
+/// A file name for an exported conversation: the title in lower-case words
+/// joined by dashes, so it survives every filesystem and a shell without
+/// quoting. `fallback` stands in for a title with no letters or digits in it.
+pub fn export_file_name(title: &str, fallback: &str) -> String {
+    let words: Vec<String> = title
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    let mut stem = String::new();
+    for w in words {
+        // A whole word or none, so a long title is not cut mid-word.
+        if !stem.is_empty() && stem.chars().count() + 1 + w.chars().count() > 60 {
+            break;
+        }
+        if !stem.is_empty() {
+            stem.push('-');
+        }
+        stem.push_str(&w);
+    }
+    if stem.is_empty() {
+        stem = fallback.to_string();
+    }
+    // The first word is taken whole above; one that is itself too long is cut.
+    let stem: String = stem.chars().take(60).collect();
+    format!("{stem}.md")
 }
 
 /// Move a directory tree by copy, verify, remove — in that order, so a move
@@ -800,6 +936,105 @@ mod tests {
         assert_eq!(sessions.len(), 2);
         assert_eq!(sessions[0].turns[0].text, "before");
         assert_eq!(sessions[1].turns[0].text, "after");
+    }
+
+    fn turn(role: Role, text: &str) -> Turn {
+        Turn { role, text: text.into() }
+    }
+
+    fn head() -> ExportHead<'static> {
+        ExportHead { title: "Fix the bug", agent: "claude", branch: "agent/fix-1" }
+    }
+
+    #[test]
+    fn an_export_reads_as_headed_speakers_with_tool_calls_listed() {
+        let convo = Conversation {
+            title: None,
+            started: Some("2026-08-02T16:11:21.491Z".into()),
+            turns: vec![
+                turn(Role::User, "fix the bug\n\nplease"),
+                turn(Role::Assistant, "Looking now."),
+                turn(Role::Tool, "Read: src/lib.rs"),
+                turn(Role::Tool, "Bash: cargo test"),
+                turn(Role::Assistant, "Fixed."),
+                turn(Role::User, "thanks"),
+            ],
+        };
+        let md = to_markdown(&head(), &[convo]);
+        assert_eq!(
+            md,
+            "# Fix the bug\n\n\
+             Agent: `claude` · Branch: `agent/fix-1`\n\
+             \n## Session\n\
+             \nStarted 2026-08-02T16:11:21.491Z\n\
+             \n### User\n\n> fix the bug\n>\n> please\n\
+             \n### Assistant\n\nLooking now.\n\
+             \n- `Read: src/lib.rs`\n- `Bash: cargo test`\n\
+             \nFixed.\n\
+             \n### User\n\n> thanks\n"
+        );
+    }
+
+    #[test]
+    fn a_tool_call_opening_the_agents_turn_still_gets_its_heading() {
+        let convo = Conversation {
+            turns: vec![turn(Role::User, "go"), turn(Role::Tool, "Bash: ls")],
+            ..Default::default()
+        };
+        let md = to_markdown(&head(), &[convo]);
+        assert!(md.ends_with("### User\n\n> go\n\n### Assistant\n\n- `Bash: ls`\n"), "{md}");
+    }
+
+    #[test]
+    fn several_sessions_are_numbered_and_carry_the_agents_own_title() {
+        let one = Conversation {
+            title: Some("First pass".into()),
+            turns: vec![turn(Role::User, "a")],
+            ..Default::default()
+        };
+        let two = Conversation { turns: vec![turn(Role::User, "b")], ..Default::default() };
+        let md = to_markdown(&head(), &[one, two]);
+        assert!(md.contains("\n## Session 1 · First pass\n"), "{md}");
+        assert!(md.contains("\n## Session 2\n"), "{md}");
+    }
+
+    #[test]
+    fn a_users_heading_like_line_stays_inside_the_quote() {
+        let convo =
+            Conversation { turns: vec![turn(Role::User, "# not a heading")], ..Default::default() };
+        let md = to_markdown(&head(), &[convo]);
+        assert!(md.contains("\n> # not a heading\n"), "{md}");
+    }
+
+    #[test]
+    fn a_backtick_in_a_tool_line_cannot_close_its_code_span() {
+        assert_eq!(code_span("Bash: echo `date`"), "`` Bash: echo `date` ``");
+        assert_eq!(code_span("a``b"), "```a``b```");
+        assert_eq!(code_span("plain"), "`plain`");
+    }
+
+    #[test]
+    fn the_export_keeps_every_word_the_view_clips() {
+        // The view clips a turn at TURN_CHARS so a pasted log cannot make it
+        // unrenderable; a saved file has no such limit and must not lose the
+        // end of a long final summary to it.
+        let long = "word ".repeat(TURN_CHARS);
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("s.jsonl");
+        std::fs::write(&file, [c_user("go"), c_text("m1", &long)].join("\n")).unwrap();
+        let files = vec![(file, Dialect::Claude)];
+        assert!(read_files(&files)[0].turns[1].text.ends_with("(truncated)"));
+        assert_eq!(read_files_whole(&files)[0].turns[1].text, long.trim());
+    }
+
+    #[test]
+    fn an_export_file_name_is_the_title_in_dashed_words() {
+        assert_eq!(export_file_name("Fix: the *login* bug!", "run-1"), "fix-the-login-bug.md");
+        assert_eq!(export_file_name("…", "run-1"), "run-1.md");
+        let long = "word ".repeat(30);
+        let name = export_file_name(&long, "run-1");
+        assert!(name.len() <= 63 && name.ends_with("word.md"), "{name}");
+        assert_eq!(export_file_name(&"x".repeat(100), "r"), format!("{}.md", "x".repeat(60)));
     }
 
     #[test]

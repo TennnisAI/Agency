@@ -785,6 +785,14 @@ export type ConversationSession = {
 export type RunConversation = { supported: boolean; sessions: ConversationSession[] };
 export const readRunConversation = (id: string) =>
   invoke<RunConversation>("read_run_conversation", { id });
+/**
+ * Save a run's conversation as a markdown file, every word of it (the view
+ * clips long turns; the export does not). The backend shows the save dialog,
+ * so the destination is only ever what the user picked. Resolves to the path
+ * written, or null if the dialog was cancelled.
+ */
+export const exportRunConversation = (id: string) =>
+  invoke<string | null>("export_run_conversation", { id });
 export const listArchivedRuns = (projectId: string) =>
   invoke<RunInfo[]>("list_archived_runs", { projectId });
 /**

@@ -1,5 +1,11 @@
 import { useEffect, useState } from "react";
-import { RunInfo, RunConversation, readRunRecord, readRunConversation } from "../api";
+import {
+  RunInfo,
+  RunConversation,
+  readRunRecord,
+  readRunConversation,
+  exportRunConversation,
+} from "../api";
 import { useModalKeys } from "../hooks/useModalKeys";
 import { fmtStamp } from "../lib/issues";
 import { restorable, restoreTitle } from "../lib/restore";
@@ -32,6 +38,9 @@ import Markdown from "./Markdown";
  * this dialog (AGE-235): you had to close what you were reading to find it.
  * The footer carries the same action, gated and explained by the same
  * `lib/restore.ts` as the row, so the two cannot disagree about a run.
+ *
+ * The archive keeps the agent's own JSONL, which is complete but unreadable as
+ * a file, so the conversation tab can also be saved as markdown (AGE-278).
  */
 export default function RunRecordDialog({
   run,
@@ -60,7 +69,23 @@ export default function RunRecordDialog({
   const [text, setText] = useState<string | null>(null);
   const [convo, setConvo] = useState<RunConversation | null>(null);
   const [error, setError] = useState("");
+  // The outcome of the last export, said on the footer: where it went, or why
+  // it did not. Not `error`, which replaces the whole pane.
+  const [exported, setExported] = useState<{ text: string; title?: string } | null>(null);
+  const [exporting, setExporting] = useState(false);
   useModalKeys(onClose, true);
+
+  const canExport = tab === "conversation" && !!convo?.supported && convo.sessions.length > 0;
+  const runExport = () => {
+    setExporting(true);
+    setExported(null);
+    exportRunConversation(run.id)
+      .then((path) => {
+        if (path) setExported({ text: `Saved ${path.split("/").pop()}`, title: path });
+      })
+      .catch((e) => setExported({ text: `Export failed: ${String(e)}` }))
+      .finally(() => setExporting(false));
+  };
 
   useEffect(() => {
     let live = true;
@@ -185,19 +210,40 @@ export default function RunRecordDialog({
             </div>
           )}
         </div>
-        {onRestore && (
+        {(onRestore || canExport) && (
           <div className="modal-foot">
             {/* A disabled button's tooltip is easy to miss, so the one case
-                that disables it says why on the footer itself. */}
-            {!restorable(run) && <span className="run-record-note">{restoreTitle(run)}</span>}
-            <button
-              className="btn-primary"
-              title={restoreTitle(run)}
-              disabled={busy || !restorable(run)}
-              onClick={onRestore}
-            >
-              {busy ? "Restoring…" : "Restore"}
-            </button>
+                that disables it says why on the footer itself. An export's
+                outcome takes the slot while it is news; the Restore button's
+                tooltip still carries the reason. */}
+            {exported ? (
+              <span className="run-record-note" title={exported.title}>
+                {exported.text}
+              </span>
+            ) : (
+              onRestore &&
+              !restorable(run) && <span className="run-record-note">{restoreTitle(run)}</span>
+            )}
+            {canExport && (
+              <button
+                className="btn-secondary"
+                title="Save this conversation as a markdown file"
+                disabled={exporting}
+                onClick={runExport}
+              >
+                {exporting ? "Exporting…" : "Export…"}
+              </button>
+            )}
+            {onRestore && (
+              <button
+                className="btn-primary"
+                title={restoreTitle(run)}
+                disabled={busy || !restorable(run)}
+                onClick={onRestore}
+              >
+                {busy ? "Restoring…" : "Restore"}
+              </button>
+            )}
           </div>
         )}
       </div>

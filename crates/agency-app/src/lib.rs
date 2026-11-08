@@ -346,6 +346,7 @@ pub fn run() {
             commands::run_cleanup,
             commands::read_run_record,
             commands::read_run_conversation,
+            commands::export_run_conversation,
             commands::search_archived_runs,
             commands::discard_archived_runs,
             commands::set_ui_state,

@@ -48,10 +48,11 @@ fn codex_state_hooks_setting(stored: Option<&str>) -> bool {
 /// "0" makes the add-agent menu default to working in the project checkout
 /// instead of cutting a worktree. Unset = worktrees on, the isolated default.
 const SETTING_DEFAULT_WORKTREE: &str = "default_worktree";
-/// Prefixes a per-agent setting holding the model last launched with. The
-/// value is the model id, or the empty string for the agent's own default —
-/// which is a choice in its own right, so it has to be distinguishable from
-/// never having chosen one.
+/// Prefixes a per-agent setting holding the model new runs start on unless one
+/// is picked for them: Settings' "Default model for new tasks", and only
+/// Settings writes it. The value is the model id, or the empty string for the
+/// agent's own default, which is a choice in its own right, so it has to be
+/// distinguishable from never having chosen one.
 const SETTING_AGENT_MODEL_PREFIX: &str = "agent_model:";
 /// Prefixes a per-agent setting holding recently used model ids, newest first,
 /// newline-joined. It is what makes a model with no published alias (every
@@ -815,7 +816,8 @@ pub struct AgentModelInfo {
     pub suggested: Vec<String>,
     /// Model ids used before with this agent, newest first.
     pub recent: Vec<String>,
-    /// The model chosen last time. None = the agent's own default.
+    /// The default model from Settings, which a run starts on unless one is
+    /// picked for it. None = the agent's own default.
     pub selected: Option<String>,
     /// The agent's own command for listing its models, shown as a hint.
     pub list_command: Option<String>,
@@ -1535,9 +1537,10 @@ fn push_mru(list: &str, model: &str) -> String {
     out.join("\n")
 }
 
-/// Record the model an agent was just launched on, so the picker reopens on it.
-fn remember_model(reg: &Registry, agent: &str, model: Option<&str>) -> Result<()> {
-    reg.set_setting(&format!("{SETTING_AGENT_MODEL_PREFIX}{agent}"), model.unwrap_or(""))?;
+/// Put `model` at the head of `agent`'s recent models, so a model with no
+/// published alias is one click the next time. The agent's own default is not
+/// a model id and has no place in the list.
+fn remember_recent(reg: &Registry, agent: &str, model: Option<&str>) -> Result<()> {
     if let Some(model) = model {
         let key = format!("{SETTING_AGENT_MODELS_PREFIX}{agent}");
         let recent = reg.get_setting(&key)?.unwrap_or_default();
@@ -3862,7 +3865,7 @@ impl AppState {
     }
 
     /// What the model picker needs for every enabled agent profile: whether a
-    /// model can be set at all, what to offer, and what was chosen last.
+    /// model can be set at all, what to offer, and the default from Settings.
     ///
     /// Suggestions are stable vendor aliases only (see the catalog), so this is
     /// deliberately not a list of every model that exists — a typed id and the
@@ -3899,9 +3902,10 @@ impl AppState {
         Ok(out)
     }
 
-    /// Set the model `agent`'s next run starts on, exactly as finishing a
-    /// launch does. `None` is the agent's own default, which is a choice of its
-    /// own and not the absence of one.
+    /// Set the model `agent`'s runs start on when none is picked for them:
+    /// Settings' "Default model for new tasks", and the only writer of it. A
+    /// launch does not change it. `None` is the agent's own default, which is a
+    /// choice of its own and not the absence of one.
     ///
     /// Settings writes the same per-agent setting the picker reads rather than
     /// a second "default model" beside it: there is one model the next run
@@ -3916,7 +3920,8 @@ impl AppState {
         if reg.get_profile(agent)?.is_none() {
             bail!("no profile for {agent}");
         }
-        remember_model(&reg, agent, model)
+        reg.set_setting(&format!("{SETTING_AGENT_MODEL_PREFIX}{agent}"), model.unwrap_or(""))?;
+        remember_recent(&reg, agent, model)
     }
 
     /// Ask `agent`'s own CLI which models it has, cached for the app session.
@@ -5184,12 +5189,26 @@ impl AppState {
             // Remember the agent type so new-task shortcuts default to what
             // this project actually uses. Best-effort bookkeeping.
             let _ = reg.set_project_default_agent(spec.project_id, spec.agent);
-            // Same for the model: the picker reopens on the last one used for
-            // this agent, so repeating a choice is one click rather than a
-            // retyped id. Recorded for a default pick too, so choosing
-            // "default" after a run on opus actually sticks.
-            let _ = remember_model(&reg, spec.agent, model.as_deref());
+            // The model goes on the recent list, and that is all. A launch used
+            // to save its model as the agent's default as well, so picking fable
+            // in the add menu for one issue made fable the default that Settings
+            // showed and every later ▶ started on: a pick made for one issue
+            // changed it for all of them. The default is now set in Settings
+            // and nowhere else.
+            let _ = remember_recent(&reg, spec.agent, model.as_deref());
         }
+        // Said once per run, because nothing else outlives the run. AGE-280's
+        // run came up on opus after its picker had been set to fable, and it
+        // was discarded before anyone asked what it had been sent. The row,
+        // worktree, branch and transcript all went with it, which left no
+        // record of which model it had been started on.
+        log::info!(
+            "run {id}: {} starts on {}",
+            spec.agent,
+            model
+                .as_deref()
+                .map_or("the agent's own default model".to_string(), |m| format!("model {m}"))
+        );
         // A run born with a real prompt is already mid-turn: when it goes
         // quiet it's waiting on the user, same as after a typed turn.
         if !spec.prompt.trim().is_empty() {

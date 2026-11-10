@@ -420,8 +420,12 @@ fn the_prefilled_local_model_url_is_cleared_once() {
 /// a picker that stored a preference and launched the default anyway would be
 /// worse than no picker, because the run would look like it was on the model
 /// the user paid for.
+///
+/// And it is that run's model only. A launch used to save its model as the
+/// agent's default too, so a model picked for one issue became the one every
+/// later ▶ started on. The default stays whatever Settings says.
 #[test]
-fn create_run_passes_the_chosen_model_to_the_agent_and_remembers_it() {
+fn create_run_passes_the_chosen_model_to_the_agent_and_leaves_the_default_alone() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
@@ -441,6 +445,7 @@ fn create_run_passes_the_chosen_model_to_the_agent_and_remembers_it() {
         })
         .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
+    state.set_agent_model("claude", Some("sonnet")).unwrap();
 
     let info = state.create_run(&project.id, "p", "claude", Some("opus"), "HEAD", None).unwrap();
     assert_eq!(info.model.as_deref(), Some("opus"));
@@ -459,12 +464,13 @@ fn create_run_passes_the_chosen_model_to_the_agent_and_remembers_it() {
     // Ahead of the prompt, which is this CLI's trailing positional.
     assert!(out.contains("ARGV=--model opus p"), "got: {out}");
 
-    // And the choice is remembered, so the picker reopens on it.
+    // The default is still Settings' sonnet; opus only joins the recents, so
+    // picking it again is one click.
     let models = state.list_agent_models().unwrap();
     let claude = models.iter().find(|m| m.agent == "claude").expect("claude in the model list");
     assert!(claude.supported);
-    assert_eq!(claude.selected.as_deref(), Some("opus"));
-    assert_eq!(claude.recent, vec!["opus".to_string()]);
+    assert_eq!(claude.selected.as_deref(), Some("sonnet"));
+    assert_eq!(claude.recent, ["opus", "sonnet"]);
     assert!(claude.suggested.contains(&"sonnet".to_string()));
 
     state.discard_run(&info.id).unwrap();

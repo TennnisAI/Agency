@@ -26,7 +26,7 @@ export default function LoopDialog({ onClose, issue, issueLabel }: {
   const [prompt, setPrompt] = useState("");
   const [agents, setAgents] = useState<string[]>([]);
   const [agent, setAgent] = useState("");
-  // Seeded from the model this agent last ran on, and re-seeded when the agent
+  // Seeded from this agent's default model in Settings, and re-seeded when the agent
   // changes: model ids live in each CLI's own namespace, so one agent's pick
   // means nothing to the next.
   const { models, remembered } = useAgentModels();

@@ -601,6 +601,90 @@ pub fn fetch_branch(repo: &Path, branch: &str) -> Result<()> {
     Ok(())
 }
 
+/// What [`pull_branch`] did to the local branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum BranchPull {
+    /// The local branch already had everything origin's copy has.
+    UpToDate,
+    /// Moved forward onto origin's copy by this many commits.
+    FastForwarded { commits: usize },
+}
+
+/// How [`pull_branch`] brings a branch level with origin, decided from the
+/// counts alone so the choice can be tested without a repository.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PullStep {
+    Nothing,
+    /// `git merge --ff-only` in the worktree that has the branch checked out:
+    /// git refuses to move a checked-out branch's ref under its working tree.
+    MergeInCheckout,
+    /// Move the ref directly; no working tree has it out.
+    MoveRef,
+    /// Each side has commits the other lacks. A fast-forward is impossible,
+    /// and choosing between a merge and a rebase is the user's call.
+    Diverged {
+        ahead: usize,
+    },
+}
+
+pub fn pull_step(behind: usize, ahead: usize, checked_out: bool) -> PullStep {
+    match (behind, ahead) {
+        (0, _) => PullStep::Nothing,
+        (_, a) if a > 0 => PullStep::Diverged { ahead: a },
+        _ if checked_out => PullStep::MergeInCheckout,
+        _ => PullStep::MoveRef,
+    }
+}
+
+/// Bring the local `branch` up to `origin/<branch>`, by fast-forward only,
+/// wherever it lives: in the worktree that has it checked out, or as a bare
+/// ref when none does. Never merges and never rebases, so a diverged branch
+/// fails with nothing changed.
+///
+/// The Approve window's ending for a pull request merged on GitHub: the merge
+/// lands on origin's `main`, and the project's own `main` reads as missing it
+/// until something pulls. [`pull`] works only on the current branch of one
+/// worktree, and [`fetch_branch`] skips a branch that is checked out, which
+/// `main` usually is.
+pub fn pull_branch(repo: &Path, branch: &str) -> Result<BranchPull> {
+    fetch_tracking(repo, &[branch])?;
+    let remote = format!("refs/remotes/origin/{branch}");
+    let local = format!("refs/heads/{branch}");
+    let count = |range: String| -> Result<usize> {
+        Ok(git(repo, &["rev-list", "--count", &range])?.trim().parse().unwrap_or(0))
+    };
+    let behind = count(format!("{local}..{remote}"))?;
+    let ahead = count(format!("{remote}..{local}"))?;
+    let checkout = branch_worktree(repo, branch);
+    match pull_step(behind, ahead, checkout.is_some()) {
+        PullStep::Nothing => Ok(BranchPull::UpToDate),
+        PullStep::Diverged { ahead } => bail!(
+            "{branch} has {ahead} commit{} that origin/{branch} doesn't, so it can't be \
+             fast-forwarded. Pull it from Source Control, where you choose how to combine them.",
+            if ahead == 1 { "" } else { "s" }
+        ),
+        PullStep::MergeInCheckout => {
+            // Checked by the match; `merge --ff-only` itself refuses rather
+            // than overwrite uncommitted changes to the files it would move.
+            let wt = checkout.expect("checked out");
+            git(&wt, &["merge", "--ff-only", "--quiet", &remote])?;
+            Ok(BranchPull::FastForwarded { commits: behind })
+        }
+        PullStep::MoveRef => {
+            // Compare-and-swap on the old value: a commit made to the branch
+            // between the count and here fails the update instead of being
+            // dropped from it.
+            let old = crate::merge::rev(repo, &local)
+                .ok_or_else(|| anyhow::anyhow!("couldn't read {branch}"))?;
+            let new = crate::merge::rev(repo, &remote)
+                .ok_or_else(|| anyhow::anyhow!("couldn't read origin/{branch}"))?;
+            git(repo, &["update-ref", &local, &new, &old])?;
+            Ok(BranchPull::FastForwarded { commits: behind })
+        }
+    }
+}
+
 /// Make `branch` track `origin/<branch>` when it tracks nothing that exists.
 ///
 /// A `<branch>:<branch>` fetch creates the local branch with no tracking
@@ -2221,5 +2305,22 @@ mod capped_tests {
         set_identity(dir.path(), "Flag Test", "--global").unwrap();
         assert_eq!(local("user.name").as_deref().map(str::trim), Some("Flag Test"));
         assert_eq!(local("user.email").as_deref().map(str::trim), Some("--global"));
+    }
+}
+
+#[cfg(test)]
+mod pull_step_tests {
+    use super::{pull_step, PullStep};
+
+    #[test]
+    fn pull_step_fast_forwards_only_a_branch_that_is_strictly_behind() {
+        assert_eq!(pull_step(0, 0, true), PullStep::Nothing);
+        // Ahead only: there is nothing to bring in, and pushing is not a pull's job.
+        assert_eq!(pull_step(0, 3, true), PullStep::Nothing);
+        assert_eq!(pull_step(2, 0, true), PullStep::MergeInCheckout);
+        assert_eq!(pull_step(2, 0, false), PullStep::MoveRef);
+        // Diverged is refused wherever the branch is checked out.
+        assert_eq!(pull_step(2, 1, true), PullStep::Diverged { ahead: 1 });
+        assert_eq!(pull_step(2, 1, false), PullStep::Diverged { ahead: 1 });
     }
 }

@@ -1614,6 +1614,12 @@ export interface MergeMethods {
 }
 export type MergeMethod = "merge" | "squash" | "rebase";
 /** What happened to the head branch after a successful PR merge. */
+// What pulling the run's base did: already level with origin, or moved forward.
+export type BranchPull = { kind: "upToDate" } | { kind: "fastForwarded"; commits: number };
+// Fast-forward the project's copy of the run's base to origin's, after a PR
+// merged on GitHub. Refuses a diverged base rather than merging into it.
+export const pullRunBase = (taskId: string) => invoke<BranchPull>("pull_run_base", { taskId });
+
 export interface PrMergeResult {
   branchDeleted: string | null;
   // Set when the merge landed but branch cleanup didn't; a note, not a failure.

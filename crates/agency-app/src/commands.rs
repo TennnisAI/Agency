@@ -1066,6 +1066,16 @@ pub async fn merge_run_pr(
     state.merge_run_pr(&task_id, &method, delete_branch).map_err(|e| e.to_string())
 }
 
+/// Bring the project's copy of the run's base up to origin's, by fast-forward
+/// only. Async: it fetches first.
+#[tauri::command]
+pub async fn pull_run_base(
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<agency_core::git::BranchPull, String> {
+    state.pull_run_base(&task_id).map_err(|e| e.to_string())
+}
+
 /// Delete a merged run's branch from its remote. Best effort by contract: the
 /// caller is a merge that has already landed, so a refusal here is a note, not
 /// a failed merge.

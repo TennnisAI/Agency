@@ -12371,6 +12371,20 @@ impl AppState {
         Ok(merged)
     }
 
+    /// Fast-forward the project's copy of this run's merge target to origin's:
+    /// the step after a pull request merged on GitHub, which the project's
+    /// `main` has not seen. Fast-forward only (see `git::pull_branch`), and
+    /// behind the checkout gate, since the base is usually checked out in the
+    /// project's own folder, where every local merge runs too.
+    pub fn pull_run_base(&self, id: &str) -> Result<agency_core::git::BranchPull> {
+        let run = self.branch_run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+        let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
+        self.repo_gates
+            .try_with(&run.project_id, || agency_core::git::pull_branch(&repo, &base))
+            .unwrap_or_else(|| Err(anyhow!(busy_checkout_error())))
+    }
+
     /// The PR's full multi-file diff, split per file for the diff renderer.
     pub fn pr_diff(
         &self,

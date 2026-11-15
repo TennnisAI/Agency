@@ -236,6 +236,7 @@ pub fn run() {
             commands::pr_merge_methods,
             commands::merge_pr,
             commands::merge_run_pr,
+            commands::pull_run_base,
             commands::delete_run_remote_branch,
             commands::pr_diff,
             commands::pr_review_threads,

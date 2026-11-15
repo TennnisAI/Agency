@@ -1040,6 +1040,11 @@ pub struct MergePreview {
     /// All of them, not the first: a clone with a fork remote beside `origin`
     /// publishes to both, and the window names what it is about to delete.
     pub remote_branches: Vec<String>,
+    /// The branch's pull request was merged on GitHub with the branch at its
+    /// current tip, so there is nothing left to merge. `commits_ahead` still
+    /// counts against the local base, which has not pulled that merge, and
+    /// read on its own it invited merging the same work a second time.
+    pub pr_merged: bool,
 }
 
 /// Outcome of a bulk discard of a project's archived runs. Reported per-run
@@ -11954,7 +11959,9 @@ impl AppState {
         } else {
             agency_core::merge::commits_unpushed(&repo, &run.branch).unwrap_or(0)
         };
+        let pr_merged = run.pr_merged_at(agency_core::merge::rev(&repo, &run.branch).as_deref());
         Ok(MergePreview {
+            pr_merged,
             base,
             branch: run.branch,
             commits_ahead,
@@ -12205,6 +12212,23 @@ impl AppState {
         let repo = self.project_repo(&run.project_id)?;
         let gh = agency_core::gh::GhCli::default();
         let pr = gh.view_pr(&repo, &run.branch)?;
+        // A PR merged on GitHub, rather than from the Approve window, was
+        // never recorded, so the window reopened on it offered a local merge
+        // of "33 commits ahead of main" against a base that had not pulled
+        // them, under a pull request reading MERGED. Recorded here, where the
+        // merge is first seen, it reads the same as one merged from Agency:
+        // the preview calls it done and the teardown treats the branch as
+        // landed. Only for the tip that landed; see `PrInfo::merged_at`.
+        if let Some(p) = &pr {
+            let tip = agency_core::merge::rev(&repo, &run.branch);
+            if p.merged_at(tip.as_deref()) && !run.pr_merged_at(tip.as_deref()) {
+                if let Err(e) =
+                    self.registry.lock().unwrap().set_pr_merged_head(&run.id, &p.head_ref_oid)
+                {
+                    log::warn!("recording the PR merge of {}: {e}", run.id);
+                }
+            }
+        }
         let checks = match &pr {
             Some(_) => gh.pr_checks(&repo, &run.branch).unwrap_or_default(),
             None => Vec::new(),

@@ -1441,6 +1441,10 @@ export interface MergePreview {
    *  branch was never pushed and so has no remote copy to offer deleting.
    *  More than one when the checkout publishes to a fork as well as origin. */
   remoteBranches: string[];
+  /** The branch's PR was merged on GitHub at the branch's current tip, so there
+   *  is nothing left to merge. `commitsAhead` still counts against the local
+   *  base, which has not pulled that merge. */
+  prMerged: boolean;
 }
 
 // How far the user is from usable PR features; each non-ready state maps to a
@@ -1455,6 +1459,8 @@ export interface PrInfo {
   isDraft: boolean;
   baseRefName: string;
   headRefName: string;
+  // The PR's head commit; for a merged PR, the tip that landed.
+  headRefOid: string;
 }
 
 export interface CheckItem {
@@ -1608,6 +1614,12 @@ export interface MergeMethods {
 }
 export type MergeMethod = "merge" | "squash" | "rebase";
 /** What happened to the head branch after a successful PR merge. */
+// What pulling the run's base did: already level with origin, or moved forward.
+export type BranchPull = { kind: "upToDate" } | { kind: "fastForwarded"; commits: number };
+// Fast-forward the project's copy of the run's base to origin's, after a PR
+// merged on GitHub. Refuses a diverged base rather than merging into it.
+export const pullRunBase = (taskId: string) => invoke<BranchPull>("pull_run_base", { taskId });
+
 export interface PrMergeResult {
   branchDeleted: string | null;
   // Set when the merge landed but branch cleanup didn't; a note, not a failure.

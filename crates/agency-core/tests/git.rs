@@ -1216,3 +1216,61 @@ fn rebase_in_progress_finds_a_linked_worktrees_rebase() {
     assert_eq!(git::rebase_in_progress(&wt).and_then(|s| s.branch).as_deref(), Some("feat"));
     assert_eq!(git::rebase_in_progress(dir.path()), None, "the main checkout is not rebasing");
 }
+
+/// An upstream on `main` and a clone of it, with `main` then advanced upstream
+/// by one commit: the shape a pull request merged on GitHub leaves behind.
+fn clone_behind_by_one() -> (tempfile::TempDir, std::path::PathBuf) {
+    let root = tempfile::tempdir().unwrap();
+    let upstream = root.path().join("upstream");
+    std::fs::create_dir(&upstream).unwrap();
+    init_repo(&upstream);
+    let clone = root.path().join("clone");
+    run(root.path(), &["clone", "-q", upstream.to_str().unwrap(), clone.to_str().unwrap()]);
+    run(&clone, &["config", "user.email", "t@e.com"]);
+    run(&clone, &["config", "user.name", "T"]);
+    std::fs::write(upstream.join("merged.txt"), "x").unwrap();
+    run(&upstream, &["add", "-A"]);
+    run(&upstream, &["commit", "-q", "-m", "merged on github"]);
+    (root, clone)
+}
+
+fn subject(repo: &Path, r: &str) -> String {
+    let out = Command::new("git")
+        .args(["log", "-1", "--format=%s", r])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[test]
+fn pull_branch_fast_forwards_the_checkout_that_has_it_out() {
+    let (_keep, clone) = clone_behind_by_one();
+    let pulled = git::pull_branch(&clone, "main").unwrap();
+    assert_eq!(pulled, git::BranchPull::FastForwarded { commits: 1 });
+    assert_eq!(subject(&clone, "main"), "merged on github");
+    // The working tree moved with the ref, not just the ref.
+    assert!(clone.join("merged.txt").exists());
+    assert_eq!(git::pull_branch(&clone, "main").unwrap(), git::BranchPull::UpToDate);
+}
+
+#[test]
+fn pull_branch_moves_a_branch_no_worktree_has_out() {
+    let (_keep, clone) = clone_behind_by_one();
+    run(&clone, &["checkout", "-q", "-b", "elsewhere"]);
+    let pulled = git::pull_branch(&clone, "main").unwrap();
+    assert_eq!(pulled, git::BranchPull::FastForwarded { commits: 1 });
+    assert_eq!(subject(&clone, "main"), "merged on github");
+    assert_eq!(subject(&clone, "HEAD"), "initial", "the checkout stays where it was");
+}
+
+#[test]
+fn pull_branch_refuses_a_diverged_branch_and_changes_nothing() {
+    let (_keep, clone) = clone_behind_by_one();
+    std::fs::write(clone.join("local.txt"), "y").unwrap();
+    run(&clone, &["add", "-A"]);
+    run(&clone, &["commit", "-q", "-m", "local only"]);
+    let err = git::pull_branch(&clone, "main").unwrap_err().to_string();
+    assert!(err.contains("can't be fast-forwarded"), "{err}");
+    assert_eq!(subject(&clone, "main"), "local only");
+}

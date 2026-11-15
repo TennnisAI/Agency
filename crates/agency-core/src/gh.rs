@@ -41,6 +41,22 @@ pub struct PrInfo {
     pub base_ref_name: String,
     #[serde(default)]
     pub head_ref_name: String,
+    /// The commit GitHub has as the PR's head. For a merged PR, the tip that
+    /// landed. Empty where the query did not ask for it.
+    #[serde(default)]
+    pub head_ref_oid: String,
+}
+
+impl PrInfo {
+    /// This PR is merged, and what it merged is the branch at `tip`: every
+    /// commit on the branch is on the PR's base on GitHub, though the local
+    /// base may not have pulled it yet. A tip that has moved on since carries
+    /// commits the merge never saw, and an unknown head vouches for nothing.
+    pub fn merged_at(&self, tip: Option<&str>) -> bool {
+        self.state == "MERGED"
+            && !self.head_ref_oid.is_empty()
+            && tip.is_some_and(|t| t == self.head_ref_oid)
+    }
 }
 
 /// Where GitHub has a PR right now: the commit it takes as the head, and
@@ -368,7 +384,7 @@ impl GhCli {
                 "view",
                 branch,
                 "--json",
-                "number,url,title,state,isDraft,baseRefName,headRefName",
+                "number,url,title,state,isDraft,baseRefName,headRefName,headRefOid",
             ],
         )?;
         if !out.status.success() {
@@ -1482,6 +1498,29 @@ esac"#,
         assert!(head("abc123", "CONFLICTING").caught_up_with("abc123"));
         // Still on the commit before the push.
         assert!(!head("old999", "MERGEABLE").caught_up_with("abc123"));
+    }
+
+    #[test]
+    fn pr_merged_at_vouches_only_for_the_head_that_landed() {
+        let pr = |state: &str, oid: &str| PrInfo {
+            number: 20,
+            url: String::new(),
+            title: String::new(),
+            state: state.into(),
+            is_draft: false,
+            base_ref_name: "main".into(),
+            head_ref_name: "feature/x".into(),
+            head_ref_oid: oid.into(),
+        };
+        assert!(pr("MERGED", "abc123").merged_at(Some("abc123")));
+        // The agent committed again after the merge: that commit is on no base.
+        assert!(!pr("MERGED", "abc123").merged_at(Some("def456")));
+        // Open, or closed unmerged: nothing has landed.
+        assert!(!pr("OPEN", "abc123").merged_at(Some("abc123")));
+        assert!(!pr("CLOSED", "abc123").merged_at(Some("abc123")));
+        // A query that did not ask for the head, or a tip git could not read.
+        assert!(!pr("MERGED", "").merged_at(Some("")));
+        assert!(!pr("MERGED", "abc123").merged_at(None));
     }
 
     #[test]

@@ -6,6 +6,7 @@ import {
   MergeOutcome,
   MergePreview,
   MergeState,
+  BranchPull,
   PrInfo,
   PrMergeResult,
   RunCleanup,
@@ -20,6 +21,7 @@ import {
   mergeStatus,
   mergeTask,
   prMergeMethods,
+  pullRunBase,
   runCleanup,
 } from "../api";
 import { mergeTidyCopy, removalCopy } from "../lib/runRemoval";
@@ -161,6 +163,12 @@ export default function MergeModal({
   // succeeded by the time this can fail, and a refused branch deletion must
   // not read as a failed merge.
   const [remoteError, setRemoteError] = useState("");
+  // Pulling the base after a PR merged on GitHub, which the project's copy of
+  // it has not seen. Its own error line, for the same reason as the remote
+  // deletion's: the merge has landed, and a refused pull is not a failed merge.
+  const [pulling, setPulling] = useState(false);
+  const [pulled, setPulled] = useState<BranchPull | null>(null);
+  const [pullError, setPullError] = useState("");
   // What git says about the merge after a resolver has had a go at it. Null
   // until the first check; `probeError` is why, when it stays null.
   const [state, setState] = useState<MergeState | null>(null);
@@ -212,7 +220,10 @@ export default function MergeModal({
   // aren't on main") is ever said. Tearing the run down while `git push
   // --delete` is out drops that message on an unmounted modal, leaving the
   // branch out there with unmerged work on it and nothing on screen about it.
-  const gitBusy = merging || finishing || aborting || deletingRemote;
+  //
+  // The pull counts too: it fast-forwards the base where it is checked out,
+  // usually the project's own folder.
+  const gitBusy = merging || finishing || aborting || deletingRemote || pulling;
 
   // Escape mirrors the header ✕; disabled while cleaning up or mid-git (the
   // modal's other cancel affordances are disabled then too).
@@ -266,6 +277,23 @@ export default function MergeModal({
       });
     return () => { live = false; };
   }, [prOpen, projectId]);
+
+  // A PR the probe finds merged was merged on GitHub, not here, and reading
+  // its status is what records that (see `pr_status`). The preview taken
+  // before then still counts the branch as unmerged, so it is read again.
+  const prSeenMerged = pr?.state === "MERGED";
+  // Until it answers, the merge button stays held (see `prUnknown`): the
+  // preview it would act on is the stale one.
+  const [prRechecked, setPrRechecked] = useState(false);
+  useEffect(() => {
+    if (!prSeenMerged) return;
+    let live = true;
+    mergePreview(taskId)
+      .then((p) => live && setPreview(p))
+      .catch(() => {})
+      .finally(() => live && setPrRechecked(true));
+    return () => { live = false; };
+  }, [prSeenMerged, taskId]);
 
   // Losers are torn down one at a time before the winner, so their progress is
   // labelled with their position: otherwise a five-attempt race looks like one
@@ -434,6 +462,18 @@ export default function MergeModal({
     }
   }
 
+  async function pullBase() {
+    setPullError("");
+    setPulling(true);
+    try {
+      setPulled(await pullRunBase(taskId));
+    } catch (e) {
+      setPullError(String(e));
+    } finally {
+      setPulling(false);
+    }
+  }
+
   // Hand the conflict to one of the workspace's agents, then get out of the way:
   // this window has nothing left to do until the conflict is settled, and the
   // agent's tab with the panel beside it says everything it did (AGE-273). A
@@ -485,7 +525,7 @@ export default function MergeModal({
     return () => {
       live = false;
     };
-  }, [taskId, outcome?.kind, state?.merged, prMerged]);
+  }, [taskId, outcome?.kind, state?.merged, prMerged, preview?.prMerged, pulled]);
 
   const conflicts = outcome?.kind === "conflicts";
   // The same sentences the tile and rail teardown dialogs use, so the merge
@@ -546,7 +586,17 @@ export default function MergeModal({
     autoFinish.current = false;
     if (canFinish) void finish();
   }, [preview, state, canFinish]); // eslint-disable-line react-hooks/exhaustive-deps
-  const step = outcome?.kind === "clean" || prMerged
+  // The PR has landed, merged from this window or already merged on GitHub
+  // with the branch at its current tip. Either way the merge is done, and
+  // the review under it has nothing true left to offer: its count is against
+  // a local base that has not pulled the merge, and with the PR no longer
+  // open its button falls back to merging the same work again locally. Both
+  // were on screen under "Merged #20 into main", and a user reading
+  // "33 commits ahead of main" beside Archive could not tell whether
+  // archiving lost the work.
+  const prLanded = !!prMerged || (!outcome && !!preview?.prMerged);
+  const done = outcome?.kind === "clean" || prLanded;
+  const step = done
     ? "done"
     : conflicts
       ? "resolve"
@@ -565,7 +615,7 @@ export default function MergeModal({
   const steps: { key: string; label: string }[] = [
     { key: "review", label: "Review" },
     { key: "merge", label: "Merge" },
-    ...(prMode || prMerged ? [] : [{ key: "resolve", label: "Resolve" }]),
+    ...(prMode || prLanded ? [] : [{ key: "resolve", label: "Resolve" }]),
     { key: "done", label: "Done" },
   ];
   // Another run left a merge unfinished in the shared project checkout. Nothing
@@ -580,12 +630,13 @@ export default function MergeModal({
   // pushed, or a project with nothing to ask, cannot have a PR, and waits for
   // nothing.
   const prUnknown =
-    !!projectId &&
-    prProbing &&
-    !prProbeSlow &&
-    !!preview &&
-    preview.remoteBranches.length > 0 &&
-    !nothingToMerge;
+    (!!projectId &&
+      prProbing &&
+      !prProbeSlow &&
+      !!preview &&
+      preview.remoteBranches.length > 0 &&
+      !nothingToMerge) ||
+    (prSeenMerged && !prRechecked);
   const mergeBtn = useRef<HTMLButtonElement>(null);
   // `autoFocus` does nothing to a button that is disabled when it mounts, which
   // is the normal case above. Take the focus when the wait ends so Enter still
@@ -624,7 +675,7 @@ export default function MergeModal({
         {(error || hand.error) && <div className="git-error">{error || hand.error}</div>}
 
         {/* Review: explain what will happen before merging. */}
-        {!outcome && !merging && (
+        {!outcome && !prLanded && !merging && (
           resuming || (!preview && !error) ? (
             <p>Checking…</p>
           ) : preview ? (
@@ -682,6 +733,14 @@ export default function MergeModal({
                 <p className="merge-warn">
                   #{pr.number} merges into <code>{pr.baseRefName}</code>, not <code>{preview.base}</code>,
                   which this agent was set to merge into.
+                </p>
+              )}
+              {/* Merged on GitHub, but not at this tip: the agent committed
+                  after the merge, and only those commits are left to land. */}
+              {prSeenMerged && prRechecked && !nothingToMerge && (
+                <p className="merge-warn">
+                  #{pr.number} is already merged, and this branch has commits made after it. Merging here brings
+                  those in, along with what <code>{preview.base}</code> has not pulled from GitHub yet.
                 </p>
               )}
               {prMode && pr.isDraft && (
@@ -777,24 +836,51 @@ export default function MergeModal({
           />
         )}
 
-        {(outcome?.kind === "clean" || prMerged) && (
+        {done && (
           <div className="merge-done">
-            {prMerged ? (
+            {prLanded ? (
               <>
                 <p className="merge-ok">
-                  ✓ Merged #{pr?.number} into {prBase}
+                  ✓ {pr ? `Merged #${pr.number}` : "Merged"} into {prBase} on GitHub
                 </p>
-                {/* GitHub did this merge, so the project's checkout has not
-                    seen it, where a local merge would have moved it. */}
+                {/* The question this screen is asked is whether the cleanup
+                    under it loses anything, so it is answered first, and from
+                    the branch facts rather than from the merge having
+                    happened. Uncommitted work is the caveat's to say. GitHub
+                    did this merge, so the project's checkout has not seen
+                    it, where a local merge would have moved it. */}
                 <p className="merge-note">
-                  Your local <code>{prBase}</code> doesn't have it yet. Pull <code>{prBase}</code> to bring it in.
+                  {plan?.facts.merged && !plan.facts.dirty && (
+                    <>Every commit on <code>{plan.branch}</code> is in it, so the worktree holds nothing that
+                      isn't on GitHub. </>
+                  )}
+                  {prMerged?.branchDeleted && <>Deleted <code>{prMerged.branchDeleted}</code> on GitHub.</>}
                 </p>
-                {prMerged.branchDeleted && (
-                  <p className="merge-note">Deleted <code>{prMerged.branchDeleted}</code> on GitHub.</p>
+                {/* The pull moves this agent's merge target, so it is offered
+                    only when that is the branch the PR merged into. Otherwise
+                    the button would pull a branch the merge never reached. */}
+                {preview && prBase === preview.base && (
+                  pulled ? (
+                    <p className="merge-ok">
+                      {pulled.kind === "fastForwarded"
+                        ? <>✓ Pulled {pulled.commits} commit{pulled.commits === 1 ? "" : "s"} into your
+                            local <code>{prBase}</code>.</>
+                        : <>✓ Your local <code>{prBase}</code> is up to date.</>}
+                    </p>
+                  ) : (
+                    <div className="git-actions">
+                      <button className="ghost" disabled={pulling || busy} onClick={pullBase}
+                        title={`Fast-forward your local ${prBase} to GitHub's. Never merges or rebases.`}>
+                        {pulling ? "Pulling…" : `Pull ${prBase}`}
+                      </button>
+                      <span className="merge-note">Your local <code>{prBase}</code> doesn't have the merge yet.</span>
+                    </div>
+                  )
                 )}
+                {pullError && <p className="removal-warn">{pullError}</p>}
                 {/* The merge landed; only the branch cleanup didn't. A note,
                     not an error, so it cannot read as a failed merge. */}
-                {prMerged.warning && <p className="removal-warn">{prMerged.warning}</p>}
+                {prMerged?.warning && <p className="removal-warn">{prMerged.warning}</p>}
               </>
             ) : outcome?.kind === "clean" && (
               <p className="merge-ok">

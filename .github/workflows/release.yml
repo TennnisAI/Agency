@@ -62,7 +62,10 @@ permissions:
 
 jobs:
   macos:
-    runs-on: macos-14 # Apple Silicon runner -> aarch64 build
+    # macos-14 was retired: from 2026-10-30 every job on it failed at once with
+    # "The configuration 'macos-14-arm64-us-default' is not supported", the
+    # v0.2.6 tag's build included. macos-15 is Apple Silicon too.
+    runs-on: macos-15 # Apple Silicon runner -> aarch64 build
     steps:
       # Third-party actions are pinned to commit SHAs (comment records the
       # moving tag each SHA was resolved from). This workflow handles the

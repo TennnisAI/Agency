@@ -4,6 +4,88 @@ Notable changes in each release. The GitHub release for a version carries the
 same notes alongside the downloads; this file is so the history is readable without
 leaving the repository.
 
+## 0.2.6 (2026-11-16)
+
+Custom agents: give an agent a name and instructions once and start it on
+Claude Code, Codex or another harness from the add agent menu. Issues can be
+edited in a batch, the archive can be searched, and a run's conversation
+exports as markdown. A Review button opens a fresh reviewer on a run's branch,
+and a conflicted merge now carries on in Source Control.
+
+macOS 11 or later, Apple Silicon. Linux with glibc 2.34 or later, x86_64 or
+arm64.
+
+**Coming from 0.2.5:** install from inside the app. Running agents survive the
+restart; this release does not change the terminal protocol.
+
+### Custom agents
+
+- Settings › Custom agents defines an agent by name, description and
+  instructions, for one project (stored in `.agency/agents/`, so it travels
+  with the repo) or for every project. Pick one from the add agent menu or the
+  race and loop dialogs.
+- Each harness is given the instructions the way it was verified to read them.
+  A harness with no verified way refuses at launch, rather than starting a
+  plain agent that looks like the one you picked.
+- Only the name, description and instructions are read from a definition. A
+  file that arrives through git cannot change an agent's permissions, cannot
+  stand in for one of your own agents with the same name, and is labelled in
+  the picker as coming from the project.
+- A run keeps a copy of its agent, so a resume or a loop's next attempt comes
+  back as the agent the work started under.
+- Saving or deleting a project agent no longer blocks merges. A merge that
+  would overwrite an uncommitted agent file refuses before it starts and
+  names the file.
+
+### Issues
+
+- Check issues with `x` or ⌘-click and set their status, priority, due or
+  scheduled date together, or delete them, from the bar that appears.
+- Files dropped or pasted into the issue composer are attached. They used to
+  vanish without a word. Discarding a draft trashes only the files it wrote.
+
+### Archive
+
+- Search the archive across each run's summary, record and conversation. A
+  row that matched somewhere its label does not show carries a snippet, and
+  opens on that tab.
+- Export a run's conversation as one markdown file from the conversation tab.
+  The export keeps every word of a long turn the view clips.
+- Copilot conversations can be read in the archive.
+
+### Review and merge
+
+- Review, beside Approve, opens a new agent tab in the run's worktree to
+  review its branch against the base it merges into.
+- "Fix with agent" closes the Approve window and lands on the agent's tab. A
+  card in the Source Control panel follows the merge from there, with the
+  conflicted files, the agent picker, Finish and Abort.
+- After a pull request merges from the Approve window, it stays on its done
+  step instead of offering a local merge of the same work, and says whether
+  the worktree holds anything that is not on GitHub. A pull request merged on
+  GitHub directly opens on Done too. "Pull main" fast-forwards your local base
+  to GitHub's; it never merges or rebases.
+- A commit cherry-picked or rebased onto main no longer counts as ahead, and a
+  whole-branch squash merge reads as merged. One cherry-picked and then
+  reverted on main still counts, since merging it would bring the change back.
+
+### Checkout and panels
+
+- The bar over Docs, Files and Source Control names the tree the view is
+  rooted in. Its menu switches between the project checkout and any agent's
+  worktree without leaving the tab. The palette has View Project Checkout.
+- The agents side panel on Docs and Files keeps its agent across a visit to
+  another project, and returning never restarts an agent whose session has
+  ended.
+
+### Fixes
+
+- A model picked for one run no longer becomes that agent's default for every
+  later run. The default is set in Settings alone.
+- A checkpoint on Linux could keep the old contents of a file rewritten at the
+  same size within a moment of git updating its index. The checkpoint now
+  sees the change.
+
 ## 0.2.5 (2026-10-20)
 
 One fix on top of 0.2.4, to the Source Control merge dialog. If you are coming

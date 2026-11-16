@@ -2,13 +2,13 @@ import { useCallback, useEffect, useState } from "react";
 import { AgentModelInfo, listAgentModels } from "../api";
 
 /**
- * The model picker's data for every enabled agent, keyed by agent id, plus the
- * model each one was last launched on.
+ * The model picker's data for every enabled agent, keyed by agent id, plus
+ * each one's default model from Settings.
  *
- * Reloaded on demand rather than cached globally: the selection moves whenever
- * a run starts, and a menu that reopened on a stale model would offer to repeat
- * a choice the user has already moved on from. The call reads settings and
- * static data only, so it is cheap enough to make every time a menu opens.
+ * Reloaded on demand rather than cached globally: Settings can change the
+ * default and any run adds to the recents, and a menu that reopened on a stale
+ * list would offer what the user has already changed. The call reads settings
+ * and static data only, so it is cheap enough to make every time a menu opens.
  */
 export function useAgentModels() {
   const [models, setModels] = useState<Record<string, AgentModelInfo>>({});
@@ -23,7 +23,7 @@ export function useAgentModels() {
 
   useEffect(() => { reload(); }, [reload]);
 
-  /** The model to start `agent` on by default: the one it last ran on. */
+  /** The model to start `agent` on unless one is picked: Settings' default. */
   const remembered = useCallback(
     (agent: string) => models[agent]?.selected ?? null,
     [models],

@@ -805,9 +805,8 @@ pub fn list_agent_models(
     state.list_agent_models().map_err(|e| e.to_string())
 }
 
-/// Choose the model an agent's next run starts on (see
-/// `AppState::set_agent_model`). What the Settings row writes; a launch writes
-/// it too, so the two never disagree.
+/// Choose the model an agent's runs start on when none is picked for them (see
+/// `AppState::set_agent_model`). What the Settings row writes, and nothing else.
 #[tauri::command]
 pub fn set_agent_model(
     state: State<'_, AppState>,

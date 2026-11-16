@@ -56,10 +56,10 @@ export default function AgentAddMenu({
   const btnRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  // Model per agent, seeded from what each was last launched on, so the row
-  // reads as the spawn it is about to do. Picking one here changes only this
-  // menu's next spawn; it becomes the remembered choice once a run starts on
-  // it. Refreshed on open, alongside the agent list.
+  // Model per agent, seeded from the default in Settings, so the row reads as
+  // the spawn it is about to do. Picking one here changes only this menu's next
+  // spawn, never the default: a model chosen for one issue is not a choice for
+  // every issue after it. Refreshed on open, alongside the agent list.
   const { models, reload: reloadModels, remembered } = useAgentModels();
   const [picked, setPicked] = useState<Record<string, string | null>>({});
   const modelFor = (agent: string) =>

@@ -245,7 +245,7 @@ function Shell() {
     try {
       const agent = await pickDefaultAgent(ws.id, ws.default_agent);
       const prompt = `Narrate the weekly review note \`${path}\`. Read it, then write a short narrative summary of the week into its Notes section, drawing on the listed merges, closed issues, and archived runs. Keep the existing sections and wikilinks intact.`;
-      // No picker on this path, so it repeats whatever that agent last ran on.
+      // No picker on this path, so it starts on that agent's default model.
       const run = await createRun(
         ws.id, prompt, agent, await rememberedModel(agent), "HEAD", null, undefined, worktree,
       );

@@ -10,9 +10,9 @@ import { attemptsForPick, customAgentLabel, customAgentsProject, useCustomAgents
 import ModelSelect from "./ModelSelect";
 
 // One row of the race: an agent and the model it runs on. `model` absent (as
-// opposed to null) means nothing was picked, so the row falls back to whatever
-// that agent last ran on — resolved at render, because the remembered map
-// arrives after the rows do.
+// opposed to null) means nothing was picked, so the row falls back to that
+// agent's default model from Settings, resolved at render, because the model
+// list arrives after the rows do.
 //
 // Keyed by a counter rather than by agent: an agent can hold two rows, and even
 // (agent, model) is not unique until both models are chosen.

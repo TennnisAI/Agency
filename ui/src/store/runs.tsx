@@ -18,9 +18,9 @@ export type SpawnOpts = {
   mergeTarget?: string;
   worktree?: boolean;
   // Model to launch on. `null` is the agent's own default, which is a real
-  // choice; `undefined` means the caller has no picker, so the model the agent
-  // last ran on is used (the same shape `worktree` uses for its Settings
-  // default).
+  // choice; `undefined` means the caller has no picker, so the agent's default
+  // model from Settings is used (the same shape `worktree` uses for its
+  // Settings default).
   model?: string | null;
   // Custom agent to launch as, by its `selection`. Absent is the plain harness: unlike a
   // model, one is never carried over from an earlier run without being picked.

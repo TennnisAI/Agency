@@ -1,7 +1,7 @@
 // The model a spawn launches on, from what its caller said (see SpawnOpts):
 // a string is that model, `null` is the agent's own default, and `undefined`
-// means the caller had no picker in front of the user, so the model the agent
-// last ran on is repeated.
+// means the caller had no picker in front of the user, so the run starts on the
+// agent's default model from Settings.
 //
 // Every spawn path has to read it the same way. AGE-236: an issue's ▶ button
 // passes no options, and issue dispatch read that as `opts?.model ?? null`, the

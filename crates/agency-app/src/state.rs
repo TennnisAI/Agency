@@ -1297,26 +1297,41 @@ fn termd_socket(data_dir: &Path) -> std::path::PathBuf {
 
 /// Path to the terminal daemon binary. In a bundled/release build it ships next
 /// to the app executable (Tauri externalBin sidecar). Under `cargo test` the
-/// current exe is a test binary in `target/<profile>/deps/`, while the daemon is
-/// built one level up in `target/<profile>/`, so we also probe the parent dir.
-/// Falls back to a bare name for `$PATH` resolution.
+/// current exe is a test binary somewhere below `target/<profile>/`, where the
+/// daemon is built, so a debug build also probes the directories above it.
+/// Falls back to the sibling path, or a bare name for `$PATH` resolution.
 fn termd_bin() -> std::path::PathBuf {
     let exe = std::env::current_exe().ok();
-    let dir = exe.as_ref().and_then(|p| p.parent());
-    // Sibling of the executable (bundled app / `cargo run`).
-    let sibling = dir.map(|d| d.join("agency-termd"));
-    if let Some(p) = sibling.as_ref() {
-        if p.exists() {
-            return p.clone();
-        }
-    }
-    // One level up (cargo's `deps/` test/bench layout points here).
-    if let Some(p) = dir.and_then(|d| d.parent()).map(|d| d.join("agency-termd")) {
-        if p.exists() {
-            return p;
-        }
-    }
-    sibling.unwrap_or_else(|| std::path::PathBuf::from("agency-termd"))
+    let depth = if cfg!(debug_assertions) { TERMD_DEBUG_SEARCH_DEPTH } else { 2 };
+    termd_bin_from(exe.as_deref().and_then(Path::parent), depth, |p| p.exists())
+}
+
+/// How many directories a debug build searches for the daemon, the
+/// executable's own included. Cargo used to run integration tests from
+/// `target/debug/deps/`, one below the daemon. The cargo in Rust 1.100 runs
+/// them from `target/debug/build/agency-app/<hash>/out/`, four below, and CI's
+/// `app` job failed all four `custom_agents` tests with `spawn
+/// ".../out/agency-termd": No such file or directory`. A release build stops
+/// one level up, as it always has: its sidecar is beside it, and a walk up out
+/// of `Agency.app` would only find something that is not ours.
+const TERMD_DEBUG_SEARCH_DEPTH: usize = 5;
+
+/// [`termd_bin`]'s search, with the filesystem passed in: the first
+/// `agency-termd` that `exists` in `exe_dir` or the `depth - 1` directories
+/// above it.
+fn termd_bin_from(
+    exe_dir: Option<&Path>,
+    depth: usize,
+    exists: impl Fn(&Path) -> bool,
+) -> std::path::PathBuf {
+    let Some(dir) = exe_dir else {
+        return std::path::PathBuf::from("agency-termd");
+    };
+    dir.ancestors()
+        .take(depth)
+        .map(|d| d.join("agency-termd"))
+        .find(|p| exists(p))
+        .unwrap_or_else(|| dir.join("agency-termd"))
 }
 
 fn session_name(id: &str) -> String {
@@ -13485,13 +13500,54 @@ mod tests {
         dispatch_tools_on, graphify_server, hooked_and_gone, id_source, is_auto_cut_branch,
         new_task_id, open_file_for, pick_port, preview_mcp_port_for, preview_port_this_sweep,
         preview_tools_on, require_branch_exists, require_gitless_known, require_own_branch,
-        server_port_for, should_resume, slugify, split_session_id, validate_race, OpenFileRef,
-        RaceAttempt,
+        server_port_for, should_resume, slugify, split_session_id, termd_bin_from, validate_race,
+        OpenFileRef, RaceAttempt, TERMD_DEBUG_SEARCH_DEPTH,
     };
     use agency_core::config::KnowledgeConfig;
     use agency_core::profile::AgentProfile;
     use std::collections::HashSet;
     use std::path::PathBuf;
+
+    fn only(path: &'static str) -> impl Fn(&Path) -> bool {
+        move |p| p == Path::new(path)
+    }
+
+    #[test]
+    fn the_daemon_beside_the_executable_wins() {
+        let dir = Path::new("/A/Agency.app/Contents/MacOS");
+        let found = termd_bin_from(Some(dir), 2, |_| true);
+        assert_eq!(found, PathBuf::from("/A/Agency.app/Contents/MacOS/agency-termd"));
+    }
+
+    #[test]
+    fn a_test_in_deps_finds_the_daemon_one_level_up() {
+        let dir = Path::new("/r/target/debug/deps");
+        let found = termd_bin_from(Some(dir), 2, only("/r/target/debug/agency-termd"));
+        assert_eq!(found, PathBuf::from("/r/target/debug/agency-termd"));
+    }
+
+    #[test]
+    fn a_test_in_the_newer_build_layout_finds_the_daemon_four_levels_up() {
+        let dir = Path::new("/r/target/debug/build/agency-app/ee0a6088/out");
+        let found = termd_bin_from(
+            Some(dir),
+            TERMD_DEBUG_SEARCH_DEPTH,
+            only("/r/target/debug/agency-termd"),
+        );
+        assert_eq!(found, PathBuf::from("/r/target/debug/agency-termd"));
+    }
+
+    #[test]
+    fn a_release_build_does_not_walk_out_of_its_bundle() {
+        let dir = Path::new("/Applications/Agency.app/Contents/MacOS");
+        let found = termd_bin_from(Some(dir), 2, only("/Applications/agency-termd"));
+        assert_eq!(found, PathBuf::from("/Applications/Agency.app/Contents/MacOS/agency-termd"));
+    }
+
+    #[test]
+    fn no_executable_dir_falls_back_to_the_bare_name() {
+        assert_eq!(termd_bin_from(None, 5, |_| true), PathBuf::from("agency-termd"));
+    }
 
     #[test]
     fn a_hooked_codex_still_launching_is_not_gone() {
